@@ -82,6 +82,8 @@ class LabelMapping:
 # Specific Task Configurations
 class PersonConfig:
     """Configuration for person detection and classification."""
+    TRAIN_SPLIT_RATIO = 0.7
+    MAX_CLASS_RATIO_THRESHOLD = 0.8
     AGE_GROUP_TO_CLASS_ID = {
         'Inf': 0,
         'Child': 0,
