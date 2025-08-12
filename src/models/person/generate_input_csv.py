@@ -113,11 +113,13 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
     df = pd.DataFrame(data)
     return df
 
-def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List, List, List]:
+def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO):
     """
-    Splits the DataFrame into training, validation, and test sets using a balanced,
-    iterative assignment strategy with ratio constraints.
+    Splits the DataFrame into training, validation, and test sets using child IDs as the unit,
+    while keeping each split's adult/child ratio close to the global dataset ratio.
     """
+
+    # --- Map video_id -> child_id ---
     conn = sqlite3.connect(DB_PATH)
     video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
     conn.close()
@@ -127,22 +129,25 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO) 
             return 'id' + file_name.split('id')[1].split('_')[0]
         except (IndexError, ValueError):
             return None
-    
+
     video_map['child_id'] = video_map['file_name'].apply(extract_child_id)
     df = df.merge(video_map.drop(columns='file_name'), on="video_id", how="left")
     df.dropna(subset=['child_id'], inplace=True)
-    
-    child_group_counts = df.groupby('child_id')[TARGET_LABELS].sum()
-    child_group_counts['adult_ratio'] = child_group_counts[TARGET_LABELS[1]] / (child_group_counts[TARGET_LABELS[1]] + child_group_counts[TARGET_LABELS[0]])
-    child_group_counts['adult_ratio'].fillna(0, inplace=True)
 
-    sorted_child_ids = child_group_counts['adult_ratio'].sort_values().index.tolist()
-    
+    # --- Counts per child ---
+    child_group_counts = df.groupby('child_id')[TARGET_LABELS].sum()
+
+    # Global target ratio (adult proportion)
+    global_counts = child_group_counts[TARGET_LABELS].sum()
+    target_adult_ratio = global_counts[TARGET_LABELS[1]] / global_counts.sum()
+
+    sorted_child_ids = child_group_counts.index.tolist()
     n_total = len(sorted_child_ids)
+
     if n_total < 6:
-        logging.error(f"Not enough unique children to create balanced splits. Found {n_total}, but need at least 6.")
+        logging.error(f"Not enough unique children to create balanced splits. Found {n_total}, need at least 6.")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [], [], []
-    
+
     n_train = max(int(n_total * train_ratio), 2)
     remaining_ids = n_total - n_train
     n_val = max(int(remaining_ids / 2), 2)
@@ -151,71 +156,63 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO) 
     if n_test < 2:
         n_val -= (2 - n_test)
         if n_val < 2:
-             logging.error("Could not meet minimum ID requirements for all splits.")
-             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [], [], []
+            logging.error("Could not meet minimum ID requirements for all splits.")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [], [], []
         n_test = 2
-        
-    train_ids, val_ids, test_ids = [], [], []
-    
-    ids_to_assign = sorted_child_ids.copy()
-    train_ids.extend([ids_to_assign.pop(0), ids_to_assign.pop()])
-    val_ids.extend([ids_to_assign.pop(0), ids_to_assign.pop()])
-    test_ids.extend([ids_to_assign.pop(0), ids_to_assign.pop()])
-    
-    def would_violate_threshold(current_counts, child_counts):
-        new_counts = current_counts + child_counts
-        new_total = new_counts.sum()
-        if new_total == 0:
-            return False
-        
-        child_ratio = new_counts[TARGET_LABELS[0]] / new_total
-        adult_ratio = new_counts[TARGET_LABELS[1]] / new_total
-        return child_ratio > MAX_CLASS_RATIO_THRESHOLD or adult_ratio > MAX_CLASS_RATIO_THRESHOLD
 
+    # --- Initialize splits ---
     split_info = {
-        'train': {'ids': train_ids, 'current_counts': child_group_counts.loc[train_ids, TARGET_LABELS].sum()},
-        'val': {'ids': val_ids, 'current_counts': child_group_counts.loc[val_ids, TARGET_LABELS].sum()},
-        'test': {'ids': test_ids, 'current_counts': child_group_counts.loc[test_ids, TARGET_LABELS].sum()},
+        'train': {'ids': [], 'current_counts': pd.Series([0, 0], index=TARGET_LABELS)},
+        'val':   {'ids': [], 'current_counts': pd.Series([0, 0], index=TARGET_LABELS)},
+        'test':  {'ids': [], 'current_counts': pd.Series([0, 0], index=TARGET_LABELS)},
     }
 
-    total_counts = df[TARGET_LABELS].sum()
-    total_images = len(df)
-    overall_adult_ratio = total_counts[TARGET_LABELS[1]] / total_images if total_images > 0 else 0
+    # Randomize assignment order to reduce bias
+    random.shuffle(sorted_child_ids)
 
-    random.shuffle(ids_to_assign)
+    def deviation_from_target(current_counts, child_counts):
+        """Absolute difference from target adult ratio after adding this child."""
+        new_counts = current_counts + child_counts
+        if new_counts.sum() == 0:
+            return 0
+        new_ratio = new_counts[TARGET_LABELS[1]] / new_counts.sum()
+        return abs(new_ratio - target_adult_ratio)
 
-    for child_id in ids_to_assign:
+    for child_id in sorted_child_ids:
         child_counts = child_group_counts.loc[child_id, TARGET_LABELS]
-        valid_splits = []
-        
-        # Check which splits can accept the child without violating the ratio threshold
-        for split_name in ['train', 'val', 'test']:
-            if len(split_info[split_name]['ids']) < {'train': n_train, 'val': n_val, 'test': n_test}[split_name]:
-                if not would_violate_threshold(split_info[split_name]['current_counts'], child_counts):
-                    valid_splits.append(split_name)
 
-        if valid_splits:
-            # Assign to the valid split that maintains the best balance
-            best_split = min(valid_splits, key=lambda s: abs(
-                (split_info[s]['current_counts'] + child_counts).sum() / (len(split_info[s]['ids']) + 1)
-            ))
-        else:
-            # If all splits violate the threshold, find the one with the least severe violation
-            best_split = min(['train', 'val', 'test'], key=lambda s: 
-                abs(would_violate_threshold(split_info[s]['current_counts'], child_counts))
-            )
-            logging.warning(f"Child ID {child_id} must be assigned with a ratio violation. Assigning to {best_split}.")
-            
+        # Find eligible splits (still have room for more IDs)
+        eligible_splits = []
+        for split_name, target_size in zip(['train', 'val', 'test'], [n_train, n_val, n_test]):
+            if len(split_info[split_name]['ids']) < target_size:
+                eligible_splits.append(split_name)
+
+        if not eligible_splits:
+            logging.warning(f"No split has space left for child {child_id}. Skipping.")
+            continue
+
+        # Pick split that gets closest to global ratio
+        best_split = min(
+            eligible_splits,
+            key=lambda s: deviation_from_target(split_info[s]['current_counts'], child_counts)
+        )
+
+        # Assign child
         split_info[best_split]['ids'].append(child_id)
         split_info[best_split]['current_counts'] += child_counts
 
+    # --- Build final DataFrames ---
     train_ids = split_info['train']['ids']
     val_ids = split_info['val']['ids']
     test_ids = split_info['test']['ids']
-    
+
     df_train = df[df["child_id"].isin(train_ids)].drop(columns=["child_id"])
-    df_val = df[df["child_id"].isin(val_ids)].drop(columns=["child_id"])
-    df_test = df[df["child_id"].isin(test_ids)].drop(columns=["child_id"])
+    df_val   = df[df["child_id"].isin(val_ids)].drop(columns=["child_id"])
+    df_test  = df[df["child_id"].isin(test_ids)].drop(columns=["child_id"])
+
+    for split_name, split_df in zip(["Train", "Val", "Test"], [df_train, df_val, df_test]):
+        if len(split_df) > 0:
+            ratio = split_df[TARGET_LABELS[1]].sum() / len(split_df)
 
     return df_train, df_val, df_test, train_ids, val_ids, test_ids
 
@@ -274,6 +271,8 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
             f.write("Overlap found: Yes\n")
         else:
             f.write("Overlap found: No\n")
+    
+    logging.info(f"Statistics file generated at {file_path}")
 
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
