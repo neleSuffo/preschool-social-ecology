@@ -1,11 +1,13 @@
 import sqlite3
 import random
+from datetime import datetime
 import logging
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Tuple
-from constants import DataPaths, PersonClassification
+from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
+from constants import DataPaths, PersonClassification, BasePaths
 from config import PersonConfig, DataConfig
 
 logging.basicConfig(level=logging.INFO)
@@ -17,7 +19,8 @@ DATABASE_CATEGORY_IDS = PersonConfig.DATABASE_CATEGORY_IDS # (1: 'person', 2: 'r
 AGE_GROUP_TO_CLASS_ID = PersonConfig.AGE_GROUP_TO_CLASS_ID # (inf:0, child: 0, teen: 1, adult: 1)
 MODEL_CLASS_ID_TO_LABEL = PersonConfig.MODEL_CLASS_ID_TO_LABEL # (0: 'child', 1: 'adult')
 TARGET_LABELS = PersonConfig.TARGET_LABELS # ['child', 'adult']
-TRAIN_SPLIT_RATIO = DataConfig.TRAIN_SPLIT_RATIO
+TRAIN_SPLIT_RATIO = PersonConfig.TRAIN_SPLIT_RATIO
+MAX_CLASS_RATIO_THRESHOLD = PersonConfig.MAX_CLASS_RATIO_THRESHOLD
 OUTPUT_DIR = PersonClassification.PERSON_DATA_INPUT_DIR
 
 def fetch_presence_per_frame(category_ids: List[int]) -> List[Tuple]:
@@ -66,10 +69,6 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
     """
     Aggregates all detections in the same frame into binary presence labels for 'adult' and 'child'.
 
-    This function takes a list of annotation rows (which now includes age_group) and converts them
-    into a DataFrame where each row represents a unique video frame. The columns 'adult' and 'child'
-    are set to 1 if a person of that age group is present.
-
     Parameters
     ----------
     rows (List[Tuple])
@@ -88,16 +87,13 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
     frame_dict = {}
 
     for video_id, frame_id, file_name, cat_id, age_group in rows:
-        # We only care about category_id 1 (person), not 2 (reflection)
         if cat_id != 1:
             continue
 
         key = (video_id, frame_id, file_name)
         if key not in frame_dict:
-            # Initialize with 0 for both child and adult
             frame_dict[key] = {label: 0 for label in TARGET_LABELS}
 
-        # Map the age_group to the target label using both mappings
         if age_group in age_group_mapping:
             label_id = age_group_mapping[age_group]
             label_name = model_class_mapping.get(label_id)
@@ -105,7 +101,6 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
             if label_name:
                 frame_dict[key][label_name] = 1
 
-    # Convert the dictionary of frames to a DataFrame
     data = []
     for (video_id, frame_id, file_name), labels in frame_dict.items():
         row = {
@@ -118,69 +113,167 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
     df = pd.DataFrame(data)
     return df
 
-def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List, List, List]:
     """
-    Splits the DataFrame into training, validation, and test sets, stratified by child_id balance.
-    (This function remains unchanged from the previous version)
+    Splits the DataFrame into training, validation, and test sets using a balanced,
+    iterative assignment strategy with ratio constraints.
     """
-    val_ratio = (1 - train_ratio) / 2
-    
     conn = sqlite3.connect(DB_PATH)
     video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
     conn.close()
 
-    def extract_child_id(file_name: str) -> int:
+    def extract_child_id(file_name: str) -> str:
         try:
-            return int(file_name.split('id')[1].split('_')[0])
-        except (IndexError, ValueError) as e:
-            logging.error(f"Failed to extract child_id from file_name: {file_name} - {e}")
+            return 'id' + file_name.split('id')[1].split('_')[0]
+        except (IndexError, ValueError):
             return None
     
     video_map['child_id'] = video_map['file_name'].apply(extract_child_id)
     df = df.merge(video_map.drop(columns='file_name'), on="video_id", how="left")
-
     df.dropna(subset=['child_id'], inplace=True)
-    df['child_id'] = df['child_id'].astype(int)
-
-    child_group_counts = df.groupby('child_id')[['adult', 'child']].sum()
-    child_group_counts['adult_ratio'] = child_group_counts['adult'] / (child_group_counts['adult'] + child_group_counts['child'])
+    
+    child_group_counts = df.groupby('child_id')[TARGET_LABELS].sum()
+    child_group_counts['adult_ratio'] = child_group_counts[TARGET_LABELS[1]] / (child_group_counts[TARGET_LABELS[1]] + child_group_counts[TARGET_LABELS[0]])
     child_group_counts['adult_ratio'].fillna(0, inplace=True)
 
     sorted_child_ids = child_group_counts['adult_ratio'].sort_values().index.tolist()
     
     n_total = len(sorted_child_ids)
-    n_train = int(train_ratio * n_total)
-    n_val = int(val_ratio * n_total)
+    if n_total < 6:
+        logging.error(f"Not enough unique children to create balanced splits. Found {n_total}, but need at least 6.")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [], [], []
     
+    n_train = max(int(n_total * train_ratio), 2)
+    remaining_ids = n_total - n_train
+    n_val = max(int(remaining_ids / 2), 2)
+    n_test = n_total - n_train - n_val
+
+    if n_test < 2:
+        n_val -= (2 - n_test)
+        if n_val < 2:
+             logging.error("Could not meet minimum ID requirements for all splits.")
+             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [], [], []
+        n_test = 2
+        
     train_ids, val_ids, test_ids = [], [], []
     
-    split_indices = np.arange(n_total)
-    random.shuffle(split_indices)
+    ids_to_assign = sorted_child_ids.copy()
+    train_ids.extend([ids_to_assign.pop(0), ids_to_assign.pop()])
+    val_ids.extend([ids_to_assign.pop(0), ids_to_assign.pop()])
+    test_ids.extend([ids_to_assign.pop(0), ids_to_assign.pop()])
     
-    for i in range(n_total):
-        child_id = sorted_child_ids[i]
+    def would_violate_threshold(current_counts, child_counts):
+        new_counts = current_counts + child_counts
+        new_total = new_counts.sum()
+        if new_total == 0:
+            return False
         
-        if len(train_ids) < n_train:
-            train_ids.append(child_id)
-        elif len(val_ids) < n_val:
-            val_ids.append(child_id)
+        child_ratio = new_counts[TARGET_LABELS[0]] / new_total
+        adult_ratio = new_counts[TARGET_LABELS[1]] / new_total
+        return child_ratio > MAX_CLASS_RATIO_THRESHOLD or adult_ratio > MAX_CLASS_RATIO_THRESHOLD
+
+    split_info = {
+        'train': {'ids': train_ids, 'current_counts': child_group_counts.loc[train_ids, TARGET_LABELS].sum()},
+        'val': {'ids': val_ids, 'current_counts': child_group_counts.loc[val_ids, TARGET_LABELS].sum()},
+        'test': {'ids': test_ids, 'current_counts': child_group_counts.loc[test_ids, TARGET_LABELS].sum()},
+    }
+
+    total_counts = df[TARGET_LABELS].sum()
+    total_images = len(df)
+    overall_adult_ratio = total_counts[TARGET_LABELS[1]] / total_images if total_images > 0 else 0
+
+    random.shuffle(ids_to_assign)
+
+    for child_id in ids_to_assign:
+        child_counts = child_group_counts.loc[child_id, TARGET_LABELS]
+        valid_splits = []
+        
+        # Check which splits can accept the child without violating the ratio threshold
+        for split_name in ['train', 'val', 'test']:
+            if len(split_info[split_name]['ids']) < {'train': n_train, 'val': n_val, 'test': n_test}[split_name]:
+                if not would_violate_threshold(split_info[split_name]['current_counts'], child_counts):
+                    valid_splits.append(split_name)
+
+        if valid_splits:
+            # Assign to the valid split that maintains the best balance
+            best_split = min(valid_splits, key=lambda s: abs(
+                (split_info[s]['current_counts'] + child_counts).sum() / (len(split_info[s]['ids']) + 1)
+            ))
         else:
-            test_ids.append(child_id)
+            # If all splits violate the threshold, find the one with the least severe violation
+            best_split = min(['train', 'val', 'test'], key=lambda s: 
+                abs(would_violate_threshold(split_info[s]['current_counts'], child_counts))
+            )
+            logging.warning(f"Child ID {child_id} must be assigned with a ratio violation. Assigning to {best_split}.")
+            
+        split_info[best_split]['ids'].append(child_id)
+        split_info[best_split]['current_counts'] += child_counts
 
-    unassigned_ids = set(sorted_child_ids) - set(train_ids) - set(val_ids) - set(test_ids)
-    test_ids.extend(list(unassigned_ids))
+    train_ids = split_info['train']['ids']
+    val_ids = split_info['val']['ids']
+    test_ids = split_info['test']['ids']
     
-    logging.info(f"Splitting {n_total} unique child IDs: Train={len(train_ids)}, Val={len(val_ids)}, Test={len(test_ids)}")
-
     df_train = df[df["child_id"].isin(train_ids)].drop(columns=["child_id"])
     df_val = df[df["child_id"].isin(val_ids)].drop(columns=["child_id"])
     df_test = df[df["child_id"].isin(test_ids)].drop(columns=["child_id"])
 
-    logging.info(f"Train set class counts:\n{df_train[['adult', 'child']].sum()}")
-    logging.info(f"Validation set class counts:\n{df_val[['adult', 'child']].sum()}")
-    logging.info(f"Test set class counts:\n{df_test[['adult', 'child']].sum()}")
+    return df_train, df_val, df_test, train_ids, val_ids, test_ids
 
-    return df_train, df_val, df_test
+def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List):
+    """
+    Generates a statistics file with dataset split information, including percentages.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = BasePaths.LOGGING_DIR / f"split_distribution_person_cls_{timestamp}.txt"
+    
+    total_images = len(df)
+    
+    with open(file_path, "w") as f:
+        f.write(f"Dataset Split Information - {timestamp}\n\n")
+        
+        total_0 = df['child'].sum()
+        total_1 = df['adult'].sum()
+
+        f.write(f"Initial Distribution:\n")
+        f.write(f"Total Images: {total_images}\n")
+        f.write(f"Class 0 {TARGET_LABELS[0]}: {total_0} images ({total_0 / total_images:.2%})\n")
+        f.write(f"Class 1 {TARGET_LABELS[1]}: {total_1} images ({total_1 / total_images:.2%})\n\n")
+
+        f.write("Split Distribution:\n")
+        f.write("--------------------------------------------------\n\n")
+
+        def write_split_info(split_name, split_df):
+            total_split = len(split_df)
+            total_split_percent = total_split / total_images if total_images > 0 else 0
+
+            count_0 = split_df[TARGET_LABELS[0]].sum()
+            count_1 = split_df[TARGET_LABELS[1]].sum()
+            
+            ratio_0 = count_0 / total_split if total_split > 0 else 0
+            ratio_1 = count_1 / total_split if total_split > 0 else 0
+            
+            f.write(f"{split_name} Set: ({total_split_percent:.2%})\n")
+            f.write(f"Total Images: {total_split}\n")
+            f.write(f"{TARGET_LABELS[0]}: {count_0} ({ratio_0:.2%})\n")
+            f.write(f"{TARGET_LABELS[1]}: {count_1} ({ratio_1:.2%})\n\n")
+
+        write_split_info("Validation", df_val)
+        write_split_info("Test", df_test)
+        write_split_info("Train", df_train)
+
+        f.write("ID Distribution:\n")
+        f.write(f"Training IDs: {len(train_ids)}, {train_ids}\n")
+        f.write(f"Validation IDs: {len(val_ids)}, {val_ids}\n")
+        f.write(f"Test IDs: {len(test_ids)}, {test_ids}\n\n")
+
+        f.write("ID Overlap Check:\n")
+        train_val_overlap = set(train_ids).intersection(val_ids)
+        train_test_overlap = set(train_ids).intersection(test_ids)
+        val_test_overlap = set(val_ids).intersection(test_ids)
+        if train_val_overlap or train_test_overlap or val_test_overlap:
+            f.write("Overlap found: Yes\n")
+        else:
+            f.write("Overlap found: No\n")
 
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -193,18 +286,18 @@ if __name__ == "__main__":
 
     df = build_frame_level_labels(rows, AGE_GROUP_TO_CLASS_ID, MODEL_CLASS_ID_TO_LABEL)
 
-    expected_columns = ['child', 'adult']
-    if not all(col in df.columns for col in expected_columns):
-        logging.error(f"DataFrame is missing expected columns: {expected_columns}. Available columns: {df.columns.tolist()}")
+    if not all(col in df.columns for col in TARGET_LABELS):
+        logging.error(f"DataFrame is missing expected columns: {TARGET_LABELS}. Available columns: {df.columns.tolist()}")
         exit()
 
-    df_train, df_val, df_test = split_by_child_id(df)
+    df_train, df_val, df_test, train_ids, val_ids, test_ids = split_by_child_id(df)
 
+    # Save CSVs
     df_train.to_csv(OUTPUT_DIR / "train.csv", index=False)
     df_val.to_csv(OUTPUT_DIR / "val.csv", index=False)
     df_test.to_csv(OUTPUT_DIR / "test.csv", index=False)
 
+    # Generate and save statistics file
+    generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
+
     logging.info(f"Generated CSV files at {OUTPUT_DIR}")
-    logging.info(f"Train samples: {len(df_train)}")
-    logging.info(f"Validation samples: {len(df_val)}")
-    logging.info(f"Test samples: {len(df_test)}")
