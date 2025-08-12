@@ -5,7 +5,7 @@ from prepare_data.process_annotations.create_database import (
     create_child_class_in_db,
 )
 from prepare_data.process_annotations.convert_annotations import main as convert_annotations
-from constants import DetectionPaths, VALID_TARGETS
+from constants import VALID_TARGETS
 
 def setup_database() -> None:
     """

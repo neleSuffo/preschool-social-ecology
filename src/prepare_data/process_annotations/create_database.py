@@ -5,8 +5,8 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from constants import DetectionPaths
-from config import LabelToCategoryMapping
+from constants import DataPaths
+from config import LabelMapping
 
 # Configure logging
 logging.basicConfig(
@@ -20,13 +20,13 @@ def write_xml_to_database() -> None:
     logging.info("Starting to create database annotations.")
 
     # Create the directory if it does not exist
-    Path(DetectionPaths.quantex_annotations_db_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(DataPaths.ANNO_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
     added_videos = set()
     added_images = set()
     added_categories = set()
     
-    with sqlite3.connect(DetectionPaths.quantex_annotations_db_path) as conn:
+    with sqlite3.connect(DataPaths.ANNO_DB_PATH) as conn:
         cursor = conn.cursor()
 
         # Drop tables if they exist
@@ -77,7 +77,7 @@ def write_xml_to_database() -> None:
 
         # Commit and close the database connection
         conn.commit()
-        for file_name in DetectionPaths.quantex_annotations_dir.iterdir():
+        for file_name in DataPaths.ANNO_DIR.iterdir():
             if file_name.suffix == '.xml':
                 add_annotations_to_db(cursor, conn, file_name, added_images, added_videos, added_categories)
                 
@@ -138,10 +138,10 @@ def add_annotations_to_db(
 
         # Map the label to its corresponding label id using the dictionary
         # returns -1 if the label is not in the dictionary
-        track_label_id = LabelToCategoryMapping.label_to_id_mapping.get(track_label, -1)
+        track_label_id = LabelMapping.LABEL_TO_ID_MAPPING.get(track_label, -1)
         # Map the label to its corresponding supercategory using the dictionary
-        supercategory = LabelToCategoryMapping.id_to_supercategory_mapping.get(
-            track_label_id, LabelToCategoryMapping.unknown_supercategory
+        supercategory = LabelMapping.ID_TO_SUPERCATEGORY_MAPPING.get(
+            track_label_id, LabelMapping.unknown_supercategory
         )  # returns "unknown" if the label is not in the dictionary
 
         # Add category details if not already added
@@ -227,7 +227,7 @@ def create_child_class_in_db():
     """
     This function creates a new class "child_body part" in the database.
     """
-    conn = sqlite3.connect(DetectionPaths.quantex_annotations_db_path)
+    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
     cursor = conn.cursor()
     # Update the category_id for child body parts
     query_1 = """

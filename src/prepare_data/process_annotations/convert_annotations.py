@@ -4,8 +4,8 @@ import cv2
 from pathlib import Path
 from utils import fetch_all_annotations
 from multiprocessing import Pool
-from constants import DetectionPaths, ClassificationPaths
-from config import YoloConfig, CategoryMappings
+from constants import DataPaths
+from config import FaceConfig, PersonConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -96,12 +96,8 @@ def map_category_id(target: str, category_id: int, person_age: None, gaze_direct
     person_age = person_age.strip().lower() if isinstance(person_age, str) else "unknown"
 
     mappings = {
-        "gaze_cls": CategoryMappings.gaze_cls.get(gaze_directed_at_child, 99),
-        "person_cls": CategoryMappings.person_cls.get(person_age, 99),
-        "face_cls": CategoryMappings.face_cls.get(person_age, 99),
-        "person_face_det": CategoryMappings.person_face_det.get(category_id, 99),
-        "all": CategoryMappings.all_det.get(category_id, 99),
-        "face_det": CategoryMappings.face_cls.get(person_age, 99),
+        "person_cls": PersonConfig.AGE_GROUP_TO_CLASS_ID.get(person_age, 99),
+        "face_det": FaceConfig.AGE_GROUP_TO_CLASS_ID.get(person_age, 99),
     }
     return mappings.get(target, 99)
 
@@ -122,19 +118,14 @@ def save_annotations_json(annotations, target):
     """Saves annotations in a single JSON file (bounding boxes and labels)."""
     logging.info("Saving annotations in JSON format.")
 
-    if target == "gaze_cls_vit":
-        target = "gaze_cls"
-        output_json = ClassificationPaths.gaze_labels_input_dir / "gaze_cls_annotations.json"
-    output_json.parent.mkdir(parents=True, exist_ok=True)
-
-    image_paths = {DetectionPaths.images_input_dir / ann[3][:-11] / ann[3] for ann in annotations}
+    image_paths = {DataPaths.IMAGES_INPUT_DIR / ann[3][:-11] / ann[3] for ann in annotations}
     image_dims = get_image_dimensions(image_paths)
 
     json_data = []
     skipped_count = 0
 
     for category_id, bbox_json, object_interaction, image_file_name, gaze_directed_at_child, person_age in annotations:
-        image_file_path = DetectionPaths.images_input_dir / image_file_name[:-11] / image_file_name
+        image_file_path = DataPaths.IMAGES_INPUT_DIR / image_file_name[:-11] / image_file_name
 
         if image_file_path not in image_dims:
             skipped_count += 1
@@ -164,12 +155,8 @@ def save_annotations(annotations, target):
     logging.info("Saving annotations in YOLO format.")
 
     output_dirs = {
-        "person_face_det": DetectionPaths.person_face_labels_input_dir,
-        "all": DetectionPaths.all_labels_input_dir,
-        "person_cls": ClassificationPaths.person_labels_input_dir,
-        "face_cls": ClassificationPaths.face_labels_input_dir,
-        "gaze_cls": ClassificationPaths.gaze_labels_input_dir,
-        "face_det": DetectionPaths.face_labels_input_dir,
+        "person_cls": PersonClassification.PERSON_LABELS_INPUT_DIR,
+        "face_det": FaceDetection.FACE_LABELS_INPUT_DIR,
     }
 
     if target not in output_dirs:
@@ -179,7 +166,7 @@ def save_annotations(annotations, target):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Preload image dimensions
-    image_paths = {DetectionPaths.images_input_dir / ann[3][:-11] / ann[3] for ann in annotations}
+    image_paths = {DataPaths.IMAGES_INPUT_DIR / ann[3][:-11] / ann[3] for ann in annotations}
     image_dims = get_image_dimensions(image_paths)
 
     if len(image_dims) == 0:
@@ -190,7 +177,7 @@ def save_annotations(annotations, target):
     processed_count = 0
 
     for category_id, bbox_json, object_interaction, image_file_name, gaze_directed_at_child, person_age in annotations:
-        image_file_path = DetectionPaths.images_input_dir / image_file_name[:-11] / image_file_name
+        image_file_path = DataPaths.IMAGES_INPUT_DIR / image_file_name[:-11] / image_file_name
 
         if image_file_path not in image_dims:
             skipped_count += 1
@@ -229,13 +216,8 @@ def main(target: str):
 
     try:
         category_ids = {
-            "person_face_det": YoloConfig.person_face_target_class_ids,
-            "all": YoloConfig.all_target_class_ids,
-            "person_cls": YoloConfig.person_cls_target_class_ids,
-            "face_cls": YoloConfig.face_cls_target_class_ids,
-            "gaze_cls": YoloConfig.face_cls_target_class_ids,
-            "face_det": YoloConfig.face_cls_target_class_ids,
-            "gaze_cls_vit": YoloConfig.face_cls_target_class_ids
+            "person_cls": PersonConfig.DATABASE_CATEGORY_IDS,
+            "face_det": FaceConfig.DATABASE_CATEGORY_IDS,
         }.get(target)
 
         if category_ids is None:

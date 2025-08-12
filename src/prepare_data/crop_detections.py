@@ -3,7 +3,7 @@ import cv2
 import logging
 from pathlib import Path
 from tqdm import tqdm
-from constants import DetectionPaths, ClassificationPaths
+from constants import PersonClassification, DataPaths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -139,31 +139,13 @@ def main(target: str = None):
         args = parser.parse_args()
         target = args.target
     
-    if target == 'face_cls':
+    if target == 'person_cls':
         crop_detections_from_labels(
-            labels_input_dir=ClassificationPaths.face_labels_input_dir,
-            rawframe_dir=DetectionPaths.images_input_dir,
-            output_dir=DetectionPaths.face_images_input_dir,
-            progress_file=ClassificationPaths.face_extraction_progress_file_path,
-            missing_frames_file=ClassificationPaths.face_missing_frames_file_path,
-            detection_type="face"
-        )
-    elif target == 'gaze_cls':
-        crop_detections_from_labels(
-            labels_input_dir=ClassificationPaths.gaze_labels_input_dir,
-            rawframe_dir=DetectionPaths.images_input_dir,
-            output_dir=DetectionPaths.gaze_images_input_dir,
-            progress_file=ClassificationPaths.gaze_extraction_progress_file_path,
-            missing_frames_file=ClassificationPaths.gaze_missing_frames_file_path,
-            detection_type="gaze"
-        )
-    elif target == 'person_cls':
-        crop_detections_from_labels(
-            labels_input_dir=ClassificationPaths.person_labels_input_dir,
-            rawframe_dir=DetectionPaths.images_input_dir,
-            output_dir=DetectionPaths.person_images_input_dir,
-            progress_file=ClassificationPaths.person_extraction_progress_file_path,
-            missing_frames_file=ClassificationPaths.person_missing_frames_file_path,
+            labels_input_dir=PersonClassification.PERSON_LABELS_INPUT_DIR,
+            rawframe_dir=DataPaths.IMAGES_INPUT_DIR,
+            output_dir=PersonClassification.PERSON_IMAGES_INPUT_DIR,
+            progress_file=PersonClassification.PERSON_EXTRACTION_PROGRESS_FILE_PATH,
+            missing_frames_file=PersonClassification.PERSON_MISSING_FRAMES_FILE_PATH,
             detection_type="person"
         )
     else:

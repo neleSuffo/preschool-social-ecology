@@ -9,8 +9,8 @@ import json
 from collections import defaultdict
 from pathlib import Path
 from sklearn.model_selection import train_test_split
-from constants import DetectionPaths, BasePaths, ClassificationPaths, VALID_TARGETS
-from config import TrainingConfig
+from constants import FaceDetection, BasePaths, DataPaths, VALID_TARGETS
+from config import DataConfig
 from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit as MSSS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Only training and validation sets undergo balancing to prevent data leakage
 # and ensure test results reflect real-world performance
 
-def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = DetectionPaths.images_input_dir) -> list:
+def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = DataPaths.IMAGES_INPUT_DIR) -> list:
     """
     This function returns only the frames that have annotations (every 30th frame).
     
@@ -137,8 +137,8 @@ def get_class_distribution(total_images: list, annotation_folder: Path, target_t
     return pd.DataFrame(image_class_mapping)
        
 def multilabel_stratified_split(df: pd.DataFrame,
-                              train_ratio: float = TrainingConfig.train_test_split_ratio,
-                              random_seed: int = TrainingConfig.random_seed,
+                              train_ratio: float = DataConfig.TRAIN_SPLIT_RATIO,
+                              random_seed: int = DataConfig.RANDOM_SEED,
                               target: str = None,
                               min_ids_per_split: int = 2):
     """
@@ -171,10 +171,9 @@ def multilabel_stratified_split(df: pd.DataFrame,
     val_ratio = 0.10   # 10% for validation
 
     # --- 1. Setup and Pre-analysis ---
-    output_dir = BasePaths.output_dir / "dataset_statistics"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    LOGGING_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    output_file = output_dir / f"split_distribution_{target}_{timestamp}.txt"
+    output_file = LOGGING_DIR / f"split_distribution_{target}_{timestamp}.txt"
 
     logging.info(f"Starting split for {df.shape[0]} frames and {df['id'].nunique()} unique IDs.")
     if df.empty:
@@ -372,9 +371,9 @@ def move_images(target: str,
         return (0, 0)
 
     # Get destination paths
-    paths = (ClassificationPaths.get_target_paths(target, split_type) 
-            if target in ["child_face", "adult_face", "adult_person", "child_person", "gaze", "no_gaze"]
-            else DetectionPaths.get_target_paths(target, split_type))
+    paths = (FaceDetection.get_target_paths(target, split_type) 
+            if target in ["child_face", "adult_face", "adult_person", "child_person"]
+            else PersonClassification.get_target_paths(target, split_type))
     
     if not paths:
         raise ValueError(f"Invalid target: {target}")
@@ -385,12 +384,10 @@ def move_images(target: str,
 
     # Define source directory mapping
     input_dir_mapping = {
-        "gaze": DetectionPaths.gaze_images_input_dir,
-        "no_gaze": DetectionPaths.gaze_images_input_dir,
-        "child_face": DetectionPaths.face_images_input_dir,
-        "adult_face": DetectionPaths.face_images_input_dir,
-        "adult_person": DetectionPaths.person_images_input_dir,
-        "child_person": DetectionPaths.person_images_input_dir
+        "child_face": FaceDetection.FACE_IMAGES_INPUT_DIR,
+        "adult_face": FaceDetection.FACE_IMAGES_INPUT_DIR,
+        "adult_person": PersonClassification.PERSON_IMAGES_INPUT_DIR,
+        "child_person": PersonClassification.PERSON_IMAGES_INPUT_DIR
     }
 
     def process_single_image(image_name: str) -> bool:
@@ -404,7 +401,7 @@ def move_images(target: str,
                 # Extract frame number from filename
                 frame_num = int(image_name.split("_")[-1].split(".")[0])
                 
-                image_src = DetectionPaths.images_input_dir / image_folder / f"{image_name}.jpg"
+                image_src = DataPaths.IMAGES_INPUT_DIR / image_folder / f"{image_name}.jpg"
                 label_src = label_path / f"{image_name}.txt"
                 image_dst = image_dst_dir / f"{image_name}.jpg"
                 label_dst = label_dst_dir / f"{image_name}.txt"
@@ -762,11 +759,10 @@ def split_dataset(input_folder: str,
     all_input_images = [f for f in os.listdir(input_folder) if f.endswith('.jpg')]
     
     # Create output directory for split information
-    output_dir = Path(BasePaths.output_dir/"dataset_statistics")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    LOGGING_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    output_file = output_dir / f"split_distribution_{target}_{timestamp}.txt"
-    
+    output_file = LOGGING_DIR / f"split_distribution_{target}_{timestamp}.txt"
+
     split_info = []
     split_info.append(f"Dataset Split Information - {timestamp}\n")
     split_info.append(f"Found {len(all_input_images)} {target} images in {input_folder}\n")
@@ -890,54 +886,18 @@ def split_yolo_data(annotation_folder: Path, target: str):
         # Define mappings for different target types
         target_mappings = {
             "face_cls": {
-                1: ("adult_face", DetectionPaths.face_images_input_dir),
-                0: ("child_face", DetectionPaths.face_images_input_dir)
+                1: ("adult_face", FaceDetection.FACE_IMAGES_INPUT_DIR),
+                0: ("child_face", FaceDetection.FACE_IMAGES_INPUT_DIR)
             },
             "person_cls": {
-                1: ("adult_person", DetectionPaths.person_images_input_dir),
-                0: ("child_person", DetectionPaths.person_images_input_dir)
+                1: ("adult_person", PersonClassification.PERSON_IMAGES_INPUT_DIR),
+                0: ("child_person", PersonClassification.PERSON_IMAGES_INPUT_DIR)
             },
-            "gaze_cls": {
-                0: ("no_gaze", DetectionPaths.gaze_images_input_dir),
-                1: ("gaze", DetectionPaths.gaze_images_input_dir)
-            }
         }       
         # Get annotated frames
         total_images = get_total_number_of_annotated_frames(annotation_folder)
         
-        if target == "gaze_cls_vit":
-            # Special handling for ViT JSON format using same split_dataset logic
-            logging.info("Creating ViT JSON annotations for gaze classification using split_dataset logic")
-            
-            # Use gaze labels and images
-            class_mapping = {
-                0: ("no gaze", DetectionPaths.gaze_images_input_dir),
-                1: ("gaze", DetectionPaths.gaze_images_input_dir)
-            }
-            
-            # Get custom splits using the same logic as other classification targets
-            train_images, val_images, test_images = split_dataset_for_vit(
-                total_images, annotation_folder, target, class_mapping
-            )
-            
-            # Calculate original class counts before balancing
-            train_original_count = calculate_original_class_counts(train_images, annotation_folder)
-            val_original_count = calculate_original_class_counts(val_images, annotation_folder)
-            
-            # Create JSON annotations from the split image lists
-            train_annotations = create_json_from_image_list(train_images, annotation_folder, total_images)
-            val_annotations = create_json_from_image_list(val_images, annotation_folder, total_images)
-            test_annotations = create_json_from_image_list(test_images, annotation_folder, total_images)
-            
-            # Save JSON files to the appropriate directory
-            output_dir = Path("/home/nele_pauline_suffo/ProcessedData/gaze_cls_input")
-            save_vit_json_files(train_annotations, val_annotations, test_annotations, output_dir, 
-                               train_original_count, val_original_count)
-            
-            logging.info(f"ViT JSON annotations saved to {output_dir}")
-            return
-        
-        elif target in target_mappings:
+        if target in target_mappings:
             # Get source directories based on target type
             original_target = target  # Preserve original target name
             input_folder = target_mappings[original_target][0][1]  # Use first mapping's input dir
@@ -1027,11 +987,10 @@ def split_dataset_for_vit(total_images: list, annotation_folder: Path, target: s
         all_input_images.append(image_file.name)
     
     # Create output directory for split information
-    output_dir = Path(BasePaths.output_dir/"dataset_statistics")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    LOGGING_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    output_file = output_dir / f"split_distribution_{target}_{timestamp}.txt"
-    
+    output_file = LOGGING_DIR / f"split_distribution_{target}_{timestamp}.txt"
+
     split_info = []
     split_info.append(f"Dataset Split Information - {timestamp}\n")
     split_info.append(f"Found {len(all_input_images)} {target} images\n")
@@ -1579,13 +1538,8 @@ def main(target: str):
         The target type for YOLO (e.g., "person" or "face").
     """
     path_mapping = {
-        "person_face_det": DetectionPaths.person_face_labels_input_dir,
-        "all": DetectionPaths.all_labels_input_dir,
-        "person_cls": ClassificationPaths.person_labels_input_dir,
-        "face_cls": ClassificationPaths.face_labels_input_dir,
-        "gaze_cls": ClassificationPaths.gaze_labels_input_dir,
-        "face_det": DetectionPaths.face_labels_input_dir,
-        "gaze_cls_vit": ClassificationPaths.gaze_labels_input_dir,  # Use actual gaze labels for ViT
+        "face_cls": FaceDetection.FACE_LABELS_INPUT_DIR,
+        "face_det": FaceDetection.FACE_DETECTION_INPUT_DIR,
     }
     label_path = path_mapping[target]
     split_yolo_data(label_path, target)
