@@ -21,7 +21,7 @@ def parse_args():
                       help='Target detection task to train on')
     parser.add_argument('--device', type=str, default='0,1',
                       help='Device to use (e.g., "0" for GPU, "cpu" for CPU)')
-    parser.add_argument('--model_size', type=str, default='x',
+    parser.add_argument('--model_size', type=str, default='m', # Changed default to 'm' for better generalization
                       choices=['n', 's', 'm', 'l', 'x'],
                       help='YOLO model size (n=nano, s=small, m=medium, l=large, x=extra-large)')
     parser.add_argument('--pretrained', type=bool, default=True,
@@ -35,35 +35,32 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Set thread limits
-    os.environ['OMP_NUM_THREADS'] = '6'  # OpenMP threads
-    torch.set_num_threads(6)  # PyTorch threads
+    os.environ['OMP_NUM_THREADS'] = '6'
+    torch.set_num_threads(6)
 
     data_config_path = getattr(DetectionPaths, f"{args.target}_data_config_path")
     base_output_dir = getattr(DetectionPaths, f"{args.target}_output_dir")
-    
-    # Load the YOLO model - try smaller model first if overfitting
+
+    # Load the YOLO model - changed default to 'm'
     model_name = f"yolo12{args.model_size}.pt"
     print(f"Loading model: {model_name}")
-    
+
     if args.resume:
         print(f"Resuming training from: {args.resume}")
         model = YOLO(args.resume)
     else:
         model = YOLO(model_name)
-        
-    # Print model info
+
     print(f"Model parameters: {sum(p.numel() for p in model.model.parameters()):,}")
     print(f"Model size: {args.model_size}")
     print(f"Pretrained: {args.pretrained}")
-    
-    # For overfitting issues, consider using a smaller model
+
     if args.model_size == 'x':
         print("WARNING: Using YOLO12x - if overfitting, consider using 'l' or 'm' model size")
-    
-    # Define experiment name and output directory
+
     experiment_name = f"{timestamp}_yolo12{args.model_size}_{args.target}"
     output_dir = base_output_dir / experiment_name
-    
+
     print(f"Training will be saved to: {output_dir}")
     print(f"Data config: {data_config_path}")
     print(f"Batch size: {args.batch_size}")
@@ -75,72 +72,72 @@ def main():
     # Train the model with improved regularization to reduce overfitting
     model.train(
         data=str(data_config_path),
-        epochs=args.epochs, # Total number of epochs
-        imgsz=args.img_size, # Image size
-        batch=args.batch_size, # Batch size
-        project=str(base_output_dir), # Output directory
-        name=experiment_name, # Experiment name
-        augment=True, # Enable YOLO's built-in augmentations
-        
-        # Learning rate settings - reduce initial LR to prevent overfitting
-        lr0=0.005, # Reduced initial learning rate (was 0.01)
-        lrf=0.0005, # Reduced final learning rate (was 0.001)
-        cos_lr=True, # Use cosine annealing for learning rate scheduling
-        
+        epochs=args.epochs,
+        imgsz=args.img_size,
+        batch=args.batch_size,
+        project=str(base_output_dir),
+        name=experiment_name,
+        augment=True,
+
+        # Learning rate settings
+        lr0=0.005, # Reduced initial learning rate
+        lrf=0.0005, # Reduced final learning rate
+        cos_lr=True,
+
         # Regularization improvements
-        weight_decay=0.0005, # L2 regularization (default is 0.0005)
-        dropout=0.1, # Dropout rate for regularization
-        
-        # Early stopping with more patience to avoid stopping too early
-        patience=30, # Increased patience (was 20)
-        
-        # Data augmentation improvements
-        hsv_h=0.015, # Hue augmentation (default 0.015)
-        hsv_s=0.7, # Saturation augmentation (default 0.7)
-        hsv_v=0.4, # Value augmentation (default 0.4)
-        degrees=10.0, # Rotation augmentation (default 0.0)
-        translate=0.1, # Translation augmentation (default 0.1)
-        scale=0.5, # Scale augmentation (default 0.5)
-        shear=2.0, # Shear augmentation (default 0.0)
-        perspective=0.0001, # Perspective augmentation (default 0.0)
-        flipud=0.5, # Vertical flip probability (default 0.0)
-        fliplr=0.5, # Horizontal flip probability (default 0.5)
-        mosaic=0.8, # Mosaic augmentation probability (default 1.0)
-        mixup=0.1, # Mixup augmentation probability (default 0.0)
-        copy_paste=0.1, # Copy-paste augmentation probability (default 0.0)
-                
+        weight_decay=0.0005,
+        dropout=0.1,
+
+        # Early stopping with more patience
+        patience=30,
+
+        # Data augmentation improvements (tuned for face detection)
+        hsv_h=0.015,
+        hsv_s=0.7,
+        hsv_v=0.4,
+        degrees=0.0, # Reduced to 0 for face detection
+        translate=0.1,
+        scale=0.5,
+        shear=0.0, # Reduced to 0 for face detection
+        perspective=0.0, # Reduced to 0
+        flipud=0.0, # Set to 0 as vertical flips are unnatural for faces
+        fliplr=0.5, # Keep horizontal flips
+        mosaic=0.5, # Reduced mosaic probability
+        mixup=0.0, # Disabled mixup
+        copy_paste=0.0, # Disabled copy-paste
+
         # Training settings
-        device=args.device, # GPU device
-        plots=True, # Plot training results
-        
+        device=args.device,
+        plots=True,
+
         # Validation settings
-        val=True, # Enable validation
-        
-        # Additional settings to reduce overfitting
-        close_mosaic=10, # Disable mosaic augmentation in last 10 epochs
-        amp=True, # Enable Automatic Mixed Precision
-        fraction=1.0, # Use full dataset
-        profile=False, # Disable profiling for faster training
-        freeze=None, # Don't freeze any layers
-        
+        val=True,
+
+        # Additional settings
+        close_mosaic=10,
+        amp=True,
+        fraction=1.0,
+        profile=False,
+        freeze=None,
+
         # Optimizer settings
-        optimizer='AdamW', # Use AdamW optimizer (better for generalization)
-        momentum=0.937, # Momentum for SGD
-        
+        optimizer='AdamW',
+        momentum=0.937,
+
         # Loss function improvements
-        box=7.5, # Box loss weight
-        cls=0.5, # Classification loss weight
-        dfl=1.5, # Distribution Focal Loss weight
-        
+        box=7.5,
+        cls=1.0, # Increased classification loss weight to distinguish classes better
+        dfl=1.5,
+
         # Multi-scale training
-        rect=False, # Disable rectangular training for more augmentation
-        overlap_mask=True, # Enable overlap mask for segmentation
-        mask_ratio=4, # Mask downsample ratio
-        
+        rect=False,
+        overlap_mask=True,
+        mask_ratio=4,
+
         # Workspace settings
-        exist_ok=True, # Allow overwriting existing experiment
-        pretrained=True, # Use pretrained weights
-        verbose=True, # Verbose output
+        exist_ok=True,
+        pretrained=True,
+        verbose=True,
     )
 
     # Copy the script to the output directory after training starts
