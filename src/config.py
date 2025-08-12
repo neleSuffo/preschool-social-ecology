@@ -82,34 +82,28 @@ class LabelMapping:
 # Specific Task Configurations
 class PersonConfig:
     """Configuration for person detection and classification."""
-    YOLO_DETECTION_TARGET = "person"
-    PERSON_CLS_MAPPING = {
-        0: "adult_person",
-        1: "child_person"
-    }
-    PERSON_CLS = {
+    AGE_GROUP_TO_CLASS_ID = {
         'Inf': 0,
-        'child': 0,
-        'teen': 1,
-        'adult': 1,
+        'Child': 0,
+        'Teen': 1,
+        'Adult': 1,
     }
-    PERSON_FACE_DET = {
-        0: 0,
-        1: 0,
-        10: 1,
-        11: 2
+    MODEL_CLASS_ID_TO_LABEL = {
+        0: "child",
+        1: "adult"
     }
-    PERSON_CLS_TARGET_CLASS_IDS = [1, 2]
+    DATABASE_CATEGORY_IDS = [1, 2]
+    TARGET_LABELS = ['child', 'adult']
 
 class FaceConfig:
     """Configuration for face detection and classification."""
-    FACE_CLS = {
+    AGE_GROUP_TO_CLASS_ID = {
         'infant': 0,
         'child': 0,
         'teen': 1,
         'adult': 1,
     }
-    FACE_CLS_TARGET_CLASS_IDS = [10]
+    DATABASE_CATEGORY_IDS = [10]
 
 class AudioConfig:
     """Configuration for audio classification."""
