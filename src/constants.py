@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import Optional, Tuple
 
-VALID_TARGETS = {"person_face_det", "all", "person_cls", "face_cls", "gaze_cls", "face_det", "gaze_cls_vit"}
-    
+VALID_TARGETS = {"person_face", "all", "person_cls", "face_cls", "gaze_cls", "face_det", "gaze_cls_vit"}
+
 class BasePaths:
     BASE_DIR = Path("/home/nele_pauline_suffo")
     MODELS_DIR = Path(BASE_DIR/"models")
@@ -19,6 +19,8 @@ class DataPaths:
     ANNO_INDIVIDUAL_DIR = Path(BasePaths.DATA_DIR/"quantex_annotations_individual/")
     ANNO_JSON_PATH = Path(ANNO_DIR/"annotations.json")
     ANNO_DB_PATH = Path(ANNO_DIR/"quantex_annotations.db")
+    RAWFRAMES_EXTRACTION_ERROR_LOG = Path(BasePaths.DATA_DIR/"rawframes_extraction_error.log")
+    PROCESSED_VIDEOS_LOG = Path(BasePaths.DATA_DIR/"processed_videos.log")
 
 class AudioClassification:
     AUDIO_FILES_DIR = Path(BasePaths.DATA_DIR/"childlens_audio")
@@ -36,7 +38,8 @@ class PersonClassification:
     PERSON_DATA_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
     PERSON_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
     PERSON_DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_classifications/person_dataset.yaml")
-    
+    PERSON_IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_person")
+
     @classmethod
     def get_target_paths(cls, target: str, split_type: str) -> Optional[Tuple[Path, Path]]:
         """
@@ -69,6 +72,7 @@ class FaceDetection:
     FACE_LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     FACE_DATA_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     FACE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
+    FACE_IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_face")
 
     @classmethod
     def get_target_paths(cls, target: str, split_type: str) -> Optional[Tuple[Path, Path]]:
