@@ -1,122 +1,45 @@
-#from dynaconf import Dynaconf
 from collections import defaultdict
-from pathlib import Path
 from dynaconf import Dynaconf
+from pathlib import Path
 
-
-settings = Dynaconf(
+# Dynaconf settings
+SETTINGS = Dynaconf(
     envvar_prefix="DYNACONF",
     settings_files=["settings.toml", ".secrets.toml"],
 )
 
-# `envvar_prefix` = export envvars with `export DYNACONF_FOO=bar`.
-# `settings_files` = Load these files in the order.
-
 # Whether to generate the output video with the detection results
-generate_detection_output_video = settings.get("generate_detection_output_video", True)
+GENERATE_DETECTION_OUTPUT_VIDEO = SETTINGS.get("generate_detection_output_video", True)
 
-class DetectionParameters:
-    # the video file extension
-    video_file_extension = ".mp4"
-    # Every frame_step-th frame is processed
-    frame_step_interval = 10
-    # The class of the object to detect
-    yolo_detection_target = "person"
-    mtcnn_detection_target = "face"
-    vtc_detection_target = "voice"
-    output_key_videos = "videos"
-    output_key_annotations = "annotations"
-    output_key_images = "images"
-    output_key_categories = "categories"
-    
-class YoloConfig:
-    extraction_fps = 1  # the frames per second to extract from the video
-    batch_size = 64
-    num_epochs = 100
-    iou_threshold = 0.35 # the intersection over union threshold
-    img_size = (320, 640) # multi scale training
-    all_target_class_ids = [1,2,3,4,5,6,7,8,10,11,12]
-    face_cls_target_class_ids = [10]
-    person_face_target_class_ids = [1,2,10,11]
-    person_cls_target_class_ids = [1,2]
-    object_target_class_ids = [3,4,5,6,7,8,12]
-    detection_mapping = {
-        0: 'infant/child',
-        1: 'adult',
-        2: 'infant/child face',
-        3: 'adult face',
-        4: 'child body parts',
-        5: 'book',
-        6: 'toy',
-        7: 'kitchenware',
-        8: 'screen',
-        9: 'food',
-        10: 'other_object'
-    }
-    
-    person_face_mapping = {
-        0: "person",
-        1: "face",
-        2: "child body parts"
-    }
-    
-    person_cls_mapping = {
-        0: "adult_person",
-        1: "child_person"
-    }
-  
-    face_cls_mapping = {
-        0: "adult_face",
-        1: "child_face",
+# General Preprocessing and Data Configuration
+class DataConfig:
+    """General configuration for data processing and labels."""
+    VIDEO_FILE_EXTENSION = ".mp4"
+    FRAME_STEP_INTERVAL = 10
+    EXTRACTION_FPS = 1
+    TRAIN_SPLIT_RATIO = 0.7
+    RANDOM_SEED = 42
+    FPS = 30
+    FRAME_WIDTH = 2304
+    FRAME_HEIGHT = 1296
+    VIDEO_BATCH_SIZE = 16
 
-    }
-    
-    gaze_cls_mapping = {
-        0: "no_gaze",
-        1: "gaze"
-    }
-    best_iou = 0.5
+class PipelineConfig:
+    """Configuration for the overall detection pipeline."""
+    VIDEOS_TO_NOT_PROCESS = [
+        "quantex_at_home_id260694_2022_06_29_01.MP4",
+        "quantex_at_home_id260694_2022_06_29_02.MP4",
+        "quantex_at_home_id260694_2022_06_29_03.MP4",
+        "quantex_at_home_id260694_2022_05_21_01.MP4",
+        "quantex_at_home_id260694_2022_05_21_02.MP4",
+        "quantex_at_home_id254922_2022_06_29_01.MP4",
+        "quantex_at_home_id254922_2022_06_29_02.MP4",
+        "quantex_at_home_id254922_2022_06_29_03.MP4",
+    ]
 
-class AudioClsConfig:
-    sr = 16000
-    n_mels = 256
-    hop_length = 512
-    window_duration = 3.0
-    window_step = 1.0
-    
-class VTCConfig:
-    audio_file_suffix = Path("_16kHz.wav")
-
-class StrongSortConfig:
-    image_subdir = "img1"
-    feature_subdir = "features"
-    detection_file_path = "det/det.txt"
-    
-class FastReIDConfig:
-    trt_batch_size = 8
-    trt_height = 256
-    trt_width = 128
-    
-class ResNetConfig:
-    num_epochs = 10
-    batch_size = 32
-    
-class MtcnnConfig:
-    class_ids = [1,2]
-
-class TrainingConfig:
-    train_test_split_ratio = 0.8
-    random_seed = 42
-    
-class VideoConfig:
-    fps = 30
-    frame_width = 2304
-    frame_height = 1296
-    video_batch_size = 16
-
-class LabelToCategoryMapping:
-    # Map labels to integers (defaultdict is used to return 99 for unknown labels)
-    label_to_id_mapping = defaultdict(
+class LabelMapping:
+    """Mappings for labels, IDs, and supercategories."""
+    LABEL_TO_ID_MAPPING = defaultdict(
         lambda: 99,
         {
             "person": 1,
@@ -136,8 +59,7 @@ class LabelToCategoryMapping:
         },
     )
 
-    # Map label id to supercategory
-    id_to_supercategory_mapping = defaultdict(
+    ID_TO_SUPERCATEGORY_MAPPING = defaultdict(
         lambda: "unknown",
         {
             1: "person",
@@ -156,104 +78,79 @@ class LabelToCategoryMapping:
             99: "unknown",
         },
     )
-    # List of labels to include in the ActivityNet format
-    childlens_activities_to_include = ['Child Talking',
-                                      'Other Person Talking',
-                                      'Overheard Speech',
-                                      'Singing/Humming',
-                                      ]
-    unknown_label_id = -1
-    unknown_supercategory = "unknown"
 
-class DetectionPipelineConfig:
-    videos_to_not_process = [
-        "quantex_at_home_id260694_2022_06_29_01.MP4",
-        "quantex_at_home_id260694_2022_06_29_02.MP4",
-        "quantex_at_home_id260694_2022_06_29_03.MP4",
-        "quantex_at_home_id260694_2022_05_21_01.MP4",
-        "quantex_at_home_id260694_2022_05_21_02.MP4",
-        "quantex_at_home_id254922_2022_06_29_01.MP4",
-        "quantex_at_home_id254922_2022_06_29_02.MP4",
-        "quantex_at_home_id254922_2022_06_29_03.MP4",
-    ]
-    
-class CategoryMappings:
-    gaze_cls = {
-        'No': 0, 
-        'Yes': 1
+# Specific Task Configurations
+class PersonConfig:
+    """Configuration for person detection and classification."""
+    YOLO_DETECTION_TARGET = "person"
+    PERSON_CLS_MAPPING = {
+        0: "adult_person",
+        1: "child_person"
     }
-    
-    person_cls = {
+    PERSON_CLS = {
         'Inf': 0,
         'child': 0,
         'teen': 1,
         'adult': 1,
     }
-        
-    face_cls = {
-        'infant': 0,
-        'child': 0,
-        'teen': 1,
-        'adult': 1,
-    }
-    
-    person_face_det = {
+    PERSON_FACE_DET = {
         0: 0,
         1: 0,
         10: 1,
         11: 2
     }
-    
-    all_det = { # for now map all objects to the same class
-        1: 0,
-        2: 0,
-        10: 1,
-        11: 2,
-        3: 3,
-        4: 3,
-        5: 3,
-        6: 3,
-        7: 3,
-        8: 3,
-        12: 3,
+    PERSON_CLS_TARGET_CLASS_IDS = [1, 2]
+
+class FaceConfig:
+    """Configuration for face detection and classification."""
+    FACE_CLS = {
+        'infant': 0,
+        'child': 0,
+        'teen': 1,
+        'adult': 1,
     }
-    # all_det = {
-    #     1: 0,
-    #     2: 0,
-    #     10: 1,
-    #     11: 2,
-    #     3: 3,
-    #     4: 9,
-    #     5: 4,
-    #     6: 5,
-    #     7: 6,
-    #     8: 8,
-    #     12: 7,
-    # }
-  
-    all_instances = {
-        (1, 'inf'): 0,   (1, 'child'): 0,   (1, 'teen'): 1,   (10, 'adult'): 1,
-        (2, 'inf'): 0,   (2, 'child'): 0,   (2, 'teen'): 1,   (2, 'adult'): 1,
+    FACE_CLS_TARGET_CLASS_IDS = [10]
+
+class AudioConfig:
+    """Configuration for audio classification."""
+    VALID_RTTM_CLASSES = ['OHS', 'CDS', 'KCHI', 'SPEECH']
+
+# Yolo Model and Training Configurations
+class YoloConfig:
+    """YOLO model and training parameters."""
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 100
+    IOU_THRESHOLD = 0.35
+    IMG_SIZE = (320, 640)
+    BEST_IOU = 0.5
+    DETECTION_MAPPING = {
+        0: 'infant/child',
+        1: 'adult',
+        2: 'infant/child face',
+        3: 'adult face',
+        4: 'child body parts',
+        5: 'book',
+        6: 'toy',
+        7: 'kitchenware',
+        8: 'screen',
+        9: 'food',
+        10: 'other_object'
+    }
+    ALL_TARGET_CLASS_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12]
+    PERSON_FACE_TARGET_CLASS_IDS = [1, 2, 10, 11]
+    OBJECT_TARGET_CLASS_IDS = [3, 4, 5, 6, 7, 8, 12]
+    ALL_DET = {
+        1: 0, 2: 0, 10: 1, 11: 2, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 12: 3,
+    }
+    ALL_INSTANCES = {
+        (1, 'inf'): 0, (1, 'child'): 0, (1, 'teen'): 1, (10, 'adult'): 1,
+        (2, 'inf'): 0, (2, 'child'): 0, (2, 'teen'): 1, (2, 'adult'): 1,
         (10, 'infant'): 2, (10, 'child'): 2, (10, 'teen'): 3, (10, 'adult'): 3,
         11: 4, 3: 5, 4: 11, 5: 6, 6: 7, 7: 8, 8: 9, 12: 10
     }
-
-    object_det = {
-        # With interaction (yes)
-        (3, 'Yes'): 0,  # interacted_book
-        (4, 'Yes'): 13,  # interacted_animal
-        (5, 'Yes'): 1,  # interacted_toy
-        (6, 'Yes'): 2,  # interacted_kitchenware
-        (7, 'Yes'): 3,  # interacted_screen
-        (8, 'Yes'): 11,  # interacted_food
-        (12, 'Yes'): 4, # interacted_other_object
-        
-        # Without interaction (no)
-        (3, 'No'): 5,   # book
-        (4, 'No'): 12,  # animal
-        (5, 'No'): 6,   # toy
-        (6, 'No'): 7,   # kitchenware
-        (7, 'No'): 8,  # screen
-        (8, 'No'): 10,  # food
-        (12, 'No'): 9  # other_object
+    OBJECT_DET = {
+        (3, 'Yes'): 0, (4, 'Yes'): 13, (5, 'Yes'): 1, (6, 'Yes'): 2,
+        (7, 'Yes'): 3, (8, 'Yes'): 11, (12, 'Yes'): 4,
+        (3, 'No'): 5, (4, 'No'): 12, (5, 'No'): 6, (6, 'No'): 7,
+        (7, 'No'): 8, (8, 'No'): 10, (12, 'No'): 9,
     }
