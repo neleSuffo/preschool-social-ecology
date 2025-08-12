@@ -78,12 +78,16 @@ class LabelMapping:
             99: "unknown",
         },
     )
+    unknown_label_id = -1
+    unknown_supercategory = "unknown"
 
 # Specific Task Configurations
 class PersonConfig:
     """Configuration for person detection and classification."""
-    TRAIN_SPLIT_RATIO = 0.7
-    MAX_CLASS_RATIO_THRESHOLD = 0.8
+    # Ratio of training data to use for training
+    TRAIN_SPLIT_RATIO = 0.6
+    # Ratio of class-to-class samples in each dataset split
+    MAX_CLASS_RATIO_THRESHOLD = 0.9
     AGE_GROUP_TO_CLASS_ID = {
         'Inf': 0,
         'Child': 0,
