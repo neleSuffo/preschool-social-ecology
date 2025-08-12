@@ -20,6 +20,10 @@ from sklearn.model_selection import StratifiedShuffleSplit
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# IMPORTANT: Test sets are kept unbalanced for representative evaluation
+# Only training and validation sets undergo balancing to prevent data leakage
+# and ensure test results reflect real-world performance
+
 def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = DetectionPaths.images_input_dir) -> list:
     """
     This function returns only the frames that have annotations (every 30th frame).
@@ -162,7 +166,9 @@ def multilabel_stratified_split(df: pd.DataFrame,
     Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]
         Lists of filenames and DataFrames for train, val, and test splits.
     """
-    val_ratio = (1.0 - train_ratio) / 2.0  # Ensure val and test are equal
+    # Ensure test gets at least 10% and val gets remaining 25%
+    test_ratio = 0.20  # 20% for test (at least 10% required)
+    val_ratio = 0.10   # 10% for validation
 
     # --- 1. Setup and Pre-analysis ---
     output_dir = BasePaths.output_dir / "dataset_statistics"
@@ -737,7 +743,7 @@ def split_dataset(input_folder: str,
                   target: str,
                   class_mapping: dict = None) -> Tuple[list, list, list]:
     """
-    Split the dataset into train, val, and test sets while 
+    Split the dataset into train, val, and test sets while keeping test set unbalanced for representative evaluation.
     
     Parameters
     ----------
@@ -793,7 +799,7 @@ def split_dataset(input_folder: str,
     test_input_images = [f for f in all_input_images if extract_id(f) in test_ids]
     train_input_images = [f for f in all_input_images if extract_id(f) in train_ids]
     
-    # Balance the training set
+    # Balance only training and validation sets - keep test set unbalanced for representative evaluation
     train_balanced = balance_train_set(train_input_images, annotation_folder)
     val_balanced = balance_train_set(val_input_images, annotation_folder)
     
@@ -802,11 +808,11 @@ def split_dataset(input_folder: str,
     split_info.append("-" * 50)
     
     for split_name, split_images in [
-        ("Test", test_input_images), 
         ("Train (Original)", train_input_images),
         ("Train (Balanced)", train_balanced),
-        ("Validation", val_input_images), 
-        ("Validation (Balanced)", val_balanced)
+        ("Validation (Original)", val_input_images), 
+        ("Validation (Balanced)", val_balanced),
+        ("Test (Unbalanced - Representative)", test_input_images)
     ]:
         n0 = sum(1 for f in split_images if get_class(f, annotation_folder) == 0)
         n1 = len(split_images) - n0
@@ -994,7 +1000,7 @@ def split_yolo_data(annotation_folder: Path, target: str):
 def split_dataset_for_vit(total_images: list, annotation_folder: Path, target: str, class_mapping: dict) -> Tuple[list, list, list]:
     """
     Split the dataset using the same logic as split_dataset but for ViT JSON creation.
-    This function returns image file lists instead of moving files.
+    This function returns image file lists instead of moving files. Test set remains unbalanced for representative evaluation.
     
     Parameters
     ----------
@@ -1058,7 +1064,7 @@ def split_dataset_for_vit(total_images: list, annotation_folder: Path, target: s
     test_input_images = [f for f in all_input_images if extract_id(f) in test_ids]
     train_input_images = [f for f in all_input_images if extract_id(f) in train_ids]
     
-    # Balance the training and validation sets
+    # Balance only training and validation sets - keep test set unbalanced for representative evaluation
     train_balanced = balance_train_set_for_vit(train_input_images, annotation_folder)
     val_balanced = balance_train_set_for_vit(val_input_images, annotation_folder)
     
@@ -1071,7 +1077,7 @@ def split_dataset_for_vit(total_images: list, annotation_folder: Path, target: s
         ("Train (Balanced)", train_balanced),
         ("Validation (Original)", val_input_images),
         ("Validation (Balanced)", val_balanced),
-        ("Test", test_input_images)
+        ("Test (Unbalanced - Representative)", test_input_images)
     ]:
         # Count images that have at least one detection of each class
         images_with_class_0 = 0
