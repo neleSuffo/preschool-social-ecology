@@ -103,10 +103,13 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
 
     data = []
     for (video_id, frame_id, file_name), labels in frame_dict.items():
+        # Extract folder name (everything before the last underscore + frame number)
+        frame_folder = "_".join(file_name.split("_")[:-1])
+
         row = {
             "video_id": video_id,
             "frame_id": frame_id,
-            "file_path": str(FRAME_BASE_PATH / file_name),
+            "file_path": str(FRAME_BASE_PATH / frame_folder / file_name),
             **labels
         }
         data.append(row)
