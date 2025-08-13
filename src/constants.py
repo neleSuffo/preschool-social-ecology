@@ -43,32 +43,6 @@ class PersonClassification:
     VAL_CSV_PATH = Path(INPUT_DIR/"val.csv")
     TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
-    @classmethod
-    def get_target_paths(cls, target: str, split_type: str) -> Optional[Tuple[Path, Path]]:
-        """
-        Get image and label destination paths for a given target and split type.
-        
-        Parameters
-        ----------
-        target : str 
-            The specific class to get paths for (e.g., 'child_face', 'adult_person', 'gaze')
-        split_type : str
-            The dataset split ('train', 'val', or 'test')
-            
-        Returns
-        -------
-        Optional[Tuple[Path, Path]]
-            Tuple of (input_path, output_path) for the requested target class
-        """  
-        # Add person class paths if target is person-related
-        if target in cls.PERSON_CLASSES:
-            return (
-                cls.INPUT_DIR / split_type / target,
-                cls.INPUT_DIR / split_type / target
-            )
-            
-        return None  # Return None if target is not found
-
 class FaceDetection:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/20250812_110926_yolo_face/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_detections/face_dataset.yaml")
@@ -77,47 +51,14 @@ class FaceDetection:
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_face")
 
-    @classmethod
-    def get_target_paths(cls, target: str, split_type: str) -> Optional[Tuple[Path, Path]]:
-        """
-        Get image and label destination paths for a given target and split type.
-        
-        Parameters
-        ----------
-        target : str 
-            The specific class to get paths for (e.g., 'gaze', 'child_person_face', 'object')
-        split_type : str
-            The dataset split ('train', 'val', or 'test')
-                
-        Returns
-        -------
-        Optional[Tuple[Path, Path]]
-            Tuple of (images_path, labels_path) for the requested target class
-        
-        Raises
-        ------
-        ValueError
-            If split_type is not one of 'train', 'val', 'test'
-        """
-        # Validate split type
-        valid_splits = {'train', 'val', 'test'}
-        if split_type not in valid_splits:
-            raise ValueError(f"Invalid split_type: {split_type}. Must be one of {valid_splits}")
-
-        # Define path mappings for different targets
-        path_mappings = {            
-            'face_det': (cls.FACE_DATA_INPUT_DIR / "images" / split_type,
-                     cls.FACE_DATA_INPUT_DIR / "labels" / split_type),
-        }
-
-        # Return paths if target exists
-        if target in path_mappings:
-            return path_mappings[target]
-
-        return None
-
 class Proximity:
-    REFERENCE_FILE = Path(BasePaths.OUTPUT_DIR/"reference_proximity.json")
+    REFERENCE_VALUES = {"child_ref_close": 458185,
+                        "child_ref_far": 308,
+                        "adult_ref_close": 442980,
+                        "adult_ref_far": 208,
+                        "child_ref_aspect_ratio": 0.965166908563135,
+                        "adult_ref_aspect_ratio": 0.6461352657004831
+                        }
     CHILD_CLOSE_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/child_reference_proximity_value_1.jpg")
     CHILD_FAR_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/child_reference_proximity_value_0.jpg")
     ADULT_CLOSE_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_1.jpg")
