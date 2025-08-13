@@ -248,7 +248,7 @@ def sequence_features_from_cnn(cnn, images_padded, lengths, device):
     feats = feats.view(bs, max_seq, -1)
     return feats
 
-def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cnn=False, scaler=None):
+def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cnn=False, scaler=None, accumulation_steps=4):
     cnn, rnn = models
     opt_cnn, opt_rnn = optimizers
     cnn.train(not freeze_cnn)
@@ -266,10 +266,6 @@ def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cn
         images_padded = images_padded.to(device, non_blocking=True)
         labels_padded = labels_padded.to(device, non_blocking=True)
 
-        opt_rnn.zero_grad()
-        if opt_cnn:
-            opt_cnn.zero_grad()
-
         # Mixed precision training
         if scaler and device.type == 'cuda':
             with torch.amp.autocast('cuda'):
@@ -286,23 +282,30 @@ def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cn
                 logits_flat = logits.view(-1, 2)[mask_flat[:,0] != -100]
                 labels_flat = labels_padded.view(-1, 2)[mask_flat[:,0] != -100]
 
-                loss = criterion(logits_flat, labels_flat)
+                loss = criterion(logits_flat, labels_flat) / accumulation_steps  # Scale loss
 
             scaler.scale(loss).backward()
-            scaler.unscale_(opt_rnn)
-            if opt_cnn:
-                scaler.unscale_(opt_cnn)
             
-            torch.nn.utils.clip_grad_norm_(rnn.parameters(), 5.0)
-            if opt_cnn:
-                torch.nn.utils.clip_grad_norm_(cnn.parameters(), 5.0)
-            
-            scaler.step(opt_rnn)
-            if opt_cnn:
-                scaler.step(opt_cnn)
-            scaler.update()
+            # Only step optimizers every accumulation_steps
+            if (batch_idx + 1) % accumulation_steps == 0:
+                scaler.unscale_(opt_rnn)
+                if opt_cnn:
+                    scaler.unscale_(opt_cnn)
+                
+                torch.nn.utils.clip_grad_norm_(rnn.parameters(), 5.0)
+                if opt_cnn:
+                    torch.nn.utils.clip_grad_norm_(cnn.parameters(), 5.0)
+                
+                scaler.step(opt_rnn)
+                if opt_cnn:
+                    scaler.step(opt_cnn)
+                scaler.update()
+                
+                opt_rnn.zero_grad()
+                if opt_cnn:
+                    opt_cnn.zero_grad()
         else:
-            # Regular training
+            # Regular training with gradient accumulation
             if freeze_cnn:
                 with torch.no_grad():
                     feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
@@ -316,17 +319,23 @@ def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cn
             logits_flat = logits.view(-1, 2)[mask_flat[:,0] != -100]
             labels_flat = labels_padded.view(-1, 2)[mask_flat[:,0] != -100]
 
-            loss = criterion(logits_flat, labels_flat)
-
+            loss = criterion(logits_flat, labels_flat) / accumulation_steps  # Scale loss
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(rnn.parameters(), 5.0)
-            if opt_cnn:
-                torch.nn.utils.clip_grad_norm_(cnn.parameters(), 5.0)
-            if opt_cnn:
-                opt_cnn.step()
-            opt_rnn.step()
+            
+            # Only step optimizers every accumulation_steps
+            if (batch_idx + 1) % accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(rnn.parameters(), 5.0)
+                if opt_cnn:
+                    torch.nn.utils.clip_grad_norm_(cnn.parameters(), 5.0)
+                if opt_cnn:
+                    opt_cnn.step()
+                opt_rnn.step()
+                
+                opt_rnn.zero_grad()
+                if opt_cnn:
+                    opt_cnn.zero_grad()
 
-        total_loss += loss.item() * images_padded.size(0)
+        total_loss += loss.item() * images_padded.size(0) * accumulation_steps  # Unscale for logging
 
         # Collect predictions and labels for metrics
         with torch.no_grad():
@@ -433,7 +442,7 @@ def main():
     save_script_and_hparams(out_dir, args)
 
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((192, 192)),  # Reduced from 224x224 for ~30% speedup
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
     ])
@@ -443,10 +452,10 @@ def main():
     val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, 
                               sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
 
-    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=4,
-                              collate_fn=collate_fn, pin_memory=True, persistent_workers=True)
-    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=4,
-                            collate_fn=collate_fn, pin_memory=True, persistent_workers=True)
+    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=8,
+                              collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=8,
+                            collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
     device = torch.device(args.device)
     print(f"Using device: {device}")
@@ -454,9 +463,9 @@ def main():
     # Enable mixed precision training for speed
     scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
 
-    cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=512).to(device)
-    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=256,
-                                  rnn_layers=2, bidirectional=True,
+    cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=256).to(device)  # Reduced from 512
+    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=128,  # Reduced from 256
+                                  rnn_layers=1, bidirectional=True,  # Reduced from 2 layers
                                   num_outputs=2, dropout=0.3).to(device)
 
     # Compile models for faster execution (PyTorch 2.0+)
