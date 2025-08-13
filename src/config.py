@@ -114,6 +114,7 @@ class PersonConfig:
 
 class FaceConfig:
     """Configuration for face detection and classification."""
+    MODEL_NAME = f"yolo12{MODEL_SIZE}"
     AGE_GROUP_TO_CLASS_ID = {
         'infant': 0,
         'child': 0,
@@ -121,6 +122,12 @@ class FaceConfig:
         'adult': 1,
     }
     DATABASE_CATEGORY_IDS = [10]
+    
+    NUM_EPOCHS = 300
+    BATCH_SIZE = 16
+    IMG_SIZE = 640
+    LR = 1e-4
+    MODEL_SIZE = 'm'  # Default model size
 
 class AudioConfig:
     """Configuration for audio classification."""

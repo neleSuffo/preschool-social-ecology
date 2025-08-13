@@ -70,12 +70,12 @@ class PersonClassification:
         return None  # Return None if target is not found
 
 class FaceDetection:
-    FACE_TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/20250812_110926_yolo_face/weights/best.pt")
-    FACE_DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_detections/face_dataset.yaml")
-    FACE_LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
-    FACE_DATA_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
-    FACE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
-    FACE_IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_face")
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/20250812_110926_yolo_face/weights/best.pt")
+    DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_detections/face_dataset.yaml")
+    LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
+    DATA_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
+    OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
+    IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_face")
 
     @classmethod
     def get_target_paths(cls, target: str, split_type: str) -> Optional[Tuple[Path, Path]]:
