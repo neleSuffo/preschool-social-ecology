@@ -203,6 +203,19 @@ def calculate_metrics(y_true, y_pred, class_names=['Adult', 'Child']):
     if torch.is_tensor(y_pred):
         y_pred = y_pred.cpu().numpy()
     
+    # Ensure 2D shape
+    if y_true.ndim == 1:
+        y_true = y_true.reshape(-1, 1)
+    if y_pred.ndim == 1:
+        y_pred = y_pred.reshape(-1, 1)
+    
+    # If we only have one column but expect two classes, duplicate it
+    if y_true.shape[1] == 1 and len(class_names) == 2:
+        y_true = np.column_stack([y_true, y_true])
+        y_pred = np.column_stack([y_pred, y_pred])
+    
+    print(f"Debug: y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
+    
     metrics = {}
     
     # Calculate metrics for each class separately
@@ -341,9 +354,10 @@ def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cn
         with torch.no_grad():
             preds = (torch.sigmoid(logits) > 0.5).float()
             
-            # Only keep valid predictions (not masked)
-            valid_preds = preds[mask].cpu()
-            valid_labels = labels_padded[mask].cpu()
+            # Only keep valid predictions (not masked) - keep original shape
+            valid_mask = mask.view(-1, 2)[:, 0]  # Use first column as mask (both columns should be same)
+            valid_preds = preds.view(-1, 2)[valid_mask]  # Keep 2D shape
+            valid_labels = labels_padded.view(-1, 2)[valid_mask]  # Keep 2D shape
             
             all_preds.append(valid_preds)
             all_labels.append(valid_labels)
@@ -394,9 +408,10 @@ def eval_on_loader(models, criterion, dataloader, device):
             # Collect predictions and labels for metrics
             preds = (torch.sigmoid(logits) > 0.5).float()
             
-            # Only keep valid predictions (not masked)
-            valid_preds = preds[mask].cpu()
-            valid_labels = labels_padded[mask].cpu()
+            # Only keep valid predictions (not masked) - keep original shape
+            valid_mask = mask.view(-1, 2)[:, 0]  # Use first column as mask (both columns should be same)
+            valid_preds = preds.view(-1, 2)[valid_mask].cpu()  # Keep 2D shape
+            valid_labels = labels_padded.view(-1, 2)[valid_mask].cpu()  # Keep 2D shape
             
             all_preds.append(valid_preds)
             all_labels.append(valid_labels)
@@ -498,7 +513,9 @@ def main():
         f.write(','.join(csv_headers) + '\n')
     
     best_val_f1 = 0.0
+    patience_counter = 0
     print(f"\nStarting training for {PersonConfig.NUM_EPOCHS} epochs...")
+    print(f"Early stopping patience: {PersonConfig.PATIENCE} epochs")
     print("-" * 50)
     
     for epoch in range(1, PersonConfig.NUM_EPOCHS + 1):
@@ -548,13 +565,26 @@ def main():
         if epoch % 10 == 0 or epoch == PersonConfig.NUM_EPOCHS:
             torch.save(ckpt, ckpt_path)
 
+        # Early stopping and best model tracking
         if val_metrics['macro_f1'] > best_val_f1:
             best_val_f1 = val_metrics['macro_f1']
+            patience_counter = 0  # Reset patience counter
             best_path = os.path.join(out_dir, 'best.pth')
             torch.save(ckpt, best_path)
             print(f"  ⭐ New best macro F1: {best_val_f1:.3f}!")
+        else:
+            patience_counter += 1
+            print(f"  No improvement for {patience_counter}/{PersonConfig.PATIENCE} epochs")
 
-    print(f"Training finished. Best macro F1: {best_val_f1:.3f}")
+            if patience_counter >= PersonConfig.PATIENCE:
+                print(f"\n🛑 Early stopping triggered! No improvement for {PersonConfig.PATIENCE} epochs.")
+                print(f"Best validation macro F1: {best_val_f1:.3f}")
+                break
+
+    if patience_counter < PersonConfig.PATIENCE:
+        print(f"Training finished. Best macro F1: {best_val_f1:.3f}")
+    else:
+        print(f"Training stopped early at epoch {epoch}. Best macro F1: {best_val_f1:.3f}")
     
     # Log any skipped files
     train_ds.log_skipped_files()
