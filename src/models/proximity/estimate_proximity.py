@@ -1,122 +1,72 @@
-import cv2
-import os
-import argparse
 import logging
-from proximity_utils import ProximityCalculator
-from ultralytics import YOLO
-from constants import DetectionPaths, ClassificationPaths
+import numpy as np
+from constants import Proximity as ProximityConstants
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+class Proximity:
+    def __init__(self):
+        (
+            self.child_ref_close,
+            self.child_ref_far,
+            self.adult_ref_close,
+            self.adult_ref_far,
+            self.child_ref_aspect_ratio,
+            self.adult_ref_aspect_ratio
+        ) = self._load_stored_references()
 
-def draw_detections(image, detections, output_path):
-    """Draw bounding boxes and labels on image and save it"""
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.7
-    thickness = 2
-    
-    # Colors for different classes
-    colors = {
-        "child": (0, 255, 0),  # Green
-        "adult": (255, 0, 0)   # Blue
-    }
-    
-    for det in detections:
-        bbox = det["bbox"]
-        age = det["age"]
-        proximity = det["proximity"]
-        #age_conf = det["age_confidence"]
-        
-        # Draw bounding box
-        cv2.rectangle(image, 
-                      (bbox[0], bbox[1]), 
-                      (bbox[2], bbox[3]), 
-                      colors[age], 
-                      thickness)
-        
-        # Prepare text
-        #text = f"{age} Proximity: {proximity:.2f} (Age: {age_conf:.2f})"
-        text = f"{age} Proximity: {proximity:.2f}"
+    def _load_stored_references(self):
+        return (
+            ProximityConstants.REFERENCE_VALUES["child_ref_close"],
+            ProximityConstants.REFERENCE_VALUES["child_ref_far"],
+            ProximityConstants.REFERENCE_VALUES["adult_ref_close"],
+            ProximityConstants.REFERENCE_VALUES["adult_ref_far"],
+            ProximityConstants.REFERENCE_VALUES["child_ref_aspect_ratio"],
+            ProximityConstants.REFERENCE_VALUES["adult_ref_aspect_ratio"]
+        )
 
-        # Calculate text position
-        (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
-        text_y = bbox[1] - 10 if bbox[1] - 10 > 10 else bbox[1] + 20
-        
-        # Draw text background
-        cv2.rectangle(image, 
-                      (bbox[0], text_y - text_height - 5),
-                      (bbox[0] + text_width, text_y + 5),
-                      colors[age], 
-                      -1)
-        
-        # Draw text
-        cv2.putText(image, text, 
-                    (bbox[0]-100, text_y), 
-                    font, font_scale, 
-                    (255, 255, 255),  # White text
-                    thickness)
-    
-    # Save the annotated image
-    cv2.imwrite(output_path, image)
-    logging.info(f"Saved annotated image to {output_path}")
+    def calculate(self, bbox, is_child=True, aspect_ratio_threshold=1):
+        x1, y1, x2, y2 = map(int, bbox)
+        width, height = x2 - x1, y2 - y1
+        area = width * height
+        aspect_ratio = width / height if height != 0 else 0
 
-def main():
-    parser = argparse.ArgumentParser(description='Calculate proximity for faces in an image')
-    parser.add_argument('--image_path', type=str, required=True, help='Path to the input image')
-    parser.add_argument('--age', type=str, required=True, choices=['child', 'adult'], help='Age classification (child/adult)')
-    args = parser.parse_args()
+        # Select reference values
+        if is_child:
+            ref_close, ref_far, ref_ar = self.child_ref_close, self.child_ref_far, self.child_ref_aspect_ratio
+        else:
+            ref_close, ref_far, ref_ar = self.adult_ref_close, self.adult_ref_far, self.adult_ref_aspect_ratio
 
-    # Initialize models
-    detector = YOLO("/home/nele_pauline_suffo/models/yolo11_face_detection.pt")
-    #detector = YOLO("/home/nele_pauline_suffo/models/yolo11_person_face_detection.pt")
-    #age_classifier = YOLO(ClassificationPaths.face_trained_weights_path)
+        # Partial face check
+        if abs(aspect_ratio - ref_ar) > aspect_ratio_threshold:
+            logging.debug("Partial face detected - returning maximum proximity")
+            return 1.0
 
-    # Load image
-    videos_folder = "/home/nele_pauline_suffo/ProcessedData/quantex_videos_processed"
-    video_base_folder = os.path.basename(args.image_path).rsplit('_', 1)[0]
-    full_image_path = os.path.join(videos_folder, video_base_folder, args.image_path)
-        
-    img = cv2.imread(full_image_path)
-    if img is None:
-        raise ValueError(f"Could not load image at {full_image_path}")
+        # Edge cases
+        if area >= ref_close:
+            return 1.0
+        if area <= ref_far:
+            return 0.0
 
-    # Make a copy for drawing detections
-    output_img = img.copy()
+        # Logarithmic normalization
+        proximity = (np.log(area) - np.log(ref_far)) / (np.log(ref_close) - np.log(ref_far))
+        return np.clip(proximity, 0.0, 1.0)
 
-    # Detect faces
-    detections = detector(img)[0]
-    
-    # Initialize proximity calculator
-    prox_calculator = ProximityCalculator()
-    
-    results = []
-    for box in detections.boxes:
-        #if int(box.cls) != 1:  # Skip non-face classes
-        #    continue
-            
-        # Extract face ROI
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        face_roi = img[y1:y2, x1:x2]
-        
-        # Classify age
-        age_result = args.age
-        #age_result = age_classifier(face_roi)[0]
-        is_child = True if age_result == "child" else False
-        
-        # Calculate proximity
-        proximity = prox_calculator.calculate((x1, y1, x2, y2), is_child)
-        print("proximity", proximity)
-        # Format results
-        results.append({
-            "bbox": [x1, y1, x2, y2],
-            "age": "child" if is_child else "adult",
-            #"age_confidence": float(age_result.probs.top1conf),
-            "proximity": float(proximity),
-        })
-    
-    # Draw detections and save image
-    output_path = f"/home/nele_pauline_suffo/outputs/detection_pipeline_results/inference_images/{args.image_path}"
-    draw_detections(output_img, results, output_path)
 
-if __name__ == "__main__":
-    main()
+# --- Main function for external calls ---
+def calculate_proximities(bboxes, is_child_flags, aspect_ratio_threshold=1):
+    """
+    Calculate proximity for a list of bounding boxes with age information.
+
+    Args:
+        bboxes: list of (x1, y1, x2, y2) tuples
+        is_child_flags: list of bools indicating whether each bbox is a child
+        aspect_ratio_threshold: max deviation from reference aspect ratio
+
+    Returns:
+        list of normalized proximity values
+    """
+    prox = Proximity()
+    proximities = [
+        prox.calculate(bbox, is_child=is_child, aspect_ratio_threshold=aspect_ratio_threshold)
+        for bbox, is_child in zip(bboxes, is_child_flags)
+    ]
+    return proximities
