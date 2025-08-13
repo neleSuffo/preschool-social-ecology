@@ -25,63 +25,6 @@ logging.basicConfig(
     ]
 )
 
-def fetch_all_annotations(
-    category_ids: List[int],
-) -> List[tuple]:
-    """
-    This function fetches annotations from the database for specific category IDs.
-    Supports fetching person annotations, object annotations, or both.
-
-    Parameters
-    ----------
-    category_ids : List[int]
-        The list of category IDs to filter the annotations
-    
-    Returns
-    -------
-    list of tuple
-        The list of annotations.
-    """
-    logging.info(f"Fetching annotations for category IDs: {category_ids}")
-    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
-    cursor = conn.cursor()
-    
-    placeholders = ", ".join("?" for _ in category_ids)
-    object_target_class_ids = [3, 4, 5, 6, 7, 8, 12]
-
-    # Construct conditional filter for object_interaction
-    object_placeholders = ", ".join(str(x) for x in object_target_class_ids)
-    
-    query = f"""
-    SELECT DISTINCT 
-        a.category_id, 
-        a.bbox, 
-        a.object_interaction,
-        i.file_name,
-        a.gaze_directed_at_child,
-        a.person_age
-    FROM annotations a
-    JOIN images i ON a.image_id = i.frame_id AND a.video_id = i.video_id
-    JOIN videos v ON a.video_id = v.id
-    WHERE a.category_id IN ({placeholders}) 
-        AND a.outside = 0 
-        AND v.file_name NOT LIKE '%id255237_2022_05_08_04%'
-        AND (
-            -- Only apply the interaction filter if category_id is an object category
-            (a.category_id IN ({object_placeholders}) AND a.object_interaction = 'Yes') OR
-            (a.category_id NOT IN ({object_placeholders}))
-        )
-    ORDER BY a.video_id, a.image_id
-    """
-    
-    cursor.execute(query, category_ids)
-    annotations = cursor.fetchall()
-    conn.close()
-    # log all unique category ids
-    unique_category_ids = set(annotation[0] for annotation in annotations)
-    return annotations
-
-
 def split_videos_into_train_val(
     input_folder: Path,
     ) -> Union[list, list]:
