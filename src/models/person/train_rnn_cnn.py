@@ -22,9 +22,11 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from PIL import Image
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from tqdm import tqdm
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score
 from constants import PersonClassification, DataPaths
 from config import PersonConfig
-    
+
 # ---------------------------
 # Dataset
 # ---------------------------
@@ -193,6 +195,48 @@ class FrameRNNClassifier(nn.Module):
 # ---------------------------
 # Utilities: training + eval
 # ---------------------------
+def calculate_metrics(y_true, y_pred, class_names=['Adult', 'Child']):
+    """Calculate precision, recall, F1 for each class and macro averages"""
+    # Convert to numpy if tensors
+    if torch.is_tensor(y_true):
+        y_true = y_true.cpu().numpy()
+    if torch.is_tensor(y_pred):
+        y_pred = y_pred.cpu().numpy()
+    
+    metrics = {}
+    
+    # Calculate metrics for each class separately
+    for i, class_name in enumerate(class_names):
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_true[:, i], y_pred[:, i], average='binary', zero_division=0
+        )
+        metrics[f'{class_name.lower()}_precision'] = precision
+        metrics[f'{class_name.lower()}_recall'] = recall
+        metrics[f'{class_name.lower()}_f1'] = f1
+        metrics[f'{class_name.lower()}_accuracy'] = accuracy_score(y_true[:, i], y_pred[:, i])
+    
+    # Calculate macro averages (equal weight to both classes)
+    all_precisions = []
+    all_recalls = []
+    all_f1s = []
+    all_accuracies = []
+    
+    for i in range(len(class_names)):
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_true[:, i], y_pred[:, i], average='binary', zero_division=0
+        )
+        all_precisions.append(precision)
+        all_recalls.append(recall)
+        all_f1s.append(f1)
+        all_accuracies.append(accuracy_score(y_true[:, i], y_pred[:, i]))
+    
+    metrics['macro_precision'] = np.mean(all_precisions)
+    metrics['macro_recall'] = np.mean(all_recalls)
+    metrics['macro_f1'] = np.mean(all_f1s)
+    metrics['macro_accuracy'] = np.mean(all_accuracies)
+    
+    return metrics
+
 def sequence_features_from_cnn(cnn, images_padded, lengths, device):
     """
     images_padded: (batch, max_seq, C, H, W)
@@ -200,90 +244,161 @@ def sequence_features_from_cnn(cnn, images_padded, lengths, device):
     """
     bs, max_seq, C, H, W = images_padded.shape
     imgs = images_padded.view(bs * max_seq, C, H, W).to(device)
-    with torch.no_grad():
-        # we might want to set cnn.eval() or trainable depending on fine-tuning
-        pass
     feats = cnn(imgs)  # (bs * max_seq, feat_dim)
     feats = feats.view(bs, max_seq, -1)
     return feats
 
-def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cnn=False):
+def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cnn=False, scaler=None):
     cnn, rnn = models
     opt_cnn, opt_rnn = optimizers
     cnn.train(not freeze_cnn)
     rnn.train()
     total_loss = 0.0
-    total_correct = 0
-    total_labels = 0
+    
+    all_preds = []
+    all_labels = []
 
-    for images_padded, labels_padded, lengths, _ in dataloader:
+    # Add progress bar
+    progress_bar = tqdm(dataloader, desc="Training", leave=False)
+    
+    for batch_idx, (images_padded, labels_padded, lengths, _) in enumerate(progress_bar):
         mask = (labels_padded != -100)  # (bs, max_seq, 2)
-        images_padded = images_padded.to(device)
-        labels_padded = labels_padded.to(device)
-
-        if freeze_cnn:
-            with torch.no_grad():
-                feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
-        else:
-            feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
-
-        logits = rnn(feats, lengths)  # (bs, max_seq, 2)
-
-        # flatten and mask
-        mask_flat = mask.view(-1, 2)
-        logits_flat = logits.view(-1, 2)[mask_flat[:,0] != -100]  # adult
-        labels_flat = labels_padded.view(-1, 2)[mask_flat[:,0] != -100]
-
-        loss = criterion(logits_flat, labels_flat)
+        images_padded = images_padded.to(device, non_blocking=True)
+        labels_padded = labels_padded.to(device, non_blocking=True)
 
         opt_rnn.zero_grad()
         if opt_cnn:
             opt_cnn.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(rnn.parameters(), 5.0)
-        if opt_cnn:
-            torch.nn.utils.clip_grad_norm_(cnn.parameters(), 5.0)
-        if opt_cnn:
-            opt_cnn.step()
-        opt_rnn.step()
+
+        # Mixed precision training
+        if scaler and device.type == 'cuda':
+            with torch.amp.autocast('cuda'):
+                if freeze_cnn:
+                    with torch.no_grad():
+                        feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
+                else:
+                    feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
+
+                logits = rnn(feats, lengths)  # (bs, max_seq, 2)
+
+                # flatten and mask
+                mask_flat = mask.view(-1, 2)
+                logits_flat = logits.view(-1, 2)[mask_flat[:,0] != -100]
+                labels_flat = labels_padded.view(-1, 2)[mask_flat[:,0] != -100]
+
+                loss = criterion(logits_flat, labels_flat)
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt_rnn)
+            if opt_cnn:
+                scaler.unscale_(opt_cnn)
+            
+            torch.nn.utils.clip_grad_norm_(rnn.parameters(), 5.0)
+            if opt_cnn:
+                torch.nn.utils.clip_grad_norm_(cnn.parameters(), 5.0)
+            
+            scaler.step(opt_rnn)
+            if opt_cnn:
+                scaler.step(opt_cnn)
+            scaler.update()
+        else:
+            # Regular training
+            if freeze_cnn:
+                with torch.no_grad():
+                    feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
+            else:
+                feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
+
+            logits = rnn(feats, lengths)  # (bs, max_seq, 2)
+
+            # flatten and mask
+            mask_flat = mask.view(-1, 2)
+            logits_flat = logits.view(-1, 2)[mask_flat[:,0] != -100]
+            labels_flat = labels_padded.view(-1, 2)[mask_flat[:,0] != -100]
+
+            loss = criterion(logits_flat, labels_flat)
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(rnn.parameters(), 5.0)
+            if opt_cnn:
+                torch.nn.utils.clip_grad_norm_(cnn.parameters(), 5.0)
+            if opt_cnn:
+                opt_cnn.step()
+            opt_rnn.step()
 
         total_loss += loss.item() * images_padded.size(0)
 
+        # Collect predictions and labels for metrics
         with torch.no_grad():
             preds = (torch.sigmoid(logits) > 0.5).float()
-            correct = (preds == labels_padded) & (labels_padded != -100)
-            total_correct += correct.sum().item()
-            total_labels += (labels_padded != -100).sum().item()
+            
+            # Only keep valid predictions (not masked)
+            valid_preds = preds[mask].cpu()
+            valid_labels = labels_padded[mask].cpu()
+            
+            all_preds.append(valid_preds)
+            all_labels.append(valid_labels)
 
-    return total_loss / len(dataloader.dataset), total_correct / max(1, total_labels)
+        # Update progress bar with current loss
+        current_loss = total_loss / ((batch_idx + 1) * len(dataloader.dataset) / len(dataloader))
+        progress_bar.set_postfix({
+            'loss': f'{current_loss:.4f}'
+        })
+
+    # Calculate final metrics
+    all_preds = torch.cat(all_preds, dim=0)
+    all_labels = torch.cat(all_labels, dim=0)
+    metrics = calculate_metrics(all_labels, all_preds)
+    
+    avg_loss = total_loss / len(dataloader.dataset)
+    return avg_loss, metrics
 
 def eval_on_loader(models, criterion, dataloader, device):
     cnn, rnn = models
     cnn.eval(); rnn.eval()
     total_loss = 0.0
-    total_correct = 0
-    total_frames = 0
+    
+    all_preds = []
+    all_labels = []
+
+    # Add progress bar for validation
+    progress_bar = tqdm(dataloader, desc="Validation", leave=False)
 
     with torch.no_grad():
-        for images_padded, labels_padded, lengths, _ in dataloader:
+        for images_padded, labels_padded, lengths, _ in progress_bar:
             images_padded = images_padded.to(device)
             labels_padded = labels_padded.to(device)
             lengths = lengths.to(device)
+            mask = (labels_padded != -100)
 
             feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
             logits = rnn(feats, lengths)
-            logits_flat = logits.view(-1, logits.size(-1))
-            labels_flat = labels_padded.view(-1)
-
+            
+            # Calculate loss
+            mask_flat = mask.view(-1, 2)
+            logits_flat = logits.view(-1, 2)[mask_flat[:,0] != -100]
+            labels_flat = labels_padded.view(-1, 2)[mask_flat[:,0] != -100]
+            
             loss = criterion(logits_flat, labels_flat)
             total_loss += loss.item() * images_padded.size(0)
 
-            preds = logits.argmax(dim=-1)
-            mask = (labels_padded != -100)
-            total_correct += ((preds == labels_padded) & mask).sum().item()
-            total_frames += mask.sum().item()
+            # Collect predictions and labels for metrics
+            preds = (torch.sigmoid(logits) > 0.5).float()
+            
+            # Only keep valid predictions (not masked)
+            valid_preds = preds[mask].cpu()
+            valid_labels = labels_padded[mask].cpu()
+            
+            all_preds.append(valid_preds)
+            all_labels.append(valid_labels)
 
-    return total_loss / len(dataloader.dataset), total_correct / max(1, total_frames)
+    # Calculate final metrics
+    all_preds = torch.cat(all_preds, dim=0)
+    all_labels = torch.cat(all_labels, dim=0)
+    metrics = calculate_metrics(all_labels, all_preds)
+    
+    avg_loss = total_loss / len(dataloader.dataset)
+    return avg_loss, metrics
 
 def save_script_and_hparams(out_dir, args):
     # Save a copy of the current script
@@ -328,51 +443,88 @@ def main():
     val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, 
                               sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
 
-    # Debug: inspect the dataset
-    print(f"Train dataset length: {len(train_ds)}")
-    print(f"Number of video groups: {len(train_ds.grouped)}")
-    
-    # Check first few file paths in the CSV
-    print("\nFirst 10 file paths from CSV:")
-    for i, row in train_ds.data.head(10).iterrows():
-        print(f"  {i}: {row['file_path']}")
-    
-    # Try to get the first sample
-    try:
-        print(f"\nTrying to get first sample...")
-        sample = train_ds[0]
-        print(f"Successfully loaded first sample with shapes: {sample[0].shape}, {sample[1].shape}")
-    except Exception as e:
-        print(f"Error loading first sample: {e}")
-        print(f"Error type: {type(e).__name__}")
-        import traceback
-        traceback.print_exc()
-
-    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=0,
-                              collate_fn=collate_fn, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=0,
-                            collate_fn=collate_fn, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=4,
+                              collate_fn=collate_fn, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=4,
+                            collate_fn=collate_fn, pin_memory=True, persistent_workers=True)
 
     device = torch.device(args.device)
+    print(f"Using device: {device}")
+    
+    # Enable mixed precision training for speed
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
 
-    cnn = CNNEncoder(backbone='resnet18', weights=True, feat_dim=512).to(device)
+    cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=512).to(device)
     rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=256,
                                   rnn_layers=2, bidirectional=True,
                                   num_outputs=2, dropout=0.3).to(device)
+
+    # Compile models for faster execution (PyTorch 2.0+)
+    try:
+        cnn = torch.compile(cnn)
+        rnn_model = torch.compile(rnn_model)
+        print("Models compiled successfully!")
+    except Exception as e:
+        print(f"Could not compile models: {e}")
 
     opt_cnn = torch.optim.Adam(filter(lambda p: p.requires_grad, cnn.parameters()), lr=PersonConfig.LR) if not PersonConfig.FREEZE_CNN else None
     opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=PersonConfig.LR)
 
     criterion = nn.BCEWithLogitsLoss()
 
-    best_val_acc = 0.0
+    # Initialize CSV logging
+    csv_log_path = os.path.join(out_dir, "training_metrics.csv")
+    csv_headers = [
+        'epoch', 'train_loss', 'val_loss',
+        'train_adult_precision', 'train_adult_recall', 'train_adult_f1',
+        'train_child_precision', 'train_child_recall', 'train_child_f1',
+        'train_macro_precision', 'train_macro_recall', 'train_macro_f1',
+        'val_adult_precision', 'val_adult_recall', 'val_adult_f1',
+        'val_child_precision', 'val_child_recall', 'val_child_f1',
+        'val_macro_precision', 'val_macro_recall', 'val_macro_f1'
+    ]
+    
+    # Create CSV file with headers
+    with open(csv_log_path, 'w') as f:
+        f.write(','.join(csv_headers) + '\n')
+    
+    best_val_f1 = 0.0
+    print(f"\nStarting training for {PersonConfig.NUM_EPOCHS} epochs...")
+    print("-" * 50)
+    
     for epoch in range(1, PersonConfig.NUM_EPOCHS + 1):
-        print(f"Epoch {epoch}/{PersonConfig.NUM_EPOCHS}")
-        train_loss, train_acc = train_one_epoch((cnn, rnn_model), (opt_cnn, opt_rnn), criterion, train_loader,
-                                                device, freeze_cnn=PersonConfig.FREEZE_CNN)
-        val_loss, val_acc = eval_on_loader((cnn, rnn_model), criterion, val_loader, device)
-        print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
-        print(f"  Val   loss: {val_loss:.4f}, Val   acc: {val_acc:.4f}")
+        print(f"\nEpoch {epoch}/{PersonConfig.NUM_EPOCHS}")
+        
+        # Training
+        train_loss, train_metrics = train_one_epoch((cnn, rnn_model), (opt_cnn, opt_rnn), criterion, train_loader,
+                                                    device, freeze_cnn=PersonConfig.FREEZE_CNN, scaler=scaler)
+        
+        # Validation
+        val_loss, val_metrics = eval_on_loader((cnn, rnn_model), criterion, val_loader, device)
+        
+        print(f"  Train Loss: {train_loss:.4f}")
+        print(f"    Adult    - P: {train_metrics['adult_precision']:.3f}, R: {train_metrics['adult_recall']:.3f}, F1: {train_metrics['adult_f1']:.3f}")
+        print(f"    Child    - P: {train_metrics['child_precision']:.3f}, R: {train_metrics['child_recall']:.3f}, F1: {train_metrics['child_f1']:.3f}")
+        print(f"    Macro    - P: {train_metrics['macro_precision']:.3f}, R: {train_metrics['macro_recall']:.3f}, F1: {train_metrics['macro_f1']:.3f}")
+        
+        print(f"  Val Loss: {val_loss:.4f}")
+        print(f"    Adult    - P: {val_metrics['adult_precision']:.3f}, R: {val_metrics['adult_recall']:.3f}, F1: {val_metrics['adult_f1']:.3f}")
+        print(f"    Child    - P: {val_metrics['child_precision']:.3f}, R: {val_metrics['child_recall']:.3f}, F1: {val_metrics['child_f1']:.3f}")
+        print(f"    Macro    - P: {val_metrics['macro_precision']:.3f}, R: {val_metrics['macro_recall']:.3f}, F1: {val_metrics['macro_f1']:.3f}")
+
+        # Log metrics to CSV
+        csv_row = [
+            epoch, train_loss, val_loss,
+            train_metrics['adult_precision'], train_metrics['adult_recall'], train_metrics['adult_f1'],
+            train_metrics['child_precision'], train_metrics['child_recall'], train_metrics['child_f1'],
+            train_metrics['macro_precision'], train_metrics['macro_recall'], train_metrics['macro_f1'],
+            val_metrics['adult_precision'], val_metrics['adult_recall'], val_metrics['adult_f1'],
+            val_metrics['child_precision'], val_metrics['child_recall'], val_metrics['child_f1'],
+            val_metrics['macro_precision'], val_metrics['macro_recall'], val_metrics['macro_f1']
+        ]
+        
+        with open(csv_log_path, 'a') as f:
+            f.write(','.join([f'{x:.6f}' if isinstance(x, float) else str(x) for x in csv_row]) + '\n')
 
         ckpt = {
             'epoch': epoch,
@@ -380,18 +532,20 @@ def main():
             'rnn_state': rnn_model.state_dict(),
             'opt_rnn': opt_rnn.state_dict(),
             'opt_cnn': opt_cnn.state_dict() if opt_cnn else None,
-            'val_acc': val_acc
+            'val_metrics': val_metrics,
+            'train_metrics': train_metrics
         }
         ckpt_path = os.path.join(out_dir, f'ckpt_epoch{epoch:03d}.pth')
-        torch.save(ckpt, ckpt_path)
+        if epoch % 10 == 0 or epoch == PersonConfig.NUM_EPOCHS:
+            torch.save(ckpt, ckpt_path)
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if val_metrics['macro_f1'] > best_val_f1:
+            best_val_f1 = val_metrics['macro_f1']
             best_path = os.path.join(out_dir, 'best.pth')
             torch.save(ckpt, best_path)
-            print("  New best saved.")
+            print(f"  ⭐ New best macro F1: {best_val_f1:.3f}!")
 
-    print("Training finished. Best val acc:", best_val_acc)
+    print(f"Training finished. Best macro F1: {best_val_f1:.3f}")
     
     # Log any skipped files
     train_ds.log_skipped_files()
