@@ -30,15 +30,18 @@ class AudioClassification:
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs")
 
 class PersonClassification:
-    PERSON_CLASSES = ['child_person', 'adult_person']
-    PERSON_TRAINED_WEIGHTS_PATH = Path(BasePaths.MODELS_DIR/'yolo11_person_classification.pt')
-    PERSON_EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_extraction_progress.txt")
-    PERSON_MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_missing_frames.txt")
-    PERSON_LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_labels")
-    PERSON_DATA_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
-    PERSON_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
-    PERSON_DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_classifications/person_dataset.yaml")
-    PERSON_IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_person")
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.MODELS_DIR/'yolo11_person_classification.pt')
+    EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_extraction_progress.txt")
+    MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_missing_frames.txt")
+    LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_labels")
+    INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
+    OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
+    DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_classifications/person_dataset.yaml")
+    IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_person")
+
+    TRAIN_CSV_PATH = Path(INPUT_DIR/"train.csv")
+    VAL_CSV_PATH = Path(INPUT_DIR/"val.csv")
+    TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
     @classmethod
     def get_target_paths(cls, target: str, split_type: str) -> Optional[Tuple[Path, Path]]:
@@ -60,8 +63,8 @@ class PersonClassification:
         # Add person class paths if target is person-related
         if target in cls.PERSON_CLASSES:
             return (
-                cls.PERSON_DATA_INPUT_DIR / split_type / target,
-                cls.PERSON_DATA_INPUT_DIR / split_type / target
+                cls.INPUT_DIR / split_type / target,
+                cls.INPUT_DIR / split_type / target
             )
             
         return None  # Return None if target is not found
