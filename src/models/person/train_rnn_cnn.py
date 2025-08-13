@@ -154,8 +154,14 @@ class CNNEncoder(nn.Module):
             modules = list(res.children())[:-1]  # remove FC and avgpool kept? last is avgpool
             self.encoder = nn.Sequential(*modules)  # outputs (B, feat_in, 1, 1)
             self.feat_dim = feat_in
+        elif backbone == 'resnet50':
+            res = models.resnet50(pretrained=pretrained)
+            feat_in = res.fc.in_features
+            modules = list(res.children())[:-1]  # remove FC and avgpool kept? last is avgpool
+            self.encoder = nn.Sequential(*modules)  # outputs (B, feat_in, 1, 1)
+            self.feat_dim = feat_in
         else:
-            raise NotImplementedError("Only resnet18 implemented; swap if you want resnet50")
+            raise NotImplementedError(f"Backbone {backbone} not implemented; supported: resnet18, resnet50")
         # optional projection to reduce dim
         if self.feat_dim != feat_dim:
             self.project = nn.Linear(self.feat_dim, feat_dim)
@@ -457,15 +463,15 @@ def main():
     save_script_and_hparams(out_dir, args)
 
     transform = transforms.Compose([
-        transforms.Resize((192, 192)),  # Reduced from 224x224 for ~30% speedup
+        transforms.Resize((224, 224)),  # Revert to standard ResNet input size
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
     ])
 
     train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, 
-                                sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
+                                 sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
     val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, 
-                              sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
+                               sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
 
     train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=8,
                               collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
@@ -478,10 +484,12 @@ def main():
     # Enable mixed precision training for speed
     scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
 
-    cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=256).to(device)  # Reduced from 512
-    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=128,  # Reduced from 256
-                                  rnn_layers=1, bidirectional=True,  # Reduced from 2 layers
-                                  num_outputs=2, dropout=0.3).to(device)
+    # --- INCREASED MODEL COMPLEXITY ---
+    cnn = CNNEncoder(backbone='resnet50', pretrained=True, feat_dim=512).to(device)
+    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=256,
+                                   rnn_layers=2, bidirectional=True,
+                                   num_outputs=2, dropout=0.3).to(device)
+    # --- END OF CHANGES ---
 
     # Compile models for faster execution (PyTorch 2.0+)
     try:
