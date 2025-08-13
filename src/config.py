@@ -122,6 +122,10 @@ class FaceConfig:
         'teen': 1,
         'adult': 1,
     }
+    MODEL_CLASS_ID_TO_LABEL = {
+        0: "child",
+        1: "adult"
+    }
     DATABASE_CATEGORY_IDS = [10]
     
     TRAIN_SPLIT_RATIO = 0.6
