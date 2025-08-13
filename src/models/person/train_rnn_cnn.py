@@ -29,40 +29,86 @@ from config import PersonConfig
 # Dataset
 # ---------------------------
 class VideoFrameDataset(Dataset):
-    def __init__(self, csv_file, sequence_length=10, transform=None):
+    def __init__(self, csv_file, sequence_length=10, transform=None, log_dir=None):
         self.data = pd.read_csv(csv_file)
         self.sequence_length = sequence_length
         self.transform = transform
+        self.skipped_files = []
+        self.log_dir = log_dir
 
         self.grouped = []
         for video_id, group in self.data.groupby('video_id'):
             sorted_group = group.sort_values('frame_id')
             self.grouped.append(sorted_group.reset_index(drop=True))
 
+    def log_skipped_files(self):
+        """Write skipped files to a log file"""
+        if self.log_dir and self.skipped_files:
+            log_path = os.path.join(self.log_dir, "skipped_frames.txt")
+            with open(log_path, 'w') as f:
+                f.write(f"Total skipped frames: {len(self.skipped_files)}\n\n")
+                f.write("Skipped files:\n")
+                for file_path, reason in self.skipped_files:
+                    f.write(f"{file_path} - {reason}\n")
+            print(f"Logged {len(self.skipped_files)} skipped frames to {log_path}")
+
     def __len__(self):
         return sum(max(0, len(g) - self.sequence_length + 1) for g in self.grouped)
 
     def __getitem__(self, idx):
         total = 0
-        for group in self.grouped:
+        for group_idx, group in enumerate(self.grouped):
             length = max(0, len(group) - self.sequence_length + 1)
             if idx < total + length:
                 start_idx = idx - total
                 frames = []
                 labels = []
                 video_id = None
-                for i in range(start_idx, start_idx + self.sequence_length):
-                    row = group.iloc[i]
-                    img = Image.open(row['file_path']).convert('RGB')
-                    if self.transform:
-                        img = self.transform(img)
-                    frames.append(img)
-                    labels.append([row['adult'], row['child']])
-                    if video_id is None:
-                        video_id = row['video_id']
+                
+                # Try to load frames, skip broken ones
+                current_idx = start_idx
+                frames_loaded = 0
+                max_attempts = len(group) - start_idx  # Don't go beyond group bounds
+                
+                while frames_loaded < self.sequence_length and current_idx < len(group):
+                    row = group.iloc[current_idx]
+                    file_path = row['file_path']
+                    
+                    try:
+                        # Check if file exists
+                        if not os.path.exists(file_path):
+                            self.skipped_files.append((file_path, "File not found"))
+                            current_idx += 1
+                            continue
+                        
+                        img = Image.open(file_path).convert('RGB')
+                        if self.transform:
+                            img = self.transform(img)
+                        frames.append(img)
+                        labels.append([row['adult'], row['child']])
+                        if video_id is None:
+                            video_id = row['video_id']
+                        frames_loaded += 1
+                        
+                    except Exception as e:
+                        self.skipped_files.append((file_path, f"Error loading: {str(e)}"))
+                        
+                    current_idx += 1
+                
+                # If we couldn't load enough frames, pad with the last valid frame or skip this sequence
+                if frames_loaded == 0:
+                    # No valid frames found, try next sequence
+                    total += length
+                    continue
+                elif frames_loaded < self.sequence_length:
+                    # Pad with last frame
+                    while len(frames) < self.sequence_length:
+                        frames.append(frames[-1].clone())
+                        labels.append(labels[-1].copy())
+                
                 frames = torch.stack(frames)  # shape: (seq_len, C, H, W)
                 labels = torch.tensor(labels).float()  # shape: (seq_len, 2)
-                return frames, labels, self.sequence_length, video_id
+                return frames, labels, len(frames), video_id
             total += length
         raise IndexError("Index out of range")
 
@@ -277,17 +323,39 @@ def main():
         transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
     ])
 
-    train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, sequence_length=PersonConfig.MAX_SEQ_LEN)
-    val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, sequence_length=PersonConfig.MAX_SEQ_LEN)
+    train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, 
+                                sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
+    val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, 
+                              sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
 
-    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=4,
+    # Debug: inspect the dataset
+    print(f"Train dataset length: {len(train_ds)}")
+    print(f"Number of video groups: {len(train_ds.grouped)}")
+    
+    # Check first few file paths in the CSV
+    print("\nFirst 10 file paths from CSV:")
+    for i, row in train_ds.data.head(10).iterrows():
+        print(f"  {i}: {row['file_path']}")
+    
+    # Try to get the first sample
+    try:
+        print(f"\nTrying to get first sample...")
+        sample = train_ds[0]
+        print(f"Successfully loaded first sample with shapes: {sample[0].shape}, {sample[1].shape}")
+    except Exception as e:
+        print(f"Error loading first sample: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+
+    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=0,
                               collate_fn=collate_fn, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=4,
+    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=0,
                             collate_fn=collate_fn, pin_memory=True)
 
     device = torch.device(args.device)
 
-    cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=512).to(device)
+    cnn = CNNEncoder(backbone='resnet18', weights=True, feat_dim=512).to(device)
     rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=256,
                                   rnn_layers=2, bidirectional=True,
                                   num_outputs=2, dropout=0.3).to(device)
@@ -324,6 +392,10 @@ def main():
             print("  New best saved.")
 
     print("Training finished. Best val acc:", best_val_acc)
+    
+    # Log any skipped files
+    train_ds.log_skipped_files()
+    val_ds.log_skipped_files()
         
 if __name__ == '__main__':
     main()
