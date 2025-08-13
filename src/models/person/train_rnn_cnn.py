@@ -1,6 +1,4 @@
 """
-train_cnn_rnn.py
-
 End-to-end pipeline:
   ResNet (frame-level feature extractor) -> BiLSTM -> per-frame classifier
 
@@ -10,18 +8,23 @@ Usage:
 
 import os
 import argparse
-from collections import defaultdict
-from typing import List
-
+import shutil
+import datetime
+import json
+import sys
 import torch
 import torch.nn as nn
+import pandas as pd
+import numpy as np
+from typing import List
+from collections import defaultdict
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from PIL import Image
-import pandas as pd
-import numpy as np
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-
+from constants import PersonClassification, DataPaths
+from config import PersonConfig
+    
 # ---------------------------
 # Dataset
 # ---------------------------
@@ -31,7 +34,6 @@ class VideoFrameDataset(Dataset):
         self.sequence_length = sequence_length
         self.transform = transform
 
-        # Group frames by video_id, then sort by frame_id to create sequences
         self.grouped = []
         for video_id, group in self.data.groupby('video_id'):
             sorted_group = group.sort_values('frame_id')
@@ -41,7 +43,6 @@ class VideoFrameDataset(Dataset):
         return sum(max(0, len(g) - self.sequence_length + 1) for g in self.grouped)
 
     def __getitem__(self, idx):
-        # Find which video and which start frame corresponds to idx
         total = 0
         for group in self.grouped:
             length = max(0, len(group) - self.sequence_length + 1)
@@ -49,6 +50,7 @@ class VideoFrameDataset(Dataset):
                 start_idx = idx - total
                 frames = []
                 labels = []
+                video_id = None
                 for i in range(start_idx, start_idx + self.sequence_length):
                     row = group.iloc[i]
                     img = Image.open(row['file_path']).convert('RGB')
@@ -56,9 +58,11 @@ class VideoFrameDataset(Dataset):
                         img = self.transform(img)
                     frames.append(img)
                     labels.append([row['adult'], row['child']])
+                    if video_id is None:
+                        video_id = row['video_id']
                 frames = torch.stack(frames)  # shape: (seq_len, C, H, W)
                 labels = torch.tensor(labels).float()  # shape: (seq_len, 2)
-                return frames, labels
+                return frames, labels, self.sequence_length, video_id
             total += length
         raise IndexError("Index out of range")
 
@@ -235,63 +239,73 @@ def eval_on_loader(models, criterion, dataloader, device):
 
     return total_loss / len(dataloader.dataset), total_correct / max(1, total_frames)
 
+def save_script_and_hparams(out_dir, args):
+    # Save a copy of the current script
+    try:
+        script_path = os.path.abspath(sys.argv[0])
+        script_copy_path = os.path.join(out_dir, os.path.basename(script_path))
+        shutil.copyfile(script_path, script_copy_path)
+    except Exception as e:
+        print(f"Warning: Could not copy script file: {e}")
+
+    # Save hyperparameters as JSON
+    hparams = {attr: getattr(PersonConfig, attr) for attr in dir(PersonConfig) if not attr.startswith('_')}
+    hparams_path = os.path.join(out_dir, "hyperparameters.json")
+    with open(hparams_path, "w") as f:
+        json.dump(hparams, f, indent=4)
+        
 # ---------------------------
 # Main: parse args, start training
 # ---------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train_csv', required=True)
-    parser.add_argument('--val_csv', required=True)
-    parser.add_argument('--out_dir', default='checkpoints')
-    parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--batch_size', type=int, default=4)  # number of videos per batch
-    parser.add_argument('--max_seq_len', type=int, default=None)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--freeze_cnn', action='store_true')
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    # Create timestamped folder name with model abbreviation
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(PersonClassification.OUTPUT_DIR, f"{PersonConfig.MODEL_NAME}_{timestamp}")
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"Output directory: {out_dir}")
 
-    # transforms — tune to your dataset resolution
+    # Save a copy of this script and hyperparams there
+    save_script_and_hparams(out_dir, args)
+
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
     ])
 
-    train_ds = VideoFrameDataset(args.train_csv, transform=transform, max_seq_len=args.max_seq_len)
-    val_ds = VideoFrameDataset(args.val_csv, transform=transform, max_seq_len=args.max_seq_len)
+    train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, sequence_length=PersonConfig.MAX_SEQ_LEN)
+    val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, sequence_length=PersonConfig.MAX_SEQ_LEN)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4,
+    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=4,
                               collate_fn=collate_fn, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4,
+    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=4,
                             collate_fn=collate_fn, pin_memory=True)
 
     device = torch.device(args.device)
 
-    # models
     cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=512).to(device)
     rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=256,
-                                rnn_layers=2, bidirectional=True,
-                                num_outputs=2, dropout=0.3).to(device)
+                                  rnn_layers=2, bidirectional=True,
+                                  num_outputs=2, dropout=0.3).to(device)
 
-    # optimizers
-    opt_cnn = torch.optim.Adam(filter(lambda p: p.requires_grad, cnn.parameters()), lr=args.lr) if not args.freeze_cnn else None
-    opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=args.lr)
-    
+    opt_cnn = torch.optim.Adam(filter(lambda p: p.requires_grad, cnn.parameters()), lr=PersonConfig.LR) if not PersonConfig.FREEZE_CNN else None
+    opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=PersonConfig.LR)
+
     criterion = nn.BCEWithLogitsLoss()
 
     best_val_acc = 0.0
-    for epoch in range(1, args.epochs+1):
-        print(f"Epoch {epoch}/{args.epochs}")
+    for epoch in range(1, PersonConfig.NUM_EPOCHS + 1):
+        print(f"Epoch {epoch}/{PersonConfig.NUM_EPOCHS}")
         train_loss, train_acc = train_one_epoch((cnn, rnn_model), (opt_cnn, opt_rnn), criterion, train_loader,
-                                                device, freeze_cnn=args.freeze_cnn)
+                                                device, freeze_cnn=PersonConfig.FREEZE_CNN)
         val_loss, val_acc = eval_on_loader((cnn, rnn_model), criterion, val_loader, device)
         print(f"  Train loss: {train_loss:.4f}, Train acc: {train_acc:.4f}")
         print(f"  Val   loss: {val_loss:.4f}, Val   acc: {val_acc:.4f}")
 
-        # save checkpoint
         ckpt = {
             'epoch': epoch,
             'cnn_state': cnn.state_dict(),
@@ -300,16 +314,16 @@ def main():
             'opt_cnn': opt_cnn.state_dict() if opt_cnn else None,
             'val_acc': val_acc
         }
-        ckpt_path = os.path.join(args.out_dir, f'ckpt_epoch{epoch:03d}.pth')
+        ckpt_path = os.path.join(out_dir, f'ckpt_epoch{epoch:03d}.pth')
         torch.save(ckpt, ckpt_path)
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            best_path = os.path.join(args.out_dir, 'best.pth')
+            best_path = os.path.join(out_dir, 'best.pth')
             torch.save(ckpt, best_path)
             print("  New best saved.")
 
     print("Training finished. Best val acc:", best_val_acc)
-
+        
 if __name__ == '__main__':
     main()
