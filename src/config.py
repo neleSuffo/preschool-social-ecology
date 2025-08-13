@@ -84,6 +84,8 @@ class LabelMapping:
 # Specific Task Configurations
 class PersonConfig:
     """Configuration for person detection and classification."""
+    MODEL_NAME = "resnet18_bilstm"
+
     # Ratio of training data to use for training
     TRAIN_SPLIT_RATIO = 0.6
     # Ratio of class-to-class samples in each dataset split
@@ -100,6 +102,14 @@ class PersonConfig:
     }
     DATABASE_CATEGORY_IDS = [1, 2]
     TARGET_LABELS = ['child', 'adult']
+    
+    NUM_EPOCHS = 100
+    # number of videos per batch
+    BATCH_SIZE = 4
+    # maximum sequence length for RNN
+    MAX_SEQ_LEN = 10
+    LR = 1e-4
+    FREEZE_CNN = True
 
 class FaceConfig:
     """Configuration for face detection and classification."""
