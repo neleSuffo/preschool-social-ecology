@@ -123,6 +123,7 @@ class FaceConfig:
     }
     DATABASE_CATEGORY_IDS = [10]
     
+    TRAIN_SPLIT_RATIO = 0.6
     NUM_EPOCHS = 300
     BATCH_SIZE = 16
     IMG_SIZE = 640
