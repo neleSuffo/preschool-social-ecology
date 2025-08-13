@@ -206,7 +206,7 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
         DataFrame containing image filenames, IDs, and their corresponding one-hot encoded class labels.
     """
     # Define class mappings for face detection
-    id_to_name = {0: "child_face", 1: "adult_face"}
+    id_to_name = FaceConfig.MODEL_CLASS_ID_TO_LABEL
 
     image_class_mapping = []
 
@@ -226,8 +226,8 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
             "filename": image_file.stem,
             "id": image_id,
             "has_annotation": bool(labels),  # True if labels are found, False otherwise
-            **{class_name: (1 if class_name in labels else 0) 
-               for class_name in id_to_name.values()}
+            **{f"class_{cid}": (1 if id_to_name[cid] in labels else 0) 
+               for cid in id_to_name.keys()}
         })
 
     return pd.DataFrame(image_class_mapping)
@@ -446,12 +446,6 @@ def multilabel_stratified_split(df: pd.DataFrame,
     
     if len(val_ids) >= min_ids_per_split and len(test_ids) >= min_ids_per_split:
         logging.info(f"✓ Both validation and test sets have at least {min_ids_per_split} IDs")
-    
-    # Additional explicit ID count verification
-    logging.info(f"ID count verification:")
-    logging.info(f"  Training set: {len(train_ids)} IDs")
-    logging.info(f"  Validation set: {len(val_ids)} IDs")  
-    logging.info(f"  Test set: {len(test_ids)} IDs")
 
     # Ensure we have at least 2 IDs in each split - this is critical for proper evaluation
     if len(val_ids) < 2:
@@ -492,22 +486,22 @@ def multilabel_stratified_split(df: pd.DataFrame,
     # Initial Distribution
     split_info.append("Initial Distribution:")
     split_info.append(f"Total Frames: {total_frame_count}")
-    split_info.append(f"child_face: {class_counts['child_face']} images ({class_counts['child_face']/total_frame_count:.2%})")
-    split_info.append(f"adult_face: {class_counts['adult_face']} images ({class_counts['adult_face']/total_frame_count:.2%})\n")
+    split_info.append(f"class_0: {class_counts['class_0']} images ({class_counts['class_0']/total_frame_count:.2%})")
+    split_info.append(f"class_1: {class_counts['class_1']} images ({class_counts['class_1']/total_frame_count:.2%})\n")
 
     # Split Distribution
     split_info.append("Split Distribution:")
     split_info.append("-" * 50)
 
-    def add_split_summary(name, frame_count, child_count, adult_count):
+    def add_split_summary(name, frame_count, count_0, count_1):
         split_info.append(f"{name} Set: ({frame_count/total_frame_count:.2%})")
         split_info.append(f"Total Frames: {frame_count}")
-        split_info.append(f"child_face: {child_count} ({child_count/frame_count:.2%})")
-        split_info.append(f"adult_face: {adult_count} ({adult_count/frame_count:.2%})\n")
+        split_info.append(f"class_0: {count_0} ({count_0/frame_count:.2%})")
+        split_info.append(f"class_1: {count_1} ({count_1/frame_count:.2%})\n")
 
-    add_split_summary("Validation", val_frames, val_class_counts['child_face'], val_class_counts['adult_face'])
-    add_split_summary("Test", test_frames, test_class_counts['child_face'], test_class_counts['adult_face'])
-    add_split_summary("Train", train_frames, train_class_counts['child_face'], train_class_counts['adult_face'])
+    add_split_summary("Validation", val_frames, val_class_counts['class_0'], val_class_counts['class_1'])
+    add_split_summary("Test", test_frames, test_class_counts['class_0'], test_class_counts['class_1'])
+    add_split_summary("Train", train_frames, train_class_counts['class_0'], train_class_counts['class_1'])
 
     # ID Distribution
     split_info.append("ID Distribution:")
@@ -636,7 +630,7 @@ def split_yolo_data(annotation_folder: Path):
         df = get_class_distribution(total_images, annotation_folder)
         
         # Split data grouped by id with minimum ID requirements
-        train, val, test, *_ = multilabel_stratified_split(df, min_ids_per_split=2)
+        train, val, test, *_ = multilabel_stratified_split(df)
 
         # Move images for each split
         for split_name, split_set in [("train", train), 
