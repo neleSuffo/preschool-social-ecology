@@ -31,7 +31,7 @@ def main():
 
     model = YOLO(model_name)
 
-    experiment_name = f"{timestamp}_{FaceConfig.MODEL_NAME}"
+    experiment_name = f"{FaceConfig.MODEL_NAME}_{timestamp}"
     output_dir = base_output_dir / experiment_name
 
     print(f"Training will be saved to: {output_dir}")
@@ -40,7 +40,7 @@ def main():
     # Train the model with improved regularization to reduce overfitting
     model.train(
         data=str(FaceDetection.DATA_CONFIG_PATH),
-        epochs=FaceConfig.NUM_EPOCHS
+        epochs=FaceConfig.NUM_EPOCHS,
         imgsz=FaceConfig.IMG_SIZE,
         batch=FaceConfig.BATCH_SIZE,
         project=str(base_output_dir),
