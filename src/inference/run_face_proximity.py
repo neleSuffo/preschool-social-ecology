@@ -7,6 +7,7 @@ import numpy as np
 from typing import List
 from pathlib import Path
 from ultralytics import YOLO
+from tqdm import tqdm
 from constants import DataPaths, FaceDetection
 from models.proximity.estimate_proximity import calculate_proximity
 
@@ -90,26 +91,35 @@ def process_video(video_name: str, frame_step: int,
     processed_frames = 0
     total_faces = 0
     
+    # Filter frames that will be processed (respecting frame_step)
+    frames_to_process = []
     for frame_file in frame_files:
-        # Extract frame number from filename: video_name_000123.jpg -> 123
         try:
             frame_number = int(frame_file.stem.split('_')[-1])
+            if frame_step > 1 and frame_number % frame_step != 0:
+                continue
+            frames_to_process.append((frame_file, frame_number))
         except ValueError:
             logging.warning(f"Could not extract frame number from: {frame_file}")
             continue
-        
-        # Skip frames according to frame_step
-        if frame_step > 1 and frame_number % frame_step != 0:
-            continue
-        
-        # Process frame
-        face_count = process_frame(frame_file, video_id, frame_number, face_model, cursor)
-        total_faces += face_count
-        processed_frames += 1
-        
-        # Commit every 100 frames
-        if processed_frames % 100 == 0:
-            conn.commit()
+    
+    # Process frames with progress bar
+    with tqdm(frames_to_process, desc=f"Processing {video_name}", unit="frames") as pbar:
+        for frame_file, frame_number in pbar:
+            # Process frame
+            face_count = process_frame(frame_file, video_id, frame_number, face_model, cursor)
+            total_faces += face_count
+            processed_frames += 1
+            
+            # Update progress bar with current stats
+            pbar.set_postfix({
+                'faces_detected': total_faces,
+                'current_frame': frame_number
+            })
+            
+            # Commit every 100 frames
+            if processed_frames % 100 == 0:
+                conn.commit()
     
     conn.commit()
     logging.info(f"Processed {processed_frames} frames, detected {total_faces} faces")
