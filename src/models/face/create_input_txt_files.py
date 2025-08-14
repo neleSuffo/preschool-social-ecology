@@ -98,20 +98,6 @@ def save_annotations(annotations: List[Tuple]) -> None:
     output_dir = FaceDetection.LABELS_INPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Construct full image paths
-    image_paths = []
-    for ann in annotations:
-        img_name = ann[3]
-        # Extract the parent folder from the filename (assumes filename starts with folder name)
-        parent_folder = "_".join(img_name.split("_")[:-1])
-        img_path = DataPaths.IMAGES_INPUT_DIR / parent_folder / img_name
-        image_paths.append(img_path)
-
-    # Get dimensions for all images
-    image_dims = get_image_dimensions(image_paths)
-    if not image_dims:
-        raise RuntimeError("No valid images found. Check your image paths.")
-
     files = defaultdict(list)
     processed, skipped = 0, 0
 
@@ -126,7 +112,16 @@ def save_annotations(annotations: List[Tuple]) -> None:
 
         try:
             bbox = json.loads(bbox_json)
-            width, height = image_dims[0], image_dims[1]
+            
+            # Get dimensions for this specific image
+            img = cv2.imread(str(img_path))
+            if img is None:
+                logging.warning(f"Could not read image: {img_path}")
+                skipped += 1
+                continue
+                
+            height, width = img.shape[:2]  # cv2 returns (height, width, channels)
+            
             yolo_bbox = convert_to_yolo_format(width, height, bbox)
             class_id = FaceConfig.AGE_GROUP_TO_CLASS_ID.get(age, 99)
             files[img_name].append(f"{class_id} " + " ".join(map(str, yolo_bbox)) + "\n")
