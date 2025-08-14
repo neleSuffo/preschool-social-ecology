@@ -111,19 +111,8 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
         CREATE TABLE Models (
             model_id INTEGER PRIMARY KEY AUTOINCREMENT,
             model_name TEXT UNIQUE,
-            model_type TEXT NOT NULL CHECK(model_type IN ('detection', 'classification', 'audio')),
-            description TEXT
-        )
-    ''')
-
-    cursor.execute('''
-        CREATE TABLE Classes (
-            class_definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_id INTEGER,
-            variable_name TEXT,
-            class_value INTEGER,
-            class_description TEXT,
-            FOREIGN KEY (model_id) REFERENCES Models(model_id)
+            description TEXT,
+            output_variables TEXT  -- JSON string describing the output variables
         )
     ''')
     
@@ -183,55 +172,15 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
         )
     ''')
 
+    # Insert default models with their output variable descriptions
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS VideoStatistics (
-            video_id INTEGER PRIMARY KEY,
-            total_frames INTEGER,
-            processed_frames INTEGER,
-            -- Face detection stats
-            child_face_count INTEGER DEFAULT 0,
-            adult_face_count INTEGER DEFAULT 0,
-            avg_proximity REAL,
-            -- Person classification stats
-            frames_with_adult_person INTEGER DEFAULT 0,
-            frames_without_adult_person INTEGER DEFAULT 0,
-            frames_with_child_person INTEGER DEFAULT 0,
-            frames_without_child_person INTEGER DEFAULT 0,
-            -- Audio classification stats
-            has_kchi INTEGER DEFAULT 0,
-            has_cds INTEGER DEFAULT 0,
-            has_ohs INTEGER DEFAULT 0,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (video_id) REFERENCES Videos(video_id)
-        )
-    ''')
-
-    # Insert default models and their classes
-    cursor.execute('''
-        INSERT OR IGNORE INTO Models (model_name, model_type, description) VALUES 
-        ('yolo_face_detection', 'detection', 'YOLO model for face detection with age classification'),
-        ('cnn_rnn_person_classification', 'classification', 'CNN+RNN model for person presence classification'),
-        ('audio_voice_classification', 'audio', 'Audio model for voice type classification')
-    ''')
-    
-    # Insert class definitions for better documentation
-    cursor.execute('''
-        INSERT OR IGNORE INTO Classes (model_id, variable_name, class_value, class_description) VALUES 
-        -- Face detection age classes
-        (1, 'age_class', 0, 'child_face'),
-        (1, 'age_class', 1, 'adult_face'),
-        -- Person classification variables
-        (2, 'has_adult_person', 0, 'no_adult_person'),
-        (2, 'has_adult_person', 1, 'yes_adult_person'),
-        (2, 'has_child_person', 0, 'no_child_person'), 
-        (2, 'has_child_person', 1, 'yes_child_person'),
-        -- Audio classification variables
-        (3, 'has_kchi', 0, 'no_kchi'),
-        (3, 'has_kchi', 1, 'yes_kchi'),
-        (3, 'has_cds', 0, 'no_cds'),
-        (3, 'has_cds', 1, 'yes_cds'),
-        (3, 'has_ohs', 0, 'no_ohs'),
-        (3, 'has_ohs', 1, 'yes_ohs')
+        INSERT OR IGNORE INTO Models (model_name, description, output_variables) VALUES 
+        ('yolo_face_detection', 'YOLO model for face detection with age classification', 
+         '{"age_class": {"0": "child_face", "1": "adult_face"}, "proximity": "continuous_value"}'),
+        ('cnn_rnn_person_classification', 'CNN+RNN model for person presence classification',
+         '{"has_adult_person": {"0": "no", "1": "yes"}, "has_child_person": {"0": "no", "1": "yes"}}'),
+        ('audio_voice_classification', 'Audio model for voice type classification',
+         '{"has_kchi": {"0": "no", "1": "yes"}, "has_cds": {"0": "no", "1": "yes"}, "has_ohs": {"0": "no", "1": "yes"}}')
     ''')
     
     # Load age group data from CSV
