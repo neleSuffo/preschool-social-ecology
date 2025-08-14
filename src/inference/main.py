@@ -57,31 +57,40 @@ def get_balanced_videos(videos_per_group: int) -> list:
     
     return selected_videos
 
-def main(videos_per_group: int = None):
+def main(frame_step: int = 10, num_videos: int = None):
     """
     This function runs the detection pipeline. It first sets up the detection database and then runs the detection pipeline.
     
     Parameters:
     ----------
-    num_videos_to_process: int
-        The number of videos
+    frame_step : int
+        The step size for processing frames in the videos, default is 10
+    num_videos : int
+        The number of videos to process per age group. If not specified, processes all videos.
+        If specified, it will select a balanced number of videos from each age group.
     """
     # Setup the detection database which will hold the detection results (if it doesnt already exist)
     setup_detection_database()
     
     # Select videos to process
-    selected_videos = get_balanced_videos(videos_per_group)
-    if not selected_videos:
-        logging.error("No videos selected for processing. Exiting.")
-        return
-    
+    if num_videos is None:
+        # Process all videos from CSV
+        age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+        selected_videos = age_df['video_name'].tolist()
+        logging.info(f"Processing all {len(selected_videos)} videos from CSV")
+    else:
+        # Process balanced selection from each age group
+        selected_videos = get_balanced_videos(num_videos)
+        logging.info(f"Processing {len(selected_videos)} selected videos ({num_videos} per age group)")
+
     # Run the detection pipeline
     #run_person.main(selected_videos)
-    #run_face_proximity.main(selected_videos)
+    run_face_proximity.main(selected_videos, frame_step)
     #run_audio_classification.main(selected_videos)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the detection pipeline')
-    parser.add_argument('--num_videos_per_age', type=int, help='The number of videos to process per age group. If not specified, processes all videos.', default=None)
+    parser.add_argument('--frame_step', type=int, default=10, help='Frame step for processing videos (default: 10)')
+    parser.add_argument('--num_videos', type=int, help='The number of videos to process per age group. If not specified, processes all videos.', default=None)
     args = parser.parse_args()
-    main(args.num_videos_per_age)
+    main(args.frame_step, args.num_videos)
