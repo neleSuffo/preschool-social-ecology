@@ -111,6 +111,9 @@ class PersonConfig:
     LR = 1e-4
     FREEZE_CNN = True
     PATIENCE = 15
+    SEQUENCE_LENGTH = 60
+    DROPOUT = 0.5
+    WEIGHT_DECAY = 1e-5
 
 class FaceConfig:
     """Configuration for face detection and classification."""
