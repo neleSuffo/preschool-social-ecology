@@ -23,18 +23,38 @@ class Proximity:
             ProximityConstants.REFERENCE_VALUES["adult_ref_aspect_ratio"]
         )
 
-    def calculate(self, bbox, is_child=True, aspect_ratio_threshold=1):
+    def calculate(self, bbox, class_id, aspect_ratio_threshold=1) -> float:
+        """
+        Calculate proximity based on bounding box and class ID.
+        
+        Parameters:
+        ----------
+        bbox: list or tuple of (x1, y1, x2, y2)
+            Bounding box coordinates.
+        class_id: int
+            Class ID (0 for child, 1 for adult).
+        aspect_ratio_threshold: float
+            Maximum allowed deviation from reference aspect ratio.
+            
+        Returns:
+        -------
+        float: 
+            Normalized proximity value between 0.0 and 1.0.
+        """
         x1, y1, x2, y2 = map(int, bbox)
         width, height = x2 - x1, y2 - y1
         area = width * height
         aspect_ratio = width / height if height != 0 else 0
 
         # Select reference values
-        if is_child:
+        if class_id == 0:  # Child
             ref_close, ref_far, ref_ar = self.child_ref_close, self.child_ref_far, self.child_ref_aspect_ratio
-        else:
+        elif class_id == 1:
             ref_close, ref_far, ref_ar = self.adult_ref_close, self.adult_ref_far, self.adult_ref_aspect_ratio
-
+        else:
+            logging.error(f"Invalid class_id: {class_id}. Must be 0 (child) or 1 (adult).")
+            return None
+        
         # Partial face check
         if abs(aspect_ratio - ref_ar) > aspect_ratio_threshold:
             logging.debug("Partial face detected - returning maximum proximity")
@@ -52,21 +72,18 @@ class Proximity:
 
 
 # --- Main function for external calls ---
-def calculate_proximities(bboxes, is_child_flags, aspect_ratio_threshold=1):
+def calculate_proximity(bbox, class_id, aspect_ratio_threshold=1):
     """
-    Calculate proximity for a list of bounding boxes with age information.
+    Calculate proximity for a single bounding box with age information.
 
     Args:
-        bboxes: list of (x1, y1, x2, y2) tuples
-        is_child_flags: list of bools indicating whether each bbox is a child
+        bbox: (x1, y1, x2, y2) tuple or list
+        class_id: class ID (0 for child, 1 for adult)
         aspect_ratio_threshold: max deviation from reference aspect ratio
 
     Returns:
-        list of normalized proximity values
+        float: normalized proximity value
     """
     prox = Proximity()
-    proximities = [
-        prox.calculate(bbox, is_child=is_child, aspect_ratio_threshold=aspect_ratio_threshold)
-        for bbox, is_child in zip(bboxes, is_child_flags)
-    ]
-    return proximities
+    proximity = prox.calculate(bbox, class_id=class_id, aspect_ratio_threshold=aspect_ratio_threshold)
+    return proximity
