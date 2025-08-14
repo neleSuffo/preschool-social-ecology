@@ -21,7 +21,7 @@ class DataPaths:
     ANNO_DB_PATH = Path(ANNO_DIR/"quantex_annotations.db")
     RAWFRAMES_EXTRACTION_ERROR_LOG = Path(BasePaths.DATA_DIR/"rawframes_extraction_error.log")
     PROCESSED_VIDEOS_LOG = Path(BasePaths.DATA_DIR/"processed_videos.log")
-    SUBJECTS_CSV_PATH = Path(BasePaths.DATA_DIR/"quantex_subjects.csv")
+    SUBJECTS_CSV_PATH = Path(BasePaths.DATA_DIR/"age_group.csv")
     INFERENCE_DB_PATH = Path(BasePaths.OUTPUT_DIR/"quantex_inference/inference_database.db")
 
 class AudioClassification:
