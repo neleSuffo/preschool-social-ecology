@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from datetime import datetime
 from ultralytics import YOLO
 from constants import FaceDetection
