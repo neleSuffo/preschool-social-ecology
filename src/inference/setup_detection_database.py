@@ -3,7 +3,7 @@ import logging
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 from pathlib import Path
-from constants import DataPaths, DetectionPipeline, BasePaths
+from constants import DataPaths
 
 logging.basicConfig(level=logging.INFO)
     
