@@ -7,36 +7,25 @@ from constants import DataPaths
 
 logging.basicConfig(level=logging.INFO)
     
-def store_subject_data(age_group_df: pd.DataFrame, video_paths: list, conn):
+def store_video_data(age_group_df: pd.DataFrame, conn):
     """
-    Stores subject information from age_group.csv in the Subjects table.
+    Stores video information from age_group.csv directly in the Videos table.
     Logs video information in a tabular format.
     
     Parameters:
     ----------
     age_group_df : pd.DataFrame
-        DataFrame containing subject information from age_group.csv
-    video_paths : list
-        List of video file paths to process
+        DataFrame containing video information from age_group.csv
     conn : sqlite3.Connection
         SQLite connection object
     """
     cursor = conn.cursor()
     video_data = []
 
-    for video_path in video_paths:
-        video_name = Path(video_path).stem
-
-        # Check if this video is in the age_group data
-        matching_rows = age_group_df[age_group_df['video_name'] == video_name]
-        
-        if matching_rows.empty:
-            logging.warning(f"Video {video_name} not found in age_group.csv")
-            continue
-
+    for _, row in age_group_df.iterrows():
         try:
             # Get data from the CSV
-            row = matching_rows.iloc[0]
+            video_name = row['video_name']
             child_id = row['child_id']
             recording_date_str = row['recording_date']
             age_at_recording = row['age_at_recording']
@@ -44,8 +33,11 @@ def store_subject_data(age_group_df: pd.DataFrame, video_paths: list, conn):
             
             # Parse recording date (format: dd.mm.yyyy)
             recording_date = pd.to_datetime(recording_date_str, format="%d.%m.%Y")
+            
+            # Construct video path
+            video_path = str(DataPaths.VIDEOS_INPUT_DIR / f"{video_name}.MP4")
 
-            # Add data to video_data list
+            # Add data to video_data list for logging
             video_data.append({
                 'video_name': video_name,
                 'child_id': child_id,
@@ -54,20 +46,21 @@ def store_subject_data(age_group_df: pd.DataFrame, video_paths: list, conn):
                 'age_group': age_group
             })
 
-            # Insert or update subject data
+            # Insert or update video data
             cursor.execute('''
-                INSERT INTO Subjects (video_name, child_id, recording_date, age_at_recording, age_group)
-                    VALUES (?, ?, ?, ?, ?)
+                INSERT INTO Videos (video_name, video_path, child_id, recording_date, age_at_recording, age_group)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(video_name) DO UPDATE SET
+                    video_path=excluded.video_path,
                     child_id=excluded.child_id,
                     recording_date=excluded.recording_date,
                     age_at_recording=excluded.age_at_recording,
                     age_group=excluded.age_group
-                ''', (video_name, child_id, recording_date.strftime('%Y-%m-%d'), 
+                ''', (video_name, video_path, child_id, recording_date.strftime('%Y-%m-%d'), 
                     age_at_recording, age_group))
 
         except Exception as e:
-            logging.error(f"Error processing video {video_name}: {str(e)}")
+            logging.error(f"Error processing video {row.get('video_name', 'unknown')}: {str(e)}")
             continue
     
     conn.commit()
@@ -75,9 +68,9 @@ def store_subject_data(age_group_df: pd.DataFrame, video_paths: list, conn):
     # Create DataFrame and log it
     if video_data:
         df = pd.DataFrame(video_data)
-        logging.info("\nVideo and Subject Information:\n" + df.to_string())
+        logging.info("\nVideo Information:\n" + df.to_string())
     
-    logging.info("Stored subject data in the database.")
+    logging.info(f"Stored {len(video_data)} videos in the database.")
     
 def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     """
@@ -105,20 +98,12 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Videos (
             video_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_path TEXT UNIQUE,
+            video_name TEXT UNIQUE,
+            video_path TEXT,
             child_id INTEGER,
             recording_date DATE,
-            age_at_recording FLOAT
-        )
-    ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Frames (
-            frame_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id INTEGER,
-            frame_number INTEGER,
-            UNIQUE(video_id, frame_number),
-            FOREIGN KEY (video_id) REFERENCES Videos(video_id)
+            age_at_recording FLOAT,
+            age_group INTEGER
         )
     ''')
 
@@ -133,10 +118,11 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
 
     cursor.execute('''
         CREATE TABLE Classes (
-            class_id INTEGER,
+            class_definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
             model_id INTEGER,
-            class_name TEXT,
-            PRIMARY KEY (model_id, class_id),
+            variable_name TEXT,
+            class_value INTEGER,
+            class_description TEXT,
             FOREIGN KEY (model_id) REFERENCES Models(model_id)
         )
     ''')
@@ -156,7 +142,7 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
             age_class INTEGER CHECK(age_class IN (0, 1)),  -- 0: child, 1: adult
             proximity REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (video_id, frame_number) REFERENCES Frames(video_id, frame_number),
+            FOREIGN KEY (video_id) REFERENCES Videos(video_id),
             FOREIGN KEY (model_id) REFERENCES Models(model_id)
         )
     ''')
@@ -173,7 +159,7 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
             has_child_person INTEGER CHECK(has_child_person IN (0, 1)),  -- 0: no, 1: yes
             child_confidence_score REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (video_id, frame_number) REFERENCES Frames(video_id, frame_number),
+            FOREIGN KEY (video_id) REFERENCES Videos(video_id),
             FOREIGN KEY (model_id) REFERENCES Models(model_id)
         )
     ''')
@@ -192,7 +178,7 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
             has_ohs INTEGER CHECK(has_ohs IN (0, 1)),  -- 0: no, 1: yes
             ohs_confidence_score REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (video_id, frame_number) REFERENCES Frames(video_id, frame_number),
+            FOREIGN KEY (video_id) REFERENCES Videos(video_id),
             FOREIGN KEY (model_id) REFERENCES Models(model_id)
         )
     ''')
@@ -230,44 +216,32 @@ def setup_detection_database(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     
     # Insert class definitions for better documentation
     cursor.execute('''
-        INSERT OR IGNORE INTO Classes (model_id, class_id, class_name) VALUES 
-        (1, 0, 'child_face'),
-        (1, 1, 'adult_face'),
-        (2, 0, 'no_adult_person'),
-        (2, 1, 'has_adult_person'),
-        (2, 2, 'no_child_person'), 
-        (2, 3, 'has_child_person'),
-        (3, 0, 'no_kchi'),
-        (3, 1, 'has_kchi'),
-        (3, 2, 'no_cds'),
-        (3, 3, 'has_cds'),
-        (3, 4, 'no_ohs'),
-        (3, 5, 'has_ohs')
+        INSERT OR IGNORE INTO Classes (model_id, variable_name, class_value, class_description) VALUES 
+        -- Face detection age classes
+        (1, 'age_class', 0, 'child_face'),
+        (1, 'age_class', 1, 'adult_face'),
+        -- Person classification variables
+        (2, 'has_adult_person', 0, 'no_adult_person'),
+        (2, 'has_adult_person', 1, 'yes_adult_person'),
+        (2, 'has_child_person', 0, 'no_child_person'), 
+        (2, 'has_child_person', 1, 'yes_child_person'),
+        -- Audio classification variables
+        (3, 'has_kchi', 0, 'no_kchi'),
+        (3, 'has_kchi', 1, 'yes_kchi'),
+        (3, 'has_cds', 0, 'no_cds'),
+        (3, 'has_cds', 1, 'yes_cds'),
+        (3, 'has_ohs', 0, 'no_ohs'),
+        (3, 'has_ohs', 1, 'yes_ohs')
     ''')
     
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS Subjects (
-        video_name TEXT PRIMARY KEY,
-        child_id INTEGER,  
-        recording_date DATE,
-        gender TEXT,
-        age_at_recording FLOAT,
-        age_group INTEGER
-        )
-    ''')
-
-    # Get list of video paths
-    video_paths = list(Path(DataPaths.VIDEOS_INPUT_DIR).rglob("*.MP4"))
-    logging.info(f"Found {len(video_paths)} video files.")
-       
     # Load age group data from CSV
     age_group_df = pd.read_csv(
         DataPaths.SUBJECTS_CSV_PATH,
         header=0, sep=',', encoding='utf-8'
     )
     
-    # Store subject data in the database
-    store_subject_data(age_group_df, video_paths, conn)
+    # Store video data directly in Videos table
+    store_video_data(age_group_df, conn)
     
     conn.commit()
     conn.close()
