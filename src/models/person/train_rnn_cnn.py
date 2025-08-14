@@ -3,7 +3,7 @@ End-to-end pipeline:
   ResNet (frame-level feature extractor) -> BiLSTM -> per-frame classifier
 
 Usage:
-  python train_cnn_rnn.py --train_csv frames_train.csv --val_csv frames_val.csv --out_dir checkpoints
+  python train_cnn_rnn.py
 """
 
 import os
@@ -31,7 +31,7 @@ from config import PersonConfig
 # Dataset
 # ---------------------------
 class VideoFrameDataset(Dataset):
-    def __init__(self, csv_file, sequence_length=10, transform=None, log_dir=None):
+    def __init__(self, csv_file, sequence_length=PersonConfig.SEQUENCE_LENGTH, transform=None, log_dir=None):
         self.data = pd.read_csv(csv_file)
         self.sequence_length = sequence_length
         self.transform = transform
@@ -44,7 +44,11 @@ class VideoFrameDataset(Dataset):
             self.grouped.append(sorted_group.reset_index(drop=True))
 
     def log_skipped_files(self):
-        """Write skipped files to a log file"""
+        """Write skipped files to a log file for debugging purposes.
+        
+        Creates a text file containing all frames that were skipped during dataset loading,
+        along with the reason for skipping (file not found, loading error, etc.).
+        """
         if self.log_dir and self.skipped_files:
             log_path = os.path.join(self.log_dir, "skipped_frames.txt")
             with open(log_path, 'w') as f:
@@ -55,9 +59,42 @@ class VideoFrameDataset(Dataset):
             print(f"Logged {len(self.skipped_files)} skipped frames to {log_path}")
 
     def __len__(self):
+        """Get the total number of sequences in the dataset.
+        
+        Calculates the number of possible sequences that can be created from all video groups,
+        considering the sequence length parameter.
+        
+        Parameters
+        ----------
+        None
+        
+        Returns
+        -------
+        int
+            Total number of sequences available in the dataset.
+        """
         return sum(max(0, len(g) - self.sequence_length + 1) for g in self.grouped)
 
     def __getitem__(self, idx):
+        """Get a sequence of frames and labels for training.
+        
+        Extracts a sequence of consecutive frames from a video along with their corresponding labels.
+        Handles missing or corrupted files by skipping them and logging the issues.
+        
+        Parameters
+        ----------
+        idx : int
+            Index of the sequence to retrieve.
+            
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, int, str]
+            A tuple containing:
+            - frames: torch.Tensor of shape (seq_len, C, H, W) with frame images
+            - labels: torch.Tensor of shape (seq_len, 2) with adult/child labels  
+            - length: int indicating actual sequence length
+            - video_id: str identifier for the source video
+        """
         total = 0
         for group_idx, group in enumerate(self.grouped):
             length = max(0, len(group) - self.sequence_length + 1)
@@ -87,7 +124,7 @@ class VideoFrameDataset(Dataset):
                         if self.transform:
                             img = self.transform(img)
                         frames.append(img)
-                        labels.append([row['adult'], row['child']])
+                        labels.append([row['child'], row['adult']])
                         if video_id is None:
                             video_id = row['video_id']
                         frames_loaded += 1
@@ -117,11 +154,31 @@ class VideoFrameDataset(Dataset):
 # Transforms for images
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(),  # Adds a 50% chance of flipping the image
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
     transforms.ToTensor(),
-    # optionally normalize with ImageNet mean/std if using pretrained CNN
+    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
 ])
 
 def collate_fn(batch):
+    """Collate function for DataLoader to handle variable sequence lengths.
+    
+    Pads sequences to the maximum length in the batch and creates masks for valid data.
+    
+    Parameters
+    ----------
+    batch : List[Tuple]
+        List of samples from the dataset, each containing frames, labels, length, and video_id.
+        
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[str]]
+        A tuple containing:
+        - images_padded: torch.Tensor of shape (batch_size, max_seq_len, C, H, W)
+        - labels_padded: torch.Tensor of shape (batch_size, max_seq_len, 2) with -100 for padding
+        - lengths: torch.Tensor of actual sequence lengths
+        - video_ids: List of video identifiers
+    """
     batch_sizes = [item[2] for item in batch]
     max_len = max(batch_sizes)
     bs = len(batch)
@@ -142,9 +199,19 @@ def collate_fn(batch):
 # Model: CNN backbone + RNN
 # ---------------------------
 class CNNEncoder(nn.Module):
-    """
-    Uses a pretrained ResNet (without final FC) to extract per-frame features.
-    Outputs feature vector for each frame.
+    """CNN feature extractor using pretrained ResNet backbone.
+    
+    Extracts feature vectors from individual frames using a pretrained ResNet model.
+    The final fully connected layer is removed to get feature representations.
+    
+    Parameters
+    ----------
+    backbone : str, default='resnet18'
+        The ResNet architecture to use ('resnet18' or 'resnet50').
+    pretrained : bool, default=True
+        Whether to use ImageNet pretrained weights.
+    feat_dim : int, default=512
+        Desired feature dimension. If different from backbone output, adds projection layer.
     """
     def __init__(self, backbone='resnet18', pretrained=True, feat_dim=512):
         super().__init__()
@@ -170,6 +237,20 @@ class CNNEncoder(nn.Module):
             self.project = None
 
     def forward(self, x):
+        """Forward pass through the CNN encoder.
+        
+        Processes a batch of images through the ResNet backbone to extract features.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input images of shape (batch_size * seq_len, C, H, W).
+            
+        Returns
+        -------
+        torch.Tensor
+            Feature vectors of shape (batch_size * seq_len, feat_dim).
+        """
         # x: (batch*seq_len, C, H, W)
         f = self.encoder(x)  # (N, feat_in, 1,1)
         f = f.view(f.size(0), -1)  # (N, feat_in)
@@ -178,7 +259,27 @@ class CNNEncoder(nn.Module):
         return f  # (N, feat_dim)
 
 class FrameRNNClassifier(nn.Module):
-    def __init__(self, feat_dim=512, rnn_hidden=256, rnn_layers=1, bidirectional=True, num_outputs=2, dropout=0.3):
+    """Bidirectional LSTM classifier for sequence-level person classification.
+    
+    Takes CNN features from a sequence of frames and processes them through a bidirectional LSTM
+    to output per-frame classifications for adult and child presence.
+    
+    Parameters
+    ----------
+    feat_dim : int, default=512
+        Dimension of input CNN features.
+    rnn_hidden : int, default=256
+        Hidden dimension of the LSTM.
+    rnn_layers : int, default=1
+        Number of LSTM layers.
+    bidirectional : bool, default=True
+        Whether to use bidirectional LSTM.
+    num_outputs : int, default=2
+        Number of output classes (adult, child).
+    dropout : float, default from FaceConfig.DROPOUT
+        Dropout probability for regularization.
+    """
+    def __init__(self, feat_dim=512, rnn_hidden=256, rnn_layers=1, bidirectional=True, num_outputs=2, dropout=PersonConfig.DROPOUT):
         super().__init__()
         self.rnn = nn.LSTM(input_size=feat_dim, hidden_size=rnn_hidden,
                            num_layers=rnn_layers, batch_first=True,
@@ -192,6 +293,22 @@ class FrameRNNClassifier(nn.Module):
         )
 
     def forward(self, feats, lengths):
+        """Forward pass through the RNN classifier.
+        
+        Processes CNN features through bidirectional LSTM and classification layers.
+        
+        Parameters
+        ----------
+        feats : torch.Tensor
+            CNN features of shape (batch_size, max_seq_len, feat_dim).
+        lengths : torch.Tensor
+            Actual sequence lengths for each sample in the batch.
+            
+        Returns
+        -------
+        torch.Tensor
+            Classification logits of shape (batch_size, max_seq_len, num_outputs).
+        """
         packed = pack_padded_sequence(feats, lengths.cpu(), batch_first=True, enforce_sorted=False)
         packed_out, _ = self.rnn(packed)
         rnn_out, _ = pad_packed_sequence(packed_out, batch_first=True)
@@ -201,8 +318,26 @@ class FrameRNNClassifier(nn.Module):
 # ---------------------------
 # Utilities: training + eval
 # ---------------------------
-def calculate_metrics(y_true, y_pred, class_names=['Adult', 'Child']):
-    """Calculate precision, recall, F1 for each class and macro averages"""
+def calculate_metrics(y_true, y_pred, class_names=PersonConfig.TARGET_LABELS):
+    """Calculate precision, recall, F1 for each class and macro averages.
+    
+    Computes per-class and macro-averaged metrics for binary classification tasks.
+    
+    Parameters
+    ----------
+    y_true : torch.Tensor or np.ndarray
+        Ground truth labels of shape (n_samples, n_classes).
+    y_pred : torch.Tensor or np.ndarray
+        Predicted labels of shape (n_samples, n_classes).
+    class_names : List[str], default=['child', 'adult']
+        Names of the classes for metric labeling.
+        
+    Returns
+    -------
+    Dict[str, float]
+        Dictionary containing precision, recall, F1, and accuracy metrics for each class
+        and their macro averages.
+    """
     # Convert to numpy if tensors
     if torch.is_tensor(y_true):
         y_true = y_true.cpu().numpy()
@@ -257,9 +392,26 @@ def calculate_metrics(y_true, y_pred, class_names=['Adult', 'Child']):
     return metrics
 
 def sequence_features_from_cnn(cnn, images_padded, lengths, device):
-    """
-    images_padded: (batch, max_seq, C, H, W)
-    returns: feats_padded (batch, max_seq, feat_dim)
+    """Extract CNN features from padded image sequences.
+    
+    Processes a batch of padded image sequences through the CNN to extract features
+    for subsequent RNN processing.
+    
+    Parameters
+    ----------
+    cnn : CNNEncoder
+        The CNN model for feature extraction.
+    images_padded : torch.Tensor
+        Padded image sequences of shape (batch_size, max_seq_len, C, H, W).
+    lengths : torch.Tensor
+        Actual sequence lengths for each sample.
+    device : torch.device
+        Device to run computations on.
+        
+    Returns
+    -------
+    torch.Tensor
+        Extracted features of shape (batch_size, max_seq_len, feat_dim).
     """
     bs, max_seq, C, H, W = images_padded.shape
     imgs = images_padded.view(bs * max_seq, C, H, W).to(device)
@@ -268,6 +420,37 @@ def sequence_features_from_cnn(cnn, images_padded, lengths, device):
     return feats
 
 def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cnn=False, scaler=None, accumulation_steps=4):
+    """Train the model for one epoch with gradient accumulation and mixed precision.
+    
+    Performs one epoch of training with support for CNN freezing, gradient accumulation,
+    and automatic mixed precision training for improved memory efficiency and speed.
+    
+    Parameters
+    ----------
+    models : Tuple[nn.Module, nn.Module]
+        Tuple containing (CNN encoder, RNN classifier) models.
+    optimizers : Tuple[torch.optim.Optimizer, torch.optim.Optimizer]
+        Tuple containing (CNN optimizer, RNN optimizer). CNN optimizer can be None if frozen.
+    criterion : nn.Module
+        Loss function for training.
+    dataloader : DataLoader
+        Training data loader.
+    device : torch.device
+        Device to run training on.
+    freeze_cnn : bool, default=False
+        Whether to freeze CNN parameters during training.
+    scaler : torch.cuda.amp.GradScaler, optional
+        Gradient scaler for mixed precision training.
+    accumulation_steps : int, default=4
+        Number of steps to accumulate gradients before updating.
+        
+    Returns
+    -------
+    Tuple[float, Dict[str, float]]
+        A tuple containing:
+        - avg_loss: Average loss for the epoch
+        - metrics: Dictionary with training metrics (precision, recall, F1, accuracy)
+    """
     cnn, rnn = models
     opt_cnn, opt_rnn = optimizers
     cnn.train(not freeze_cnn)
@@ -383,6 +566,28 @@ def train_one_epoch(models, optimizers, criterion, dataloader, device, freeze_cn
     return avg_loss, metrics
 
 def eval_on_loader(models, criterion, dataloader, device):
+    """Evaluate the model on a data loader.
+    
+    Performs evaluation on the given dataset and computes loss and classification metrics.
+    
+    Parameters
+    ----------
+    models : Tuple[nn.Module, nn.Module]
+        Tuple containing (CNN encoder, RNN classifier) models.
+    criterion : nn.Module
+        Loss function for evaluation.
+    dataloader : DataLoader
+        Data loader for evaluation data.
+    device : torch.device
+        Device to run evaluation on.
+        
+    Returns
+    -------
+    Tuple[float, Dict[str, float]]
+        A tuple containing:
+        - avg_loss: Average loss for the evaluation
+        - metrics: Dictionary with evaluation metrics (precision, recall, F1, accuracy)
+    """
     cnn, rnn = models
     cnn.eval(); rnn.eval()
     total_loss = 0.0
@@ -431,6 +636,22 @@ def eval_on_loader(models, criterion, dataloader, device):
     return avg_loss, metrics
 
 def save_script_and_hparams(out_dir, args):
+    """Save a copy of the training script and hyperparameters to the output directory.
+    
+    Creates backup copies of the current script and saves all hyperparameters from PersonConfig
+    as a JSON file for reproducibility.
+    
+    Parameters
+    ----------
+    out_dir : str
+        Output directory path where files will be saved.
+    args : argparse.Namespace
+        Command line arguments passed to the script.
+        
+    Returns
+    -------
+    None
+    """
     # Save a copy of the current script
     try:
         script_path = os.path.abspath(sys.argv[0])
@@ -449,6 +670,19 @@ def save_script_and_hparams(out_dir, args):
 # Main: parse args, start training
 # ---------------------------
 def main():
+    """Main training function for the CNN-RNN person classification model.
+    
+    Sets up the training pipeline including data loading, model initialization, 
+    training loop with early stopping, and model checkpointing.
+    
+    Parameters
+    ----------
+    None
+        
+    Returns
+    -------
+    None
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
@@ -485,13 +719,12 @@ def main():
     scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
 
     # --- INCREASED MODEL COMPLEXITY ---
-    cnn = CNNEncoder(backbone='resnet50', pretrained=True, feat_dim=512).to(device)
+    #cnn = CNNEncoder(backbone='resnet50', pretrained=True, feat_dim=512).to(device)
+    cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=512).to(device)
     rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=256,
                                    rnn_layers=2, bidirectional=True,
                                    num_outputs=2, dropout=0.3).to(device)
-    # --- END OF CHANGES ---
 
-    # Compile models for faster execution (PyTorch 2.0+)
     try:
         cnn = torch.compile(cnn)
         rnn_model = torch.compile(rnn_model)
@@ -500,7 +733,7 @@ def main():
         print(f"Could not compile models: {e}")
 
     opt_cnn = torch.optim.Adam(filter(lambda p: p.requires_grad, cnn.parameters()), lr=PersonConfig.LR) if not PersonConfig.FREEZE_CNN else None
-    opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=PersonConfig.LR)
+    opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=PersonConfig.LR, weight_decay=PersonConfig.WEIGHT_DECAY)
 
     criterion = nn.BCEWithLogitsLoss()
 
