@@ -53,6 +53,7 @@ def get_balanced_videos(videos_per_group: int) -> list:
         else:
             logging.warning(f"Age group {age_group} has only {len(videos)} videos, using all available")
             selected_videos.extend(videos)
+    logging.info(f"Selected {len(selected_videos)} videos across all age groups")
     
     return selected_videos
 
