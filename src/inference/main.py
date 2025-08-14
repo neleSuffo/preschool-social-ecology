@@ -4,7 +4,7 @@ import sqlite3
 from typing import Dict, List, Tuple
 import pandas as pd
 import numpy as np
-#import run_pipeline, run_person, run_face_proximity, run_audio_classification
+import run_person, run_face_proximity, run_speech_type
 from pathlib import Path
 from ultralytics import YOLO
 from setup_detection_database import setup_detection_database
@@ -41,8 +41,7 @@ def get_balanced_videos(videos_per_group: int) -> list:
             videos_by_age[age_group].append(video_name)
     
     # Log available videos per age group
-    for age_group, videos in videos_by_age.items():
-        logging.info(f"Age group {age_group}: {len(videos)} videos available")
+    logging.info("Available videos per age group: " + ", ".join(f"{age_group}: {len(videos)} videos" for age_group, videos in videos_by_age.items()))
     
     # Select balanced number of videos from each group
     for age_group in videos_by_age:
@@ -53,11 +52,10 @@ def get_balanced_videos(videos_per_group: int) -> list:
         else:
             logging.warning(f"Age group {age_group} has only {len(videos)} videos, using all available")
             selected_videos.extend(videos)
-    logging.info(f"Selected {len(selected_videos)} videos across all age groups")
     
     return selected_videos
 
-def main(frame_step: int = 10, num_videos: int = None):
+def main(frame_step: int = 10, num_videos_per_age: int = None):
     """
     This function runs the detection pipeline. It first sets up the detection database and then runs the detection pipeline.
     
@@ -65,7 +63,7 @@ def main(frame_step: int = 10, num_videos: int = None):
     ----------
     frame_step : int
         The step size for processing frames in the videos, default is 10
-    num_videos : int
+    num_videos_per_age : int
         The number of videos to process per age group. If not specified, processes all videos.
         If specified, it will select a balanced number of videos from each age group.
     """
@@ -73,15 +71,15 @@ def main(frame_step: int = 10, num_videos: int = None):
     setup_detection_database()
     
     # Select videos to process
-    if num_videos is None:
+    if num_videos_per_age is None:
         # Process all videos from CSV
         age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
         selected_videos = age_df['video_name'].tolist()
         logging.info(f"Processing all {len(selected_videos)} videos from CSV")
     else:
         # Process balanced selection from each age group
-        selected_videos = get_balanced_videos(num_videos)
-        logging.info(f"Processing {len(selected_videos)} selected videos ({num_videos} per age group)")
+        selected_videos = get_balanced_videos(num_videos_per_age)
+        logging.info(f"Processing {len(selected_videos)} selected videos ({num_videos_per_age} per age group)")
 
     # Run the detection pipeline
     #run_person.main(selected_videos)
@@ -91,6 +89,6 @@ def main(frame_step: int = 10, num_videos: int = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the detection pipeline')
     parser.add_argument('--frame_step', type=int, default=10, help='Frame step for processing videos (default: 10)')
-    parser.add_argument('--num_videos', type=int, help='The number of videos to process per age group. If not specified, processes all videos.', default=None)
+    parser.add_argument('--num_videos_per_age', type=int, help='The number of videos to process per age group. If not specified, processes all videos.', default=None)
     args = parser.parse_args()
-    main(args.frame_step, args.num_videos)
+    main(args.frame_step, args.num_videos_per_age)
