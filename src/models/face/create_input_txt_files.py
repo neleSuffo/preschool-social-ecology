@@ -253,202 +253,117 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
 
     return pd.DataFrame(image_class_mapping)
 
-def multilabel_stratified_split(df: pd.DataFrame,
-                              train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO,
-                              random_seed: int = DataConfig.RANDOM_SEED,
-                              min_ids_per_split: int = 2):
+def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO):
     """
-    Performs a group-based stratified split balancing three factors:
-    1. Group Integrity: Keeps all frames from an ID in one split.
-    2. Class Representation: Prioritizes ensuring all classes are present in val/test.
-    3. True Frame Distribution: Bases the split ratio on the number of frames.
-    4. Minimum ID Requirements: Ensures at least min_ids_per_split IDs in val/test sets.
-    
-    Parameters:
-    ----------
-    df: pd.DataFrame
-        DataFrame containing image filenames, IDs, and one-hot encoded class labels.
-    train_ratio: float
-        Target ratio for the training set based on frame count.
-    random_seed: int
-        Random seed for reproducibility.
-    min_ids_per_split: int
-        Minimum number of IDs required in validation and test sets.
-        
-    Returns:
-    -------
-    Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]
-        Lists of filenames and DataFrames for train, val, and test splits.
+    Splits the DataFrame into training, validation, and test sets using child IDs as the unit,
+    while keeping each split's class ratio close to the global dataset ratio.
     """
-    # Set random seed
-    random.seed(random_seed)
+    # --- Map video_id -> child_id ---
+    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
+    video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
+    conn.close()
+
+    def extract_child_id(file_name: str) -> str:
+        try:
+            return 'id' + file_name.split('id')[1].split('_')[0]
+        except (IndexError, ValueError):
+            return None
+
+    video_map['child_id'] = video_map['file_name'].apply(extract_child_id)
     
-    val_ratio = (1.0 - train_ratio) / 2  # Split remaining equally between val and test
-    test_ratio = val_ratio
-
-    # --- 1. Setup and Pre-analysis ---
-    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    output_file = BasePaths.LOGGING_DIR / f"split_distribution_face_det_{timestamp}.txt"
-
-    logging.info(f"Starting split for {df.shape[0]} frames and {df['id'].nunique()} unique IDs.")
-    if df.empty:
-        raise ValueError("Input DataFrame is empty!")
-
-    class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation']]
-    id_class_map = df.groupby('id')[class_columns].sum().apply(lambda s: s[s > 0].index.to_list(), axis=1).to_dict()
-
-    # Pre-calculate the 'weight' (frame count) of each ID
-    id_frame_count_map = df['id'].value_counts().to_dict()
-    total_frame_count = df.shape[0]
+    # Add child_id to our dataframe by mapping through image names
+    def get_child_id_from_filename(filename: str) -> str:
+        try:
+            return 'id' + filename.split('id')[1].split('_')[0]
+        except (IndexError, ValueError):
+            return None
     
-    # Check if we have enough IDs for minimum requirements
-    total_ids = len(id_class_map)
-    if total_ids < (min_ids_per_split * 2 + 1):  # Need at least 2 for val + 2 for test + 1 for train
-        logging.warning(f"Not enough IDs ({total_ids}) to guarantee {min_ids_per_split} IDs in each of val and test sets")
-        # Adjust minimum requirement if necessary
-        min_ids_per_split = max(1, (total_ids - 1) // 2)
-        logging.warning(f"Adjusted min_ids_per_split to {min_ids_per_split}")
+    df['child_id'] = df['filename'].apply(get_child_id_from_filename)
+    df.dropna(subset=['child_id'], inplace=True)
 
-    # --- 2. Main Hybrid Scoring Algorithm ---
-    available_ids = sorted(list(id_class_map.keys()))
-    random.shuffle(available_ids) # Shuffle to prevent any bias from sorting order
+    # --- Counts per child ---
+    class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
+    child_group_counts = df.groupby('child_id')[class_columns].sum()
 
-    train_ids, val_ids, test_ids = set(), set(), set()
-    
-    # Track split sizes by cumulative frame count
-    train_frames, val_frames, test_frames = 0, 0, 0
-    
-    # Track classes still needed in val and test
-    uncovered_val_classes = set(class_columns)
-    uncovered_test_classes = set(class_columns)
+    # Global target ratio (first class proportion)
+    global_counts = child_group_counts[class_columns].sum()
+    target_class_0_ratio = global_counts[class_columns[0]] / global_counts.sum()
 
-    # Define weights for the scoring model. Coverage bonus must be very high.
-    COVERAGE_BONUS_WEIGHT = 1000.0
-    RATIO_PENALTY_WEIGHT = 1.0 / total_frame_count # Normalize penalty by total frames
-    ID_REQUIREMENT_WEIGHT = 2000.0  # Very high weight for meeting minimum ID requirements
+    sorted_child_ids = child_group_counts.index.tolist()
+    n_total = len(sorted_child_ids)
 
-    for id_to_assign in available_ids:
-        id_classes = set(id_class_map[id_to_assign])
-        id_frame_count = id_frame_count_map[id_to_assign]
-        
-        scores = {'train': 0.0, 'val': 0.0, 'test': 0.0}
+    if n_total < 6:
+        logging.error(f"Not enough unique children to create balanced splits. Found {n_total}, need at least 6.")
+        return [], [], [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-        # === Score for assigning to VALIDATION set ===
-        # 1. Coverage Score: Huge bonus for covering a needed class
-        val_coverage_gain = len(id_classes.intersection(uncovered_val_classes))
-        scores['val'] += val_coverage_gain * COVERAGE_BONUS_WEIGHT
-        
-        # 2. ID Requirement Score: High bonus if we still need more IDs
-        if len(val_ids) < min_ids_per_split:
-            scores['val'] += ID_REQUIREMENT_WEIGHT
-        
-        # 3. Ratio Score: Penalty for making the split larger than its target frame count
-        if val_frames >= total_frame_count * val_ratio and len(val_ids) >= min_ids_per_split:
-            potential_new_val_frames = val_frames + id_frame_count
-            overage_penalty = potential_new_val_frames - (total_frame_count * val_ratio)
-            scores['val'] -= overage_penalty * RATIO_PENALTY_WEIGHT
+    n_train = max(int(n_total * train_ratio), 2)
+    remaining_ids = n_total - n_train
+    n_val = max(int(remaining_ids / 2), 2)
+    n_test = n_total - n_train - n_val
 
-        # === Score for assigning to TEST set ===
-        # 1. Coverage Score
-        test_coverage_gain = len(id_classes.intersection(uncovered_test_classes))
-        scores['test'] += test_coverage_gain * COVERAGE_BONUS_WEIGHT
-        
-        # 2. ID Requirement Score: High bonus if we still need more IDs
-        if len(test_ids) < min_ids_per_split:
-            scores['test'] += ID_REQUIREMENT_WEIGHT
+    if n_test < 2:
+        n_val -= (2 - n_test)
+        if n_val < 2:
+            logging.error("Could not meet minimum ID requirements for all splits.")
+            return [], [], [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        n_test = 2
 
-        # 3. Ratio Score
-        test_ratio_calc = 1.0 - train_ratio - val_ratio
-        if test_frames >= total_frame_count * test_ratio_calc and len(test_ids) >= min_ids_per_split:
-            potential_new_test_frames = test_frames + id_frame_count
-            overage_penalty = potential_new_test_frames - (total_frame_count * test_ratio_calc)
-            scores['test'] -= overage_penalty * RATIO_PENALTY_WEIGHT
-            
-        # === Assign ID to the split with the highest score ===
-        best_split = max(scores, key=scores.get)
-        
-        if best_split == 'val':
-            val_ids.add(id_to_assign)
-            val_frames += id_frame_count
-            uncovered_val_classes.difference_update(id_classes)
-        elif best_split == 'test':
-            test_ids.add(id_to_assign)
-            test_frames += id_frame_count
-            uncovered_test_classes.difference_update(id_classes)
-        else: # best_split == 'train'
-            train_ids.add(id_to_assign)
-            train_frames += id_frame_count
+    # --- Initialize splits ---
+    split_info = {
+        'train': {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns)},
+        'val':   {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns)},
+        'test':  {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns)},
+    }
 
-    # --- 3. Finalization and Enhanced Logging ---
-    train_df = df[df['id'].isin(train_ids)].copy()
-    val_df = df[df['id'].isin(val_ids)].copy()
-    test_df = df[df['id'].isin(test_ids)].copy()
+    # Randomize assignment order to reduce bias
+    random.shuffle(sorted_child_ids)
 
-    # Verify minimum ID requirements
-    if len(val_ids) < min_ids_per_split:
-        logging.warning(f"⚠️  Validation set has only {len(val_ids)} ID(s), target was {min_ids_per_split}")
-    if len(test_ids) < min_ids_per_split:
-        logging.warning(f"⚠️  Test set has only {len(test_ids)} ID(s), target was {min_ids_per_split}")
-    
-    if len(val_ids) >= min_ids_per_split and len(test_ids) >= min_ids_per_split:
-        logging.info(f"✓ Both validation and test sets have at least {min_ids_per_split} IDs")
+    def deviation_from_target(current_counts, child_counts):
+        """Absolute difference from target class ratio after adding this child."""
+        new_counts = current_counts + child_counts
+        if new_counts.sum() == 0:
+            return 0
+        new_ratio = new_counts[class_columns[0]] / new_counts.sum()
+        return abs(new_ratio - target_class_0_ratio)
 
-    # Final check to warn about impossible splits
-    for class_col in class_columns:
-        if val_df[class_col].sum() == 0:
-            logging.error(f"WARNING: Class '{class_col}' has 0 instances in the Validation set.")
-        if test_df[class_col].sum() == 0:
-            logging.error(f"WARNING: Class '{class_col}' has 0 instances in the Test set.")
+    for child_id in sorted_child_ids:
+        child_counts = child_group_counts.loc[child_id, class_columns]
 
-    train_class_counts = train_df[class_columns].sum()
-    val_class_counts = val_df[class_columns].sum()
-    test_class_counts = test_df[class_columns].sum()
-    class_counts = train_class_counts + val_class_counts + test_class_counts
+        # Find eligible splits (still have room for more IDs)
+        eligible_splits = []
+        for split_name, target_size in zip(['train', 'val', 'test'], [n_train, n_val, n_test]):
+            if len(split_info[split_name]['ids']) < target_size:
+                eligible_splits.append(split_name)
 
-    # Prepare detailed log report in desired style
-    split_info = [f"Dataset Split Information - {timestamp}\n"]
+        if not eligible_splits:
+            logging.warning(f"No split has space left for child {child_id}. Skipping.")
+            continue
 
-    # Initial Distribution
-    split_info.append("Initial Distribution:")
-    split_info.append(f"Total Frames: {total_frame_count}")
-    split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}: {class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}]} images ({class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}]/total_frame_count:.2%})")
-    split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}: {class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}]} images ({class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}]/total_frame_count:.2%})\n")
+        # Pick split that gets closest to global ratio
+        best_split = min(
+            eligible_splits,
+            key=lambda s: deviation_from_target(split_info[s]['current_counts'], child_counts)
+        )
 
-    # Split Distribution
-    split_info.append("Split Distribution:")
-    split_info.append("-" * 50)
+        # Assign child
+        split_info[best_split]['ids'].append(child_id)
+        split_info[best_split]['current_counts'] += child_counts
 
-    def add_split_summary(name, frame_count, child_count, adult_count):
-        split_info.append(f"{name} Set: ({frame_count/total_frame_count:.2%})")
-        split_info.append(f"Total Frames: {frame_count}")
-        split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}: {child_count} ({child_count/frame_count:.2%})")
-        split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}: {adult_count} ({adult_count/frame_count:.2%})\n")
+    # --- Build final DataFrames ---
+    train_ids = split_info['train']['ids']
+    val_ids = split_info['val']['ids']
+    test_ids = split_info['test']['ids']
 
-    add_split_summary("Validation", val_frames, val_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]], val_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]])
-    add_split_summary("Test", test_frames, test_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]], test_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]])
-    add_split_summary("Train", train_frames, train_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]], train_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]])
+    train_df = df[df["child_id"].isin(train_ids)].drop(columns=["child_id"])
+    val_df = df[df["child_id"].isin(val_ids)].drop(columns=["child_id"])
+    test_df = df[df["child_id"].isin(test_ids)].drop(columns=["child_id"])
 
-    # ID Distribution
-    split_info.append("ID Distribution:")
-    split_info.append(f"Training IDs: {len(train_ids)}, {sorted(list(train_ids))}")
-    split_info.append(f"Validation IDs: {len(val_ids)}, {sorted(list(val_ids))}")
-    split_info.append(f"Test IDs: {len(test_ids)}, {sorted(list(test_ids))}\n")
+    # Log final split information
+    for split_name, split_df in zip(["Train", "Val", "Test"], [train_df, val_df, test_df]):
+        if len(split_df) > 0:
+            ratio = split_df[class_columns[0]].sum() / len(split_df)
+            logging.info(f"{split_name} set: {len(split_df)} images, {class_columns[0]} ratio: {ratio:.3f}")
 
-    # ID Overlap Check
-    overlap = set(train_ids) & set(val_ids) | set(train_ids) & set(test_ids) | set(val_ids) & set(test_ids)
-    split_info.append("ID Overlap Check:")
-    split_info.append(f"Overlap found: {'Yes' if overlap else 'No'}")
-
-    # Join and print
-    log_report = "\n".join(split_info)
-    
-    # Write report to file and log to console
-    report_string = '\n'.join(split_info)
-    with open(output_file, 'w') as f:
-        f.write(report_string)
-    
-    logging.info(f"\nSplit distribution report saved to: {output_file}\n")
-    
     return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
             train_df, val_df, test_df)
 
@@ -562,8 +477,8 @@ def split_yolo_data(annotation_folder: Path):
         # Multi-class detection case for face detection
         df = get_class_distribution(total_images, annotation_folder)
         
-        # Split data grouped by id with minimum ID requirements
-        train, val, test, *_ = multilabel_stratified_split(df, min_ids_per_split=2)
+        # Split data grouped by child id 
+        train, val, test, *_ = split_by_child_id(df)
 
         # Move images for each split
         for split_name, split_set in [("train", train), 
