@@ -8,7 +8,7 @@ from ultralytics import YOLO
 from supervision import Detections
 from pathlib import Path
 from PIL import Image
-from constants import FaceDetection, DataPaths
+from constants import FaceDetection
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -79,7 +79,7 @@ def load_ground_truth(label_path: str, img_width: int, img_height: int) -> Tuple
 def main():
     parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
     parser.add_argument('--image', type=str, required=True,
-                        help='Image filename (e.g., quantex_at_home_id261609_2022_04_01_01_000000.jpg)')
+                        help='Image filename (e.g., quantex_at_home_id261609_2022_04_01_01_000000.PNG)')
     args = parser.parse_args()
     
     # Setup paths for face detection
@@ -93,8 +93,19 @@ def main():
         parts = name.split('_')
         video_folder = '_'.join(parts[:-1])
         
-        # Setup paths
-        image_path = DataPaths.IMAGES_INPUT_DIR / video_folder / args.image
+        # Setup paths - try different file extensions
+        image_path = None
+        
+        for ext in FaceDetection.VALID_EXTENSIONS:
+            potential_path = FaceDetection.IMAGES_INPUT_DIR / video_folder / (Path(args.image).stem + ext)
+            if potential_path.exists():
+                image_path = potential_path
+                break
+        
+        if image_path is None:
+            raise FileNotFoundError(f"Image not found with .jpg or .PNG extension in {FaceDetection.IMAGES_INPUT_DIR / video_folder}")
+        
+        logging.info(f"Using image: {image_path}")
         label_path = FaceDetection.LABELS_INPUT_DIR / Path(args.image).with_suffix('.txt')
         
         # Load model and process image
@@ -121,8 +132,21 @@ def main():
         
         # Draw detections and save
         annotated_image = draw_detections_and_ground_truth(image, results, ground_truth_boxes, ground_truth_classes)
-        output_path = output_dir / Path(args.image).name
-        cv2.imwrite(str(output_path), annotated_image)
+        
+        output_filename = Path(args.image).stem + "_annotated.jpg"
+        output_path = output_dir / output_filename
+        
+        # Ensure output directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Try to save with JPEG quality parameters for better compatibility
+        success = cv2.imwrite(str(output_path), annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if not success:
+            # Fallback: try without quality parameters
+            success = cv2.imwrite(str(output_path), annotated_image)
+            if not success:
+                raise RuntimeError(f"Failed to save image to {output_path}")
+            
         logging.info(f"Annotated image saved to: {output_path}")
         
     except Exception as e:
