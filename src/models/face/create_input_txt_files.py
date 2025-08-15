@@ -411,8 +411,8 @@ def multilabel_stratified_split(df: pd.DataFrame,
     # Initial Distribution
     split_info.append("Initial Distribution:")
     split_info.append(f"Total Frames: {total_frame_count}")
-    split_info.append(f"child_face: {class_counts['child_face']} images ({class_counts['child_face']/total_frame_count:.2%})")
-    split_info.append(f"adult_face: {class_counts['adult_face']} images ({class_counts['adult_face']/total_frame_count:.2%})\n")
+    split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}: {class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}]} images ({class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}]/total_frame_count:.2%})")
+    split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}: {class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}]} images ({class_counts[{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}]/total_frame_count:.2%})\n")
 
     # Split Distribution
     split_info.append("Split Distribution:")
@@ -421,12 +421,12 @@ def multilabel_stratified_split(df: pd.DataFrame,
     def add_split_summary(name, frame_count, child_count, adult_count):
         split_info.append(f"{name} Set: ({frame_count/total_frame_count:.2%})")
         split_info.append(f"Total Frames: {frame_count}")
-        split_info.append(f"child_face: {child_count} ({child_count/frame_count:.2%})")
-        split_info.append(f"adult_face: {adult_count} ({adult_count/frame_count:.2%})\n")
+        split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]}: {child_count} ({child_count/frame_count:.2%})")
+        split_info.append(f"{FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]}: {adult_count} ({adult_count/frame_count:.2%})\n")
 
-    add_split_summary("Validation", val_frames, val_class_counts['child_face'], val_class_counts['adult_face'])
-    add_split_summary("Test", test_frames, test_class_counts['child_face'], test_class_counts['adult_face'])
-    add_split_summary("Train", train_frames, train_class_counts['child_face'], train_class_counts['adult_face'])
+    add_split_summary("Validation", val_frames, val_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]], val_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]])
+    add_split_summary("Test", test_frames, test_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]], test_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]])
+    add_split_summary("Train", train_frames, train_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[0]], train_class_counts[FaceConfig.MODEL_CLASS_ID_TO_LABEL[1]])
 
     # ID Distribution
     split_info.append("ID Distribution:")
