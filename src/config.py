@@ -86,7 +86,6 @@ class LabelMapping:
 class PersonConfig:
     """Configuration for person detection and classification."""
     MODEL_NAME = "resnet18_bilstm"
-
     # Ratio of training data to use for training
     TRAIN_SPLIT_RATIO = 0.6
     # Ratio of class-to-class samples in each dataset split
@@ -115,6 +114,12 @@ class PersonConfig:
     SEQUENCE_LENGTH = 60
     DROPOUT = 0.5
     WEIGHT_DECAY = 1e-5
+    FEAT_DIM = 512
+    RNN_HIDDEN = 256
+    RNN_LAYERS = 1
+    BIDIRECTIONAL = True
+    NUM_OUTPUTS = 2
+    BACKBONE = 'resnet18'
 
 class FaceConfig:
     """Configuration for face detection and classification."""

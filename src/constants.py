@@ -32,7 +32,7 @@ class AudioClassification:
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs")
 
 class PersonClassification:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/resnet18_bilstm_20250814_110027/best.pth')
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/resnet18_bilstm_20250815_221214/best.pth')
     EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_extraction_progress.txt")
     MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_missing_frames.txt")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_labels")
