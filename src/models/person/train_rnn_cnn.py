@@ -276,10 +276,16 @@ class FrameRNNClassifier(nn.Module):
         Whether to use bidirectional LSTM.
     num_outputs : int, default=2
         Number of output classes (adult, child).
-    dropout : float, default from FaceConfig.DROPOUT
+    dropout : float, default=0.3
         Dropout probability for regularization.
     """
-    def __init__(self, feat_dim=512, rnn_hidden=256, rnn_layers=1, bidirectional=True, num_outputs=2, dropout=PersonConfig.DROPOUT):
+    def __init__(self, 
+                 feat_dim=PersonConfig.FEAT_DIM, 
+                 rnn_hidden=PersonConfig.RNN_HIDDEN, 
+                 rnn_layers=PersonConfig.RNN_LAYERS, 
+                 bidirectional=PersonConfig.BIDIRECTIONAL, 
+                 num_outputs=PersonConfig.NUM_OUTPUTS, 
+                 dropout=PersonConfig.DROPOUT):
         super().__init__()
         self.rnn = nn.LSTM(input_size=feat_dim, hidden_size=rnn_hidden,
                            num_layers=rnn_layers, batch_first=True,
@@ -635,6 +641,185 @@ def eval_on_loader(models, criterion, dataloader, device):
     avg_loss = total_loss / len(dataloader.dataset)
     return avg_loss, metrics
 
+def setup_training_environment(args):
+    """Setup output directory, device, and logging.
+    
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Command line arguments.
+        
+    Returns
+    -------
+    Tuple[str, torch.device, torch.cuda.amp.GradScaler]
+        Output directory, device, and gradient scaler.
+    """
+    # Create timestamped folder name with model abbreviation
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(PersonClassification.OUTPUT_DIR, f"{PersonConfig.MODEL_NAME}_{timestamp}")
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"Output directory: {out_dir}")
+
+    # Save a copy of this script and hyperparams there
+    save_script_and_hparams(out_dir, args)
+
+    device = torch.device(args.device)
+    print(f"Using device: {device}")
+    
+    # Enable mixed precision training for speed
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    
+    return out_dir, device, scaler
+
+def setup_data_loaders(out_dir):
+    """Setup data loaders for training and validation.
+    
+    Parameters
+    ----------
+    out_dir : str
+        Output directory for logging.
+        
+    Returns
+    -------
+    Tuple[DataLoader, DataLoader]
+        Training and validation data loaders.
+    """
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),  # Revert to standard ResNet input size
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+    ])
+
+    train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, 
+                                 sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
+    val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, 
+                               sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
+
+    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=8,
+                              collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=8,
+                            collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+    
+    return train_loader, val_loader, train_ds, val_ds
+
+def setup_models_and_optimizers(device):
+    """Setup models and optimizers.
+    
+    Parameters
+    ----------
+    device : torch.device
+        Device to place models on.
+        
+    Returns
+    -------
+    Tuple[nn.Module, nn.Module, torch.optim.Optimizer, torch.optim.Optimizer, nn.Module]
+        CNN model, RNN model, CNN optimizer, RNN optimizer, and loss criterion.
+    """
+    cnn = CNNEncoder(backbone=PersonConfig.BACKBONE, pretrained=True, feat_dim=PersonConfig.FEAT_DIM).to(device)
+    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim).to(device)
+
+    try:
+        cnn = torch.compile(cnn)
+        rnn_model = torch.compile(rnn_model)
+        print("Models compiled successfully!")
+    except Exception as e:
+        print(f"Could not compile models: {e}")
+
+    opt_cnn = torch.optim.Adam(filter(lambda p: p.requires_grad, cnn.parameters()), lr=PersonConfig.LR) if not PersonConfig.FREEZE_CNN else None
+    opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=PersonConfig.LR, weight_decay=PersonConfig.WEIGHT_DECAY)
+    criterion = nn.BCEWithLogitsLoss()
+    
+    return cnn, rnn_model, opt_cnn, opt_rnn, criterion
+
+def initialize_training_logging(out_dir):
+    """Initialize CSV logging for training metrics.
+    
+    Parameters
+    ----------
+    out_dir : str
+        Output directory for log files.
+        
+    Returns
+    -------
+    str
+        Path to the CSV log file.
+    """
+    csv_log_path = os.path.join(out_dir, "training_metrics.csv")
+    csv_headers = [
+        'epoch', 'train_loss', 'val_loss',
+        'train_adult_precision', 'train_adult_recall', 'train_adult_f1',
+        'train_child_precision', 'train_child_recall', 'train_child_f1',
+        'train_macro_precision', 'train_macro_recall', 'train_macro_f1',
+        'val_adult_precision', 'val_adult_recall', 'val_adult_f1',
+        'val_child_precision', 'val_child_recall', 'val_child_f1',
+        'val_macro_precision', 'val_macro_recall', 'val_macro_f1'
+    ]
+    
+    # Create CSV file with headers
+    with open(csv_log_path, 'w') as f:
+        f.write(','.join(csv_headers) + '\n')
+    
+    return csv_log_path
+
+def log_epoch_metrics(csv_log_path, epoch, train_loss, val_loss, train_metrics, val_metrics):
+    """Log metrics for one epoch to CSV file.
+    
+    Parameters
+    ----------
+    csv_log_path : str
+        Path to the CSV log file.
+    epoch : int
+        Current epoch number.
+    train_loss : float
+        Training loss.
+    val_loss : float
+        Validation loss.
+    train_metrics : Dict[str, float]
+        Training metrics.
+    val_metrics : Dict[str, float]
+        Validation metrics.
+    """
+    csv_row = [
+        epoch, train_loss, val_loss,
+        train_metrics['adult_precision'], train_metrics['adult_recall'], train_metrics['adult_f1'],
+        train_metrics['child_precision'], train_metrics['child_recall'], train_metrics['child_f1'],
+        train_metrics['macro_precision'], train_metrics['macro_recall'], train_metrics['macro_f1'],
+        val_metrics['adult_precision'], val_metrics['adult_recall'], val_metrics['adult_f1'],
+        val_metrics['child_precision'], val_metrics['child_recall'], val_metrics['child_f1'],
+        val_metrics['macro_precision'], val_metrics['macro_recall'], val_metrics['macro_f1']
+    ]
+    
+    with open(csv_log_path, 'a') as f:
+        f.write(','.join([f'{x:.6f}' if isinstance(x, float) else str(x) for x in csv_row]) + '\n')
+
+def print_epoch_results(epoch, train_loss, val_loss, train_metrics, val_metrics):
+    """Print training and validation results for one epoch.
+    
+    Parameters
+    ----------
+    epoch : int
+        Current epoch number.
+    train_loss : float
+        Training loss.
+    val_loss : float
+        Validation loss.
+    train_metrics : Dict[str, float]
+        Training metrics.
+    val_metrics : Dict[str, float]
+        Validation metrics.
+    """
+    print(f"\nEpoch {epoch}/{PersonConfig.NUM_EPOCHS}")
+    
+    print(f"  Train Loss: {train_loss:.4f}")
+    print(f"    Adult    - P: {train_metrics['adult_precision']:.3f}, R: {train_metrics['adult_recall']:.3f}, F1: {train_metrics['adult_f1']:.3f}")
+    print(f"    Child    - P: {train_metrics['child_precision']:.3f}, R: {train_metrics['child_recall']:.3f}, F1: {train_metrics['child_f1']:.3f}")
+    print(f"    Macro    - P: {train_metrics['macro_precision']:.3f}, R: {train_metrics['macro_recall']:.3f}, F1: {train_metrics['macro_f1']:.3f}")
+    
+    print(f"  Val Loss: {val_loss:.4f}")
+    print(f"    Adult    - P: {val_metrics['adult_precision']:.3f}, R: {val_metrics['adult_recall']:.3f}, F1: {val_metrics['adult_f1']:.3f}")
+    print(f"    Child    - P: {val_metrics['child_precision']:.3f}, R: {val_metrics['child_recall']:.3f}, F1: {val_metrics['child_f1']:.3f}")
+    print(f"    Macro    - P: {val_metrics['macro_precision']:.3f}, R: {val_metrics['macro_recall']:.3f}, F1: {val_metrics['macro_f1']:.3f}")
+
 def save_script_and_hparams(out_dir, args):
     """Save a copy of the training script and hyperparameters to the output directory.
     
@@ -665,6 +850,71 @@ def save_script_and_hparams(out_dir, args):
     hparams_path = os.path.join(out_dir, "hyperparameters.json")
     with open(hparams_path, "w") as f:
         json.dump(hparams, f, indent=4)
+
+def run_training_loop(out_dir, device, scaler, train_loader, val_loader, cnn, rnn_model, opt_cnn, opt_rnn, criterion, csv_log_path):
+    """Run the main training loop with early stopping.
+    
+    Parameters
+    ----------
+    out_dir : str
+        Output directory for saving checkpoints.
+    device : torch.device
+        Device to run training on.
+    scaler : torch.cuda.amp.GradScaler
+        Gradient scaler for mixed precision training.
+    train_loader : DataLoader
+        Training data loader.
+    val_loader : DataLoader
+        Validation data loader.
+    cnn : nn.Module
+        CNN model.
+    rnn_model : nn.Module
+        RNN model.
+    opt_cnn : torch.optim.Optimizer
+        CNN optimizer.
+    opt_rnn : torch.optim.Optimizer
+        RNN optimizer.
+    criterion : nn.Module
+        Loss function.
+    csv_log_path : str
+        Path to CSV log file.
+        
+    Returns
+    -------
+    float
+        Best validation F1 score achieved.
+    """
+    best_val_f1 = 0.0
+    patience_counter = 0
+    
+    print(f"\nStarting training for {PersonConfig.NUM_EPOCHS} epochs...")
+    print(f"Early stopping patience: {PersonConfig.PATIENCE} epochs")
+    print("-" * 50)
+    
+    for epoch in range(1, PersonConfig.NUM_EPOCHS + 1):
+        # Training and validation
+        train_loss, train_metrics = train_one_epoch((cnn, rnn_model), (opt_cnn, opt_rnn), criterion, train_loader,
+                                                    device, freeze_cnn=PersonConfig.FREEZE_CNN, scaler=scaler)
+        val_loss, val_metrics = eval_on_loader((cnn, rnn_model), criterion, val_loader, device)
+        
+        # Log and print results
+        print_epoch_results(epoch, train_loss, val_loss, train_metrics, val_metrics)
+        log_epoch_metrics(csv_log_path, epoch, train_loss, val_loss, train_metrics, val_metrics)
+        
+        # Handle checkpointing and early stopping
+        best_val_f1, patience_counter, should_stop = handle_checkpointing_and_early_stopping(
+            out_dir, epoch, cnn, rnn_model, opt_cnn, opt_rnn, train_metrics, val_metrics, best_val_f1, patience_counter
+        )
+        
+        if should_stop:
+            break
+    
+    if patience_counter < PersonConfig.PATIENCE:
+        print(f"Training finished. Best macro F1: {best_val_f1:.3f}")
+    else:
+        print(f"Training stopped early. Best macro F1: {best_val_f1:.3f}")
+    
+    return best_val_f1
         
 # ---------------------------
 # Main: parse args, start training
@@ -674,158 +924,26 @@ def main():
     
     Sets up the training pipeline including data loading, model initialization, 
     training loop with early stopping, and model checkpointing.
-    
-    Parameters
-    ----------
-    None
-        
-    Returns
-    -------
-    None
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
 
-    # Create timestamped folder name with model abbreviation
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(PersonClassification.OUTPUT_DIR, f"{PersonConfig.MODEL_NAME}_{timestamp}")
-    os.makedirs(out_dir, exist_ok=True)
-    print(f"Output directory: {out_dir}")
-
-    # Save a copy of this script and hyperparams there
-    save_script_and_hparams(out_dir, args)
-
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),  # Revert to standard ResNet input size
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-    ])
-
-    train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, 
-                                 sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
-    val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, 
-                               sequence_length=PersonConfig.MAX_SEQ_LEN, log_dir=out_dir)
-
-    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=8,
-                              collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=8,
-                            collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-
-    device = torch.device(args.device)
-    print(f"Using device: {device}")
+    # Setup training environment
+    out_dir, device, scaler = setup_training_environment(args)
     
-    # Enable mixed precision training for speed
-    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
-
-    # --- INCREASED MODEL COMPLEXITY ---
-    #cnn = CNNEncoder(backbone='resnet50', pretrained=True, feat_dim=512).to(device)
-    cnn = CNNEncoder(backbone='resnet18', pretrained=True, feat_dim=512).to(device)
-    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim, rnn_hidden=256,
-                                   rnn_layers=2, bidirectional=True,
-                                   num_outputs=2, dropout=0.3).to(device)
-
-    try:
-        cnn = torch.compile(cnn)
-        rnn_model = torch.compile(rnn_model)
-        print("Models compiled successfully!")
-    except Exception as e:
-        print(f"Could not compile models: {e}")
-
-    opt_cnn = torch.optim.Adam(filter(lambda p: p.requires_grad, cnn.parameters()), lr=PersonConfig.LR) if not PersonConfig.FREEZE_CNN else None
-    opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=PersonConfig.LR, weight_decay=PersonConfig.WEIGHT_DECAY)
-
-    criterion = nn.BCEWithLogitsLoss()
-
-    # Initialize CSV logging
-    csv_log_path = os.path.join(out_dir, "training_metrics.csv")
-    csv_headers = [
-        'epoch', 'train_loss', 'val_loss',
-        'train_adult_precision', 'train_adult_recall', 'train_adult_f1',
-        'train_child_precision', 'train_child_recall', 'train_child_f1',
-        'train_macro_precision', 'train_macro_recall', 'train_macro_f1',
-        'val_adult_precision', 'val_adult_recall', 'val_adult_f1',
-        'val_child_precision', 'val_child_recall', 'val_child_f1',
-        'val_macro_precision', 'val_macro_recall', 'val_macro_f1'
-    ]
+    # Setup data loaders
+    train_loader, val_loader, train_ds, val_ds = setup_data_loaders(out_dir)
     
-    # Create CSV file with headers
-    with open(csv_log_path, 'w') as f:
-        f.write(','.join(csv_headers) + '\n')
+    # Setup models and optimizers
+    cnn, rnn_model, opt_cnn, opt_rnn, criterion = setup_models_and_optimizers(device)
     
-    best_val_f1 = 0.0
-    patience_counter = 0
-    print(f"\nStarting training for {PersonConfig.NUM_EPOCHS} epochs...")
-    print(f"Early stopping patience: {PersonConfig.PATIENCE} epochs")
-    print("-" * 50)
+    # Initialize logging
+    csv_log_path = initialize_training_logging(out_dir)
     
-    for epoch in range(1, PersonConfig.NUM_EPOCHS + 1):
-        print(f"\nEpoch {epoch}/{PersonConfig.NUM_EPOCHS}")
-        
-        # Training
-        train_loss, train_metrics = train_one_epoch((cnn, rnn_model), (opt_cnn, opt_rnn), criterion, train_loader,
-                                                    device, freeze_cnn=PersonConfig.FREEZE_CNN, scaler=scaler)
-        
-        # Validation
-        val_loss, val_metrics = eval_on_loader((cnn, rnn_model), criterion, val_loader, device)
-        
-        print(f"  Train Loss: {train_loss:.4f}")
-        print(f"    Adult    - P: {train_metrics['adult_precision']:.3f}, R: {train_metrics['adult_recall']:.3f}, F1: {train_metrics['adult_f1']:.3f}")
-        print(f"    Child    - P: {train_metrics['child_precision']:.3f}, R: {train_metrics['child_recall']:.3f}, F1: {train_metrics['child_f1']:.3f}")
-        print(f"    Macro    - P: {train_metrics['macro_precision']:.3f}, R: {train_metrics['macro_recall']:.3f}, F1: {train_metrics['macro_f1']:.3f}")
-        
-        print(f"  Val Loss: {val_loss:.4f}")
-        print(f"    Adult    - P: {val_metrics['adult_precision']:.3f}, R: {val_metrics['adult_recall']:.3f}, F1: {val_metrics['adult_f1']:.3f}")
-        print(f"    Child    - P: {val_metrics['child_precision']:.3f}, R: {val_metrics['child_recall']:.3f}, F1: {val_metrics['child_f1']:.3f}")
-        print(f"    Macro    - P: {val_metrics['macro_precision']:.3f}, R: {val_metrics['macro_recall']:.3f}, F1: {val_metrics['macro_f1']:.3f}")
-
-        # Log metrics to CSV
-        csv_row = [
-            epoch, train_loss, val_loss,
-            train_metrics['adult_precision'], train_metrics['adult_recall'], train_metrics['adult_f1'],
-            train_metrics['child_precision'], train_metrics['child_recall'], train_metrics['child_f1'],
-            train_metrics['macro_precision'], train_metrics['macro_recall'], train_metrics['macro_f1'],
-            val_metrics['adult_precision'], val_metrics['adult_recall'], val_metrics['adult_f1'],
-            val_metrics['child_precision'], val_metrics['child_recall'], val_metrics['child_f1'],
-            val_metrics['macro_precision'], val_metrics['macro_recall'], val_metrics['macro_f1']
-        ]
-        
-        with open(csv_log_path, 'a') as f:
-            f.write(','.join([f'{x:.6f}' if isinstance(x, float) else str(x) for x in csv_row]) + '\n')
-
-        ckpt = {
-            'epoch': epoch,
-            'cnn_state': cnn.state_dict(),
-            'rnn_state': rnn_model.state_dict(),
-            'opt_rnn': opt_rnn.state_dict(),
-            'opt_cnn': opt_cnn.state_dict() if opt_cnn else None,
-            'val_metrics': val_metrics,
-            'train_metrics': train_metrics
-        }
-        ckpt_path = os.path.join(out_dir, f'ckpt_epoch{epoch:03d}.pth')
-        if epoch % 10 == 0 or epoch == PersonConfig.NUM_EPOCHS:
-            torch.save(ckpt, ckpt_path)
-
-        # Early stopping and best model tracking
-        if val_metrics['macro_f1'] > best_val_f1:
-            best_val_f1 = val_metrics['macro_f1']
-            patience_counter = 0  # Reset patience counter
-            best_path = os.path.join(out_dir, 'best.pth')
-            torch.save(ckpt, best_path)
-            print(f"  ⭐ New best macro F1: {best_val_f1:.3f}!")
-        else:
-            patience_counter += 1
-            print(f"  No improvement for {patience_counter}/{PersonConfig.PATIENCE} epochs")
-
-            if patience_counter >= PersonConfig.PATIENCE:
-                print(f"\n🛑 Early stopping triggered! No improvement for {PersonConfig.PATIENCE} epochs.")
-                print(f"Best validation macro F1: {best_val_f1:.3f}")
-                break
-
-    if patience_counter < PersonConfig.PATIENCE:
-        print(f"Training finished. Best macro F1: {best_val_f1:.3f}")
-    else:
-        print(f"Training stopped early at epoch {epoch}. Best macro F1: {best_val_f1:.3f}")
+    # Run training loop
+    best_val_f1 = run_training_loop(out_dir, device, scaler, train_loader, val_loader, 
+                                   cnn, rnn_model, opt_cnn, opt_rnn, criterion, csv_log_path)
     
     # Log any skipped files
     train_ds.log_skipped_files()
