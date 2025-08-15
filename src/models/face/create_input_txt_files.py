@@ -13,6 +13,7 @@ from typing import List, Tuple, Dict, Optional
 from collections import defaultdict
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 from constants import DataPaths, BasePaths, FaceDetection
 from config import FaceConfig, DataConfig
@@ -33,7 +34,7 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
         
     Returns
     -------
-    List[Tuple]        
+    List[Tuple]       
         List of tuples containing annotation data.
     """
     logging.info(f"Fetching annotations for category IDs: {category_ids}")
@@ -46,8 +47,8 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
     JOIN images i ON a.image_id = i.frame_id AND a.video_id = i.video_id
     JOIN videos v ON a.video_id = v.id
     WHERE a.category_id IN ({placeholders}) 
-      AND a.outside = 0 
-      AND v.file_name NOT LIKE '%id255237_2022_05_08_04%'
+        AND a.outside = 0 
+        AND v.file_name NOT LIKE '%id255237_2022_05_08_04%'
     ORDER BY a.video_id, a.image_id
     """
 
@@ -395,8 +396,8 @@ def move_images(image_names: list,
         logging.info(f"No images to move for face detection {split_type}")
         return (0, 0)
 
-    image_dst_dir = FaceDetection.DATA_INPUT_DIR / "images" / split_type
-    label_dst_dir = FaceDetection.DATA_INPUT_DIR / "labels" / split_type
+    image_dst_dir = FaceDetection.INPUT_DIR / "images" / split_type
+    label_dst_dir = FaceDetection.INPUT_DIR / "labels" / split_type
     
     image_dst_dir.mkdir(parents=True, exist_ok=True)
     label_dst_dir.mkdir(parents=True, exist_ok=True)
@@ -459,6 +460,64 @@ def move_images(image_names: list,
     logging.info(f"\nCompleted moving {split_type} images:")    
     return successful, failed
     
+def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List):
+    """
+    Generates a statistics file with dataset split information, including percentages.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_path = BasePaths.LOGGING_DIR / f"split_distribution_face_det_{timestamp}.txt"
+    
+    total_images = len(df)
+    
+    with open(file_path, "w") as f:
+        f.write(f"Dataset Split Information - {timestamp}\n\n")
+        
+        total_0 = df['child'].sum()
+        total_1 = df['adult'].sum()
+
+        f.write(f"Initial Distribution:\n")
+        f.write(f"Total Images: {total_images}\n")
+        f.write(f"Class 0 {FaceConfig.TARGET_LABELS[0]}: {total_0} images ({total_0 / total_images:.2%})\n")
+        f.write(f"Class 1 {FaceConfig.TARGET_LABELS[1]}: {total_1} images ({total_1 / total_images:.2%})\n\n")
+
+        f.write("Split Distribution:\n")
+        f.write("--------------------------------------------------\n\n")
+
+        def write_split_info(split_name, split_df):
+            total_split = len(split_df)
+            total_split_percent = total_split / total_images if total_images > 0 else 0
+
+            count_0 = split_df[FaceConfig.TARGET_LABELS[0]].sum()
+            count_1 = split_df[FaceConfig.TARGET_LABELS[1]].sum()
+            
+            ratio_0 = count_0 / total_split if total_split > 0 else 0
+            ratio_1 = count_1 / total_split if total_split > 0 else 0
+            
+            f.write(f"{split_name} Set: ({total_split_percent:.2%})\n")
+            f.write(f"Total Images: {total_split}\n")
+            f.write(f"{FaceConfig.TARGET_LABELS[0]}: {count_0} ({ratio_0:.2%})\n")
+            f.write(f"{FaceConfig.TARGET_LABELS[1]}: {count_1} ({ratio_1:.2%})\n\n")
+
+        write_split_info("Validation", df_val)
+        write_split_info("Test", df_test)
+        write_split_info("Train", df_train)
+
+        f.write("ID Distribution:\n")
+        f.write(f"Training IDs: {len(train_ids)}, {train_ids}\n")
+        f.write(f"Validation IDs: {len(val_ids)}, {val_ids}\n")
+        f.write(f"Test IDs: {len(test_ids)}, {test_ids}\n\n")
+
+        f.write("ID Overlap Check:\n")
+        train_val_overlap = set(train_ids).intersection(val_ids)
+        train_test_overlap = set(train_ids).intersection(test_ids)
+        val_test_overlap = set(val_ids).intersection(test_ids)
+        if train_val_overlap or train_test_overlap or val_test_overlap:
+            f.write("Overlap found: Yes\n")
+        else:
+            f.write("Overlap found: No\n")
+    
+    logging.info(f"Statistics file generated at {file_path}")
+
 def split_yolo_data(annotation_folder: Path):
     """
     This function prepares the dataset for face detection YOLO training by splitting the images into train, val, and test sets.
@@ -470,7 +529,7 @@ def split_yolo_data(annotation_folder: Path):
     """
     logging.info("Starting dataset preparation for face detection")
 
-    try: 
+    try:
         # Get annotated frames
         total_images = get_total_number_of_annotated_frames(annotation_folder)
         
@@ -478,12 +537,12 @@ def split_yolo_data(annotation_folder: Path):
         df = get_class_distribution(total_images, annotation_folder)
         
         # Split data grouped by child id 
-        train, val, test, *_ = split_by_child_id(df)
+        train, val, test, df_train, df_val, df_test = split_by_child_id(df)
 
         # Move images for each split
         for split_name, split_set in [("train", train), 
-                                    ("val", val), 
-                                    ("test", test)]:
+                                      ("val", val), 
+                                      ("test", test)]:
             if split_set:
                 successful, failed = move_images(
                     image_names=split_set,
@@ -494,6 +553,13 @@ def split_yolo_data(annotation_folder: Path):
                 logging.info(f"{split_name}: Moved {successful}, Failed {failed}")
             else:
                 logging.warning(f"No images for {split_name} split")
+
+        # Get the IDs for logging
+        train_ids = df_train['child_id'].unique().tolist() if 'child_id' in df_train.columns else []
+        val_ids = df_val['child_id'].unique().tolist() if 'child_id' in df_val.columns else []
+        test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
+        
+        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
     
     except Exception as e:
         logging.error(f"Error processing face detection: {str(e)}")
