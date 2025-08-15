@@ -6,24 +6,12 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Tuple
-from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from constants import DataPaths, PersonClassification, BasePaths
 from config import PersonConfig, DataConfig
 
 logging.basicConfig(level=logging.INFO)
 
-# --- GLOBAL CONSTANTS ---
-DB_PATH = DataPaths.ANNO_DB_PATH
-FRAME_BASE_PATH = DataPaths.IMAGES_INPUT_DIR
-DATABASE_CATEGORY_IDS = PersonConfig.DATABASE_CATEGORY_IDS # (1: 'person', 2: 'reflection')
-AGE_GROUP_TO_CLASS_ID = PersonConfig.AGE_GROUP_TO_CLASS_ID # (inf:0, child: 0, teen: 1, adult: 1)
-MODEL_CLASS_ID_TO_LABEL = PersonConfig.MODEL_CLASS_ID_TO_LABEL # (0: 'child', 1: 'adult')
-TARGET_LABELS = PersonConfig.TARGET_LABELS # ['child', 'adult']
-TRAIN_SPLIT_RATIO = PersonConfig.TRAIN_SPLIT_RATIO
-MAX_CLASS_RATIO_THRESHOLD = PersonConfig.MAX_CLASS_RATIO_THRESHOLD
-OUTPUT_DIR = PersonClassification.PERSON_DATA_INPUT_DIR
-
-def fetch_presence_per_frame(category_ids: List[int]) -> List[Tuple]:
+def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
     """
     Fetches all annotations for specified categories, including age group, from the SQLite database.
 
@@ -38,7 +26,7 @@ def fetch_presence_per_frame(category_ids: List[int]) -> List[Tuple]:
         A list of tuples, where each tuple contains (video_id, frame_id, file_name, category_id, age_group)
         for all detected instances of the specified categories.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
     cursor = conn.cursor()
 
     placeholders = ", ".join("?" for _ in category_ids)
@@ -92,7 +80,7 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
 
         key = (video_id, frame_id, file_name)
         if key not in frame_dict:
-            frame_dict[key] = {label: 0 for label in TARGET_LABELS}
+            frame_dict[key] = {label: 0 for label in PersonConfig.TARGET_LABELS}
 
         if age_group in age_group_mapping:
             label_id = age_group_mapping[age_group]
@@ -105,25 +93,38 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
     for (video_id, frame_id, file_name), labels in frame_dict.items():
         # Extract folder name (everything before the last underscore + frame number)
         frame_folder = "_".join(file_name.split("_")[:-1])
+        
+        # Try to find image with any valid extension
+        image_path = None
+        for ext in DataConfig.VALID_EXTENSIONS:
+            potential_path = PersonClassification.IMAGES_INPUT_DIR / frame_folder / f"{file_name}{ext}"
+            if potential_path.exists():
+                image_path = str(potential_path)
+                break
+        
+        # Skip if no valid image file found
+        if image_path is None:
+            logging.warning(f"Image not found with any valid extension: {file_name}")
+            continue
 
         row = {
             "video_id": video_id,
             "frame_id": frame_id,
-            "file_path": str(FRAME_BASE_PATH / frame_folder / file_name),
+            "file_path": image_path,
             **labels
         }
         data.append(row)
     df = pd.DataFrame(data)
     return df
 
-def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO):
+def split_by_child_id(df: pd.DataFrame, train_ratio: float = PersonConfig.TRAIN_SPLIT_RATIO):
     """
     Splits the DataFrame into training, validation, and test sets using child IDs as the unit,
     while keeping each split's adult/child ratio close to the global dataset ratio.
     """
 
     # --- Map video_id -> child_id ---
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
     video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
     conn.close()
 
@@ -138,11 +139,11 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO):
     df.dropna(subset=['child_id'], inplace=True)
 
     # --- Counts per child ---
-    child_group_counts = df.groupby('child_id')[TARGET_LABELS].sum()
+    child_group_counts = df.groupby('child_id')[PersonConfig.TARGET_LABELS].sum()
 
     # Global target ratio (adult proportion)
-    global_counts = child_group_counts[TARGET_LABELS].sum()
-    target_adult_ratio = global_counts[TARGET_LABELS[1]] / global_counts.sum()
+    global_counts = child_group_counts[PersonConfig.TARGET_LABELS].sum()
+    target_adult_ratio = global_counts[PersonConfig.TARGET_LABELS[1]] / global_counts.sum()
 
     sorted_child_ids = child_group_counts.index.tolist()
     n_total = len(sorted_child_ids)
@@ -165,9 +166,9 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO):
 
     # --- Initialize splits ---
     split_info = {
-        'train': {'ids': [], 'current_counts': pd.Series([0, 0], index=TARGET_LABELS)},
-        'val':   {'ids': [], 'current_counts': pd.Series([0, 0], index=TARGET_LABELS)},
-        'test':  {'ids': [], 'current_counts': pd.Series([0, 0], index=TARGET_LABELS)},
+        'train': {'ids': [], 'current_counts': pd.Series([0, 0], index=PersonConfig.TARGET_LABELS)},
+        'val':   {'ids': [], 'current_counts': pd.Series([0, 0], index=PersonConfig.TARGET_LABELS)},
+        'test':  {'ids': [], 'current_counts': pd.Series([0, 0], index=PersonConfig.TARGET_LABELS)},
     }
 
     # Randomize assignment order to reduce bias
@@ -178,11 +179,11 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO):
         new_counts = current_counts + child_counts
         if new_counts.sum() == 0:
             return 0
-        new_ratio = new_counts[TARGET_LABELS[1]] / new_counts.sum()
+        new_ratio = new_counts[PersonConfig.TARGET_LABELS[1]] / new_counts.sum()
         return abs(new_ratio - target_adult_ratio)
 
     for child_id in sorted_child_ids:
-        child_counts = child_group_counts.loc[child_id, TARGET_LABELS]
+        child_counts = child_group_counts.loc[child_id, PersonConfig.TARGET_LABELS]
 
         # Find eligible splits (still have room for more IDs)
         eligible_splits = []
@@ -213,9 +214,11 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = TRAIN_SPLIT_RATIO):
     df_val   = df[df["child_id"].isin(val_ids)].drop(columns=["child_id"])
     df_test  = df[df["child_id"].isin(test_ids)].drop(columns=["child_id"])
 
+    # Log final split information
     for split_name, split_df in zip(["Train", "Val", "Test"], [df_train, df_val, df_test]):
         if len(split_df) > 0:
-            ratio = split_df[TARGET_LABELS[1]].sum() / len(split_df)
+            ratio = split_df[PersonConfig.TARGET_LABELS[1]].sum() / len(split_df)
+            logging.info(f"{split_name} set: {len(split_df)} images, adult ratio: {ratio:.3f}")
 
     return df_train, df_val, df_test, train_ids, val_ids, test_ids
 
@@ -236,8 +239,8 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
 
         f.write(f"Initial Distribution:\n")
         f.write(f"Total Images: {total_images}\n")
-        f.write(f"Class 0 {TARGET_LABELS[0]}: {total_0} images ({total_0 / total_images:.2%})\n")
-        f.write(f"Class 1 {TARGET_LABELS[1]}: {total_1} images ({total_1 / total_images:.2%})\n\n")
+        f.write(f"Class 0 {PersonConfig.TARGET_LABELS[0]}: {total_0} images ({total_0 / total_images:.2%})\n")
+        f.write(f"Class 1 {PersonConfig.TARGET_LABELS[1]}: {total_1} images ({total_1 / total_images:.2%})\n\n")
 
         f.write("Split Distribution:\n")
         f.write("--------------------------------------------------\n\n")
@@ -246,16 +249,16 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
             total_split = len(split_df)
             total_split_percent = total_split / total_images if total_images > 0 else 0
 
-            count_0 = split_df[TARGET_LABELS[0]].sum()
-            count_1 = split_df[TARGET_LABELS[1]].sum()
+            count_0 = split_df[PersonConfig.TARGET_LABELS[0]].sum()
+            count_1 = split_df[PersonConfig.TARGET_LABELS[1]].sum()
             
             ratio_0 = count_0 / total_split if total_split > 0 else 0
             ratio_1 = count_1 / total_split if total_split > 0 else 0
             
             f.write(f"{split_name} Set: ({total_split_percent:.2%})\n")
             f.write(f"Total Images: {total_split}\n")
-            f.write(f"{TARGET_LABELS[0]}: {count_0} ({ratio_0:.2%})\n")
-            f.write(f"{TARGET_LABELS[1]}: {count_1} ({ratio_1:.2%})\n\n")
+            f.write(f"{PersonConfig.TARGET_LABELS[0]}: {count_0} ({ratio_0:.2%})\n")
+            f.write(f"{PersonConfig.TARGET_LABELS[1]}: {count_1} ({ratio_1:.2%})\n\n")
 
         write_split_info("Validation", df_val)
         write_split_info("Test", df_test)
@@ -277,29 +280,29 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
     
     logging.info(f"Statistics file generated at {file_path}")
 
-if __name__ == "__main__":
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    rows = fetch_presence_per_frame(DATABASE_CATEGORY_IDS)
+if __name__ == "__main__":  
+    # Fetch all annotations for the specified categories
+    rows = fetch_all_annotations(PersonConfig.DATABASE_CATEGORY_IDS)
     
     if not rows:
         logging.warning("No annotations found for the specified categories. DataFrame will be empty. Exiting script.")
         exit()
 
-    df = build_frame_level_labels(rows, AGE_GROUP_TO_CLASS_ID, MODEL_CLASS_ID_TO_LABEL)
+    df = build_frame_level_labels(rows, PersonConfig.AGE_GROUP_TO_CLASS_ID, PersonConfig.MODEL_CLASS_ID_TO_LABEL)
 
-    if not all(col in df.columns for col in TARGET_LABELS):
-        logging.error(f"DataFrame is missing expected columns: {TARGET_LABELS}. Available columns: {df.columns.tolist()}")
+    if not all(col in df.columns for col in PersonConfig.TARGET_LABELS):
+        logging.error(f"DataFrame is missing expected columns: {PersonConfig.TARGET_LABELS}. Available columns: {df.columns.tolist()}")
         exit()
 
     df_train, df_val, df_test, train_ids, val_ids, test_ids = split_by_child_id(df)
 
     # Save CSVs
-    df_train.to_csv(OUTPUT_DIR / "train.csv", index=False)
-    df_val.to_csv(OUTPUT_DIR / "val.csv", index=False)
-    df_test.to_csv(OUTPUT_DIR / "test.csv", index=False)
+    PersonClassification.INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    df_train.to_csv(PersonClassification.INPUT_DIR / "train.csv", index=False)
+    df_val.to_csv(PersonClassification.INPUT_DIR / "val.csv", index=False)
+    df_test.to_csv(PersonClassification.INPUT_DIR / "test.csv", index=False)
 
     # Generate and save statistics file
     generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
 
-    logging.info(f"Generated CSV files at {OUTPUT_DIR}")
+    logging.info(f"Generated CSV files at {PersonClassification.INPUT_DIR}")
