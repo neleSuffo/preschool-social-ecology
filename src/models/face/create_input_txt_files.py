@@ -362,8 +362,9 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
     # Log final split information
     for split_name, split_df in zip(["Train", "Val", "Test"], [train_df, val_df, test_df]):
         if len(split_df) > 0:
-            ratio = split_df[class_columns[0]].sum() / len(split_df)
-            logging.info(f"{split_name} set: {len(split_df)} images, {class_columns[0]} ratio: {ratio:.3f}")
+            ratio_0 = split_df[class_columns[0]].sum() / len(split_df)
+            ratio_1 = split_df[class_columns[1]].sum() / len(split_df)
+            logging.info(f"{split_name} set: {len(split_df)} images, {class_columns[0]} ratio: {ratio_0:.3f}, {class_columns[1]} ratio: {ratio_1:.3f}")
 
     return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
             train_df, val_df, test_df)
@@ -539,6 +540,13 @@ def split_yolo_data(annotation_folder: Path):
         # Split data grouped by child id 
         train, val, test, df_train, df_val, df_test = split_by_child_id(df)
 
+        # Get the IDs for logging
+        train_ids = df_train['child_id'].unique().tolist() if 'child_id' in df_train.columns else []
+        val_ids = df_val['child_id'].unique().tolist() if 'child_id' in df_val.columns else []
+        test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
+        
+        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
+        
         # Move images for each split
         for split_name, split_set in [("train", train), 
                                       ("val", val), 
@@ -553,13 +561,6 @@ def split_yolo_data(annotation_folder: Path):
                 logging.info(f"{split_name}: Moved {successful}, Failed {failed}")
             else:
                 logging.warning(f"No images for {split_name} split")
-
-        # Get the IDs for logging
-        train_ids = df_train['child_id'].unique().tolist() if 'child_id' in df_train.columns else []
-        val_ids = df_val['child_id'].unique().tolist() if 'child_id' in df_val.columns else []
-        test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
-        
-        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
     
     except Exception as e:
         logging.error(f"Error processing face detection: {str(e)}")
