@@ -36,6 +36,7 @@ class PersonClassification:
     EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_extraction_progress.txt")
     MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_missing_frames.txt")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_labels")
+    IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_cvat")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_classifications/person_dataset.yaml")
@@ -48,7 +49,7 @@ class FaceDetection:
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_cvat")
-    DATA_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
+    INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
 
 class Proximity:
