@@ -206,7 +206,7 @@ def add_annotations_to_db(
                 ),
             )
             # Add image details if not already added
-            image_name = f"{task_name}_{frame_id_padded}.jpg"
+            image_name = f"{task_name}_{frame_id_padded}"
             if image_name not in added_images:
                 cursor.execute(
                 """
@@ -262,3 +262,6 @@ def main() -> None:
     except Exception as e:
         print(f"Error setting up database: {str(e)}")
         raise
+
+if __name__ == "__main__":
+    main()
