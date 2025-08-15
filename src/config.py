@@ -136,7 +136,8 @@ class FaceConfig:
         1: "adult"
     }
     DATABASE_CATEGORY_IDS = [10]
-    
+    TARGET_LABELS = ['child', 'adult']
+
     TRAIN_SPLIT_RATIO = 0.6
     MAX_CLASS_RATIO_THRESHOLD = 0.60
     NUM_EPOCHS = 300
