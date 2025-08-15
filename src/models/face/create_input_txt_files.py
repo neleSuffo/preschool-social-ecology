@@ -121,7 +121,7 @@ def save_annotations(annotations: List[Tuple]) -> None:
         
         # Try to find image with any valid extension
         img_path = None
-        for ext in FaceConfig.VALID_EXTENSIONS:
+        for ext in DataConfig.VALID_EXTENSIONS:
             potential_path = FaceDetection.IMAGES_INPUT_DIR / parent_folder / f"{img_name}{ext}"
             if potential_path.exists():
                 img_path = potential_path
@@ -495,7 +495,7 @@ def move_images(image_names: list,
             
             # Try to find image with any valid extension
             image_src = None
-            for ext in FaceConfig.VALID_EXTENSIONS:
+            for ext in DataConfig.VALID_EXTENSIONS:
                 potential_path = FaceDetection.IMAGES_INPUT_DIR / image_folder / f"{image_name}{ext}"
                 if potential_path.exists():
                     image_src = potential_path
