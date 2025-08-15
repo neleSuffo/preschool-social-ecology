@@ -66,26 +66,41 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
 # ==============================
 # Image and Bounding Box Utilities
 # ==============================
-def get_image_dimensions(image_paths: List[Path]) -> Dict[Path, Tuple[int, int]]:
-    """Return a dict mapping image paths to (height, width)."""
-    dims = {}
-    for img_path in image_paths:
-        img = cv2.imread(str(img_path))
-        if img is not None:
-            dims[img_path] = img.shape[:2]
-        else:
-            logging.warning(f"Failed to load image: {img_path}")
-    return dims
-
 def convert_to_yolo_format(width: int, height: int, bbox: List[float]) -> Tuple[float, float, float, float]:
-    """Convert [xtl, ytl, xbr, ybr] to YOLO (x_center, y_center, width, height)."""
+    """Convert [xtl, ytl, xbr, ybr] to YOLO (x_center, y_center, width, height).
+    
+    Parameters
+    ----------
+    width : int
+        Image width in pixels
+    height : int 
+        Image height in pixels
+    bbox : List[float]
+        Bounding box in format [xtl, ytl, xbr, ybr] (absolute coordinates)
+        
+    Returns
+    -------
+    Tuple[float, float, float, float]
+        YOLO format: (x_center_norm, y_center_norm, width_norm, height_norm)
+        All values normalized to [0, 1]
+    """
     xtl, ytl, xbr, ybr = bbox
-    return (
-        (xtl + xbr) / 2 / width,
-        (ytl + ybr) / 2 / height,
-        (xbr - xtl) / width,
-        (ybr - ytl) / height
-    )
+    
+    # Calculate center coordinates (absolute)
+    x_center = (xtl + xbr) / 2.0
+    y_center = (ytl + ybr) / 2.0
+    
+    # Calculate width and height (absolute)
+    bbox_width = xbr - xtl
+    bbox_height = ybr - ytl
+    
+    # Normalize to [0, 1] by dividing by image dimensions
+    x_center_norm = x_center / width
+    y_center_norm = y_center / height
+    width_norm = bbox_width / width
+    height_norm = bbox_height / height
+    
+    return (x_center_norm, y_center_norm, width_norm, height_norm)
 
 # ==============================
 # Annotation Writing
@@ -103,7 +118,7 @@ def save_annotations(annotations: List[Tuple]) -> None:
 
     for cat_id, bbox_json, obj_inter, img_name, gaze, age in annotations:
         parent_folder = "_".join(img_name.split("_")[:-1])
-        img_path = DataPaths.IMAGES_INPUT_DIR / parent_folder / img_name
+        img_path = FaceDetection.IMAGES_INPUT_DIR / parent_folder / img_name
 
         if not img_path.exists():
             logging.warning(f"{img_path} does not exist")
@@ -111,19 +126,25 @@ def save_annotations(annotations: List[Tuple]) -> None:
             continue
 
         try:
-            bbox = json.loads(bbox_json)
-            
-            # Get dimensions for this specific image
+            # Load image to get actual dimensions
             img = cv2.imread(str(img_path))
             if img is None:
-                logging.warning(f"Could not read image: {img_path}")
+                logging.warning(f"Failed to load image: {img_path}")
+                skipped += 1
+                continue
+            
+            height, width = img.shape[:2]  # cv2 returns (height, width, channels)
+            
+            bbox = json.loads(bbox_json)
+            yolo_bbox = convert_to_yolo_format(width, height, bbox)
+            class_id = FaceConfig.AGE_GROUP_TO_CLASS_ID.get(age, 99)
+            
+            # Skip invalid class IDs
+            if class_id == 99:
+                logging.warning(f"Unknown age group '{age}' for {img_name}")
                 skipped += 1
                 continue
                 
-            height, width = img.shape[:2]  # cv2 returns (height, width, channels)
-            
-            yolo_bbox = convert_to_yolo_format(width, height, bbox)
-            class_id = FaceConfig.AGE_GROUP_TO_CLASS_ID.get(age, 99)
             files[img_name].append(f"{class_id} " + " ".join(map(str, yolo_bbox)) + "\n")
             processed += 1
         except Exception as e:
@@ -138,7 +159,7 @@ def save_annotations(annotations: List[Tuple]) -> None:
 
     logging.info(f"Processed {processed}, skipped {skipped}")
 
-def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = DataPaths.IMAGES_INPUT_DIR) -> list:
+def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = FaceDetection.IMAGES_INPUT_DIR) -> list:
     """
     This function returns only the frames that have annotations (every 30th frame).
     
@@ -201,7 +222,7 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
         DataFrame containing image filenames, IDs, and their corresponding one-hot encoded class labels.
     """
     # Define class mappings for face detection
-    id_to_name = FaceConfig.MODEL_CLASS_ID_TO_LABEL
+    id_to_name = {0: "child_face", 1: "adult_face"}
 
     image_class_mapping = []
 
@@ -221,8 +242,8 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
             "filename": image_file.stem,
             "id": image_id,
             "has_annotation": bool(labels),  # True if labels are found, False otherwise
-            **{f"class_{cid}": (1 if id_to_name[cid] in labels else 0) 
-               for cid in id_to_name.keys()}
+            **{class_name: (1 if class_name in labels else 0) 
+               for class_name in id_to_name.values()}
         })
 
     return pd.DataFrame(image_class_mapping)
@@ -230,15 +251,13 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
 def multilabel_stratified_split(df: pd.DataFrame,
                               train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO,
                               random_seed: int = DataConfig.RANDOM_SEED,
-                              min_ids_per_split: int = 2,
-                              max_class_ratio: float = FaceConfig.MAX_CLASS_RATIO_THRESHOLD):
+                              min_ids_per_split: int = 2):
     """
     Performs a group-based stratified split balancing three factors:
     1. Group Integrity: Keeps all frames from an ID in one split.
     2. Class Representation: Prioritizes ensuring all classes are present in val/test.
     3. True Frame Distribution: Bases the split ratio on the number of frames.
     4. Minimum ID Requirements: Ensures at least min_ids_per_split IDs in val/test sets.
-    5. Maximum Class Ratio: Prevents any class from exceeding max_class_ratio in any split.
     
     Parameters:
     ----------
@@ -250,8 +269,6 @@ def multilabel_stratified_split(df: pd.DataFrame,
         Random seed for reproducibility.
     min_ids_per_split: int
         Minimum number of IDs required in validation and test sets.
-    max_class_ratio: float
-        Maximum ratio any single class can have in any split (default 0.75 = 75%).
         
     Returns:
     -------
@@ -278,14 +295,13 @@ def multilabel_stratified_split(df: pd.DataFrame,
     class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation']]
     id_class_map = df.groupby('id')[class_columns].sum().apply(lambda s: s[s > 0].index.to_list(), axis=1).to_dict()
 
-    # Pre-calculate the 'weight' (frame count) of each ID and class counts per ID
+    # Pre-calculate the 'weight' (frame count) of each ID
     id_frame_count_map = df['id'].value_counts().to_dict()
-    id_class_count_map = df.groupby('id')[class_columns].sum().to_dict('index')
     total_frame_count = df.shape[0]
     
     # Check if we have enough IDs for minimum requirements
     total_ids = len(id_class_map)
-    if total_ids < (min_ids_per_split * 3):
+    if total_ids < (min_ids_per_split * 2 + 1):  # Need at least 2 for val + 2 for test + 1 for train
         logging.warning(f"Not enough IDs ({total_ids}) to guarantee {min_ids_per_split} IDs in each of val and test sets")
         # Adjust minimum requirement if necessary
         min_ids_per_split = max(1, (total_ids - 1) // 2)
@@ -308,125 +324,58 @@ def multilabel_stratified_split(df: pd.DataFrame,
     COVERAGE_BONUS_WEIGHT = 1000.0
     RATIO_PENALTY_WEIGHT = 1.0 / total_frame_count # Normalize penalty by total frames
     ID_REQUIREMENT_WEIGHT = 2000.0  # Very high weight for meeting minimum ID requirements
-    MAX_CLASS_RATIO_PENALTY = 50000.0  # Extremely high penalty for exceeding maximum class ratio
-
-    # Track current class counts in each split
-    train_class_counts = {col: 0 for col in class_columns}
-    val_class_counts = {col: 0 for col in class_columns}
-    test_class_counts = {col: 0 for col in class_columns}
 
     for id_to_assign in available_ids:
         id_classes = set(id_class_map[id_to_assign])
         id_frame_count = id_frame_count_map[id_to_assign]
         
-        # Calculate remaining IDs
-        remaining_ids = len(available_ids) - available_ids.index(id_to_assign) - 1
+        scores = {'train': 0.0, 'val': 0.0, 'test': 0.0}
+
+        # === Score for assigning to VALIDATION set ===
+        # 1. Coverage Score: Huge bonus for covering a needed class
+        val_coverage_gain = len(id_classes.intersection(uncovered_val_classes))
+        scores['val'] += val_coverage_gain * COVERAGE_BONUS_WEIGHT
         
-        # Early check: if we need to guarantee minimum IDs, force assignments
-        val_needs = max(0, min_ids_per_split - len(val_ids))
-        test_needs = max(0, min_ids_per_split - len(test_ids))
+        # 2. ID Requirement Score: High bonus if we still need more IDs
+        if len(val_ids) < min_ids_per_split:
+            scores['val'] += ID_REQUIREMENT_WEIGHT
         
-        # If remaining IDs exactly match what we need, force assignments
-        if remaining_ids == val_needs + test_needs - 1:  # -1 because we're about to assign current ID
-            if val_needs > 0:
-                best_split = 'val'
-                logging.debug(f"Forcing ID {id_to_assign} to validation set - critical for minimum ID requirement")
-            elif test_needs > 0:
-                best_split = 'test'
-                logging.debug(f"Forcing ID {id_to_assign} to test set - critical for minimum ID requirement")
-            else:
-                best_split = 'train'  # All requirements met, default to train
-        else:
-            # Calculate scores normally
-            scores = {'train': 0.0, 'val': 0.0, 'test': 0.0}
+        # 3. Ratio Score: Penalty for making the split larger than its target frame count
+        if val_frames >= total_frame_count * val_ratio and len(val_ids) >= min_ids_per_split:
+            potential_new_val_frames = val_frames + id_frame_count
+            overage_penalty = potential_new_val_frames - (total_frame_count * val_ratio)
+            scores['val'] -= overage_penalty * RATIO_PENALTY_WEIGHT
 
-            # === Score for assigning to VALIDATION set ===
-            # 1. Coverage Score: Huge bonus for covering a needed class
-            val_coverage_gain = len(id_classes.intersection(uncovered_val_classes))
-            scores['val'] += val_coverage_gain * COVERAGE_BONUS_WEIGHT
-            
-            # 2. ID Requirement Score: High bonus if we still need more IDs
-            if len(val_ids) < min_ids_per_split:
-                scores['val'] += ID_REQUIREMENT_WEIGHT
-            
-            # 3. Ratio Score: Penalty for making the split larger than its target frame count
-            if val_frames >= total_frame_count * val_ratio and len(val_ids) >= min_ids_per_split:
-                potential_new_val_frames = val_frames + id_frame_count
-                overage_penalty = potential_new_val_frames - (total_frame_count * val_ratio)
-                scores['val'] -= overage_penalty * RATIO_PENALTY_WEIGHT
-
-            # 4. Maximum Class Ratio Check: Penalty for exceeding max_class_ratio
-            for class_col in class_columns:
-                potential_val_class_count = val_class_counts[class_col] + id_class_count_map[id_to_assign][class_col]
-                potential_val_total = val_frames + id_frame_count
-                if potential_val_total > 0:
-                    potential_class_ratio = potential_val_class_count / potential_val_total
-                    if potential_class_ratio > max_class_ratio:
-                        scores['val'] -= MAX_CLASS_RATIO_PENALTY
-                        logging.debug(f"ID {id_to_assign}: Val {class_col} would be {potential_class_ratio:.2%}, applying penalty")
-
-            # === Score for assigning to TEST set ===
-            # 1. Coverage Score
-            test_coverage_gain = len(id_classes.intersection(uncovered_test_classes))
-            scores['test'] += test_coverage_gain * COVERAGE_BONUS_WEIGHT
-            
-            # 2. ID Requirement Score: High bonus if we still need more IDs
-            if len(test_ids) < min_ids_per_split:
-                scores['test'] += ID_REQUIREMENT_WEIGHT
-
-            # 3. Ratio Score
-            test_ratio_calc = 1.0 - train_ratio - val_ratio
-            if test_frames >= total_frame_count * test_ratio_calc and len(test_ids) >= min_ids_per_split:
-                potential_new_test_frames = test_frames + id_frame_count
-                overage_penalty = potential_new_test_frames - (total_frame_count * test_ratio_calc)
-                scores['test'] -= overage_penalty * RATIO_PENALTY_WEIGHT
-
-            # 4. Maximum Class Ratio Check: Penalty for exceeding max_class_ratio
-            for class_col in class_columns:
-                potential_test_class_count = test_class_counts[class_col] + id_class_count_map[id_to_assign][class_col]
-                potential_test_total = test_frames + id_frame_count
-                if potential_test_total > 0:
-                    potential_class_ratio = potential_test_class_count / potential_test_total
-                    if potential_class_ratio > max_class_ratio:
-                        scores['test'] -= MAX_CLASS_RATIO_PENALTY
-                        logging.debug(f"ID {id_to_assign}: Test {class_col} would be {potential_class_ratio:.2%}, applying penalty")
-                
-            # === Assign ID to the split with the highest score ===
-            best_split = max(scores, key=scores.get)
-            
-            # Safety check: Ensure we maintain minimum IDs in val and test splits
-            # If we're running low on remaining IDs, prioritize val/test over train
-            
-            # Force assignment to val if it needs more IDs and we have enough remaining
-            if len(val_ids) < min_ids_per_split and remaining_ids >= (min_ids_per_split - len(test_ids)):
-                best_split = 'val'
-                logging.debug(f"Forcing ID {id_to_assign} to validation set to meet minimum ID requirement")
-            # Force assignment to test if it needs more IDs and we have enough remaining  
-            elif len(test_ids) < min_ids_per_split and remaining_ids >= 0:
-                best_split = 'test'
-                logging.debug(f"Forcing ID {id_to_assign} to test set to meet minimum ID requirement")
+        # === Score for assigning to TEST set ===
+        # 1. Coverage Score
+        test_coverage_gain = len(id_classes.intersection(uncovered_test_classes))
+        scores['test'] += test_coverage_gain * COVERAGE_BONUS_WEIGHT
         
-        # Assign the ID to the chosen split
+        # 2. ID Requirement Score: High bonus if we still need more IDs
+        if len(test_ids) < min_ids_per_split:
+            scores['test'] += ID_REQUIREMENT_WEIGHT
+
+        # 3. Ratio Score
+        test_ratio_calc = 1.0 - train_ratio - val_ratio
+        if test_frames >= total_frame_count * test_ratio_calc and len(test_ids) >= min_ids_per_split:
+            potential_new_test_frames = test_frames + id_frame_count
+            overage_penalty = potential_new_test_frames - (total_frame_count * test_ratio_calc)
+            scores['test'] -= overage_penalty * RATIO_PENALTY_WEIGHT
+            
+        # === Assign ID to the split with the highest score ===
+        best_split = max(scores, key=scores.get)
+        
         if best_split == 'val':
             val_ids.add(id_to_assign)
             val_frames += id_frame_count
             uncovered_val_classes.difference_update(id_classes)
-            # Update class counts for validation using actual class frame counts
-            for class_col in class_columns:
-                val_class_counts[class_col] += id_class_count_map[id_to_assign][class_col]
         elif best_split == 'test':
             test_ids.add(id_to_assign)
             test_frames += id_frame_count
             uncovered_test_classes.difference_update(id_classes)
-            # Update class counts for test using actual class frame counts
-            for class_col in class_columns:
-                test_class_counts[class_col] += id_class_count_map[id_to_assign][class_col]
         else: # best_split == 'train'
             train_ids.add(id_to_assign)
             train_frames += id_frame_count
-            # Update class counts for train using actual class frame counts
-            for class_col in class_columns:
-                train_class_counts[class_col] += id_class_count_map[id_to_assign][class_col]
 
     # --- 3. Finalization and Enhanced Logging ---
     train_df = df[df['id'].isin(train_ids)].copy()
@@ -442,33 +391,12 @@ def multilabel_stratified_split(df: pd.DataFrame,
     if len(val_ids) >= min_ids_per_split and len(test_ids) >= min_ids_per_split:
         logging.info(f"✓ Both validation and test sets have at least {min_ids_per_split} IDs")
 
-    # Ensure we have at least 2 IDs in each split - this is critical for proper evaluation
-    if len(val_ids) < 2:
-        raise ValueError(f"Validation set has only {len(val_ids)} ID(s). Need at least 2 IDs for proper evaluation.")
-    if len(test_ids) < 2:
-        raise ValueError(f"Test set has only {len(test_ids)} ID(s). Need at least 2 IDs for proper evaluation.")
-    if len(train_ids) < 1:
-        raise ValueError(f"Training set has only {len(train_ids)} ID(s). Need at least 1 ID for training.")
-    
-    logging.info(f"✓ All splits have sufficient IDs: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)}")
-
-    # Final check to warn about impossible splits and maximum class ratio violations
+    # Final check to warn about impossible splits
     for class_col in class_columns:
         if val_df[class_col].sum() == 0:
             logging.error(f"WARNING: Class '{class_col}' has 0 instances in the Validation set.")
         if test_df[class_col].sum() == 0:
             logging.error(f"WARNING: Class '{class_col}' has 0 instances in the Test set.")
-    
-    # Check for maximum class ratio violations
-    for split_name, split_df in [("Validation", val_df), ("Test", test_df), ("Train", train_df)]:
-        total_frames_split = len(split_df)
-        if total_frames_split > 0:
-            for class_col in class_columns:
-                class_ratio = split_df[class_col].sum() / total_frames_split
-                if class_ratio > max_class_ratio:
-                    logging.warning(f"⚠️  {split_name} set: {class_col} ratio {class_ratio:.2%} exceeds threshold of {max_class_ratio:.2%}")
-                else:
-                    logging.info(f"✓ {split_name} set: {class_col} ratio {class_ratio:.2%} within threshold")
 
     train_class_counts = train_df[class_columns].sum()
     val_class_counts = val_df[class_columns].sum()
@@ -481,22 +409,22 @@ def multilabel_stratified_split(df: pd.DataFrame,
     # Initial Distribution
     split_info.append("Initial Distribution:")
     split_info.append(f"Total Frames: {total_frame_count}")
-    split_info.append(f"class_0: {class_counts['class_0']} images ({class_counts['class_0']/total_frame_count:.2%})")
-    split_info.append(f"class_1: {class_counts['class_1']} images ({class_counts['class_1']/total_frame_count:.2%})\n")
+    split_info.append(f"child_face: {class_counts['child_face']} images ({class_counts['child_face']/total_frame_count:.2%})")
+    split_info.append(f"adult_face: {class_counts['adult_face']} images ({class_counts['adult_face']/total_frame_count:.2%})\n")
 
     # Split Distribution
     split_info.append("Split Distribution:")
     split_info.append("-" * 50)
 
-    def add_split_summary(name, frame_count, count_0, count_1):
+    def add_split_summary(name, frame_count, child_count, adult_count):
         split_info.append(f"{name} Set: ({frame_count/total_frame_count:.2%})")
         split_info.append(f"Total Frames: {frame_count}")
-        split_info.append(f"class_0: {count_0} ({count_0/frame_count:.2%})")
-        split_info.append(f"class_1: {count_1} ({count_1/frame_count:.2%})\n")
+        split_info.append(f"child_face: {child_count} ({child_count/frame_count:.2%})")
+        split_info.append(f"adult_face: {adult_count} ({adult_count/frame_count:.2%})\n")
 
-    add_split_summary("Validation", val_frames, val_class_counts['class_0'], val_class_counts['class_1'])
-    add_split_summary("Test", test_frames, test_class_counts['class_0'], test_class_counts['class_1'])
-    add_split_summary("Train", train_frames, train_class_counts['class_0'], train_class_counts['class_1'])
+    add_split_summary("Validation", val_frames, val_class_counts['child_face'], val_class_counts['adult_face'])
+    add_split_summary("Test", test_frames, test_class_counts['child_face'], test_class_counts['adult_face'])
+    add_split_summary("Train", train_frames, train_class_counts['child_face'], train_class_counts['adult_face'])
 
     # ID Distribution
     split_info.append("ID Distribution:")
@@ -563,9 +491,21 @@ def move_images(image_names: list,
             image_parts = image_name.split("_")[:8]
             image_folder = "_".join(image_parts)
             
-            image_src = DataPaths.IMAGES_INPUT_DIR / image_folder / f"{image_name}.jpg"
+            # Try to find image with any valid extension
+            image_src = None
+            for ext in FaceDetection.VALID_EXTENSION:
+                potential_path = FaceDetection.IMAGES_INPUT_DIR / image_folder / f"{image_name}{ext}"
+                if potential_path.exists():
+                    image_src = potential_path
+                    break
+            
+            if image_src is None:
+                logging.debug(f"Image not found with any valid extension: {image_name}")
+                return False
+            
             label_src = label_path / f"{image_name}.txt"
-            image_dst = image_dst_dir / f"{image_name}.jpg"
+            # Keep original extension in destination
+            image_dst = image_dst_dir / f"{image_name}{image_src.suffix}"
             label_dst = label_dst_dir / f"{image_name}.txt"
 
             # Handle label file
@@ -576,11 +516,7 @@ def move_images(image_names: list,
                 shutil.copy2(label_src, label_dst)
 
             # Handle image file
-            if not image_src.exists():
-                logging.debug(f"Image not found: {image_src}")
-                return False
             shutil.copy2(image_src, image_dst)
-
             return True
 
         except Exception as e:
@@ -625,7 +561,7 @@ def split_yolo_data(annotation_folder: Path):
         df = get_class_distribution(total_images, annotation_folder)
         
         # Split data grouped by id with minimum ID requirements
-        train, val, test, *_ = multilabel_stratified_split(df)
+        train, val, test, *_ = multilabel_stratified_split(df, min_ids_per_split=2)
 
         # Move images for each split
         for split_name, split_set in [("train", train), 
