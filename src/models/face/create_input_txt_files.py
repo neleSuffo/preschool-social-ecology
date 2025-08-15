@@ -41,8 +41,7 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
 
     query = f"""
     SELECT DISTINCT 
-        a.category_id, a.bbox, a.object_interaction, i.file_name,
-        a.gaze_directed_at_child, a.person_age
+        a.category_id, a.bbox, i.file_name, a.person_age
     FROM annotations a
     JOIN images i ON a.image_id = i.frame_id AND a.video_id = i.video_id
     JOIN videos v ON a.video_id = v.id
@@ -103,19 +102,33 @@ def write_annotations(file_path: Path, lines: List[str]) -> None:
     file_path.write_text("".join(lines))
 
 def save_annotations(annotations: List[Tuple]) -> None:
-    """Convert annotations to YOLO format and save them in parallel."""
+    """Convert annotations to YOLO format and save them in parallel.
+    
+    Parameters
+    ----------
+    annotations : List[Tuple]
+        List of tuples containing annotation data (category_id, bbox, file_name, person_age).
+        
+    """
     output_dir = FaceDetection.LABELS_INPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
     files = defaultdict(list)
     processed, skipped = 0, 0
 
-    for cat_id, bbox_json, obj_inter, img_name, gaze, age in annotations:
+    for cat_id, bbox_json, img_name, age in annotations:
         parent_folder = "_".join(img_name.split("_")[:-1])
-        img_path = FaceDetection.IMAGES_INPUT_DIR / parent_folder / img_name
-
-        if not img_path.exists():
-            logging.warning(f"{img_path} does not exist")
+        
+        # Try to find image with any valid extension
+        img_path = None
+        for ext in FaceConfig.VALID_EXTENSIONS:
+            potential_path = FaceDetection.IMAGES_INPUT_DIR / parent_folder / f"{img_name}{ext}"
+            if potential_path.exists():
+                img_path = potential_path
+                break
+        
+        if img_path is None:
+            logging.warning(f"Image not found with any valid extension: {img_name}")
             skipped += 1
             continue
 
@@ -227,7 +240,7 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
         if annotation_file.exists() and annotation_file.stat().st_size > 0:
             with open(annotation_file, 'r') as f:
                 class_ids = {int(line.split()[0]) for line in f if line.split()}
-                labels = [FaceDetection.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceDetection.MODEL_CLASS_ID_TO_LABEL]
+                labels = [FaceConfig.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceConfig.MODEL_CLASS_ID_TO_LABEL]
 
         # Create one-hot encoded dictionary for the image
         image_class_mapping.append({
@@ -235,7 +248,7 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
             "id": image_id,
             "has_annotation": bool(labels),  # True if labels are found, False otherwise
             **{class_name: (1 if class_name in labels else 0) 
-               for class_name in FaceDetection.MODEL_CLASS_ID_TO_LABEL.values()}
+               for class_name in FaceConfig.MODEL_CLASS_ID_TO_LABEL.values()}
         })
 
     return pd.DataFrame(image_class_mapping)
@@ -482,7 +495,7 @@ def move_images(image_names: list,
             
             # Try to find image with any valid extension
             image_src = None
-            for ext in FaceDetection.VALID_EXTENSION:
+            for ext in FaceConfig.VALID_EXTENSIONS:
                 potential_path = FaceDetection.IMAGES_INPUT_DIR / image_folder / f"{image_name}{ext}"
                 if potential_path.exists():
                     image_src = potential_path
