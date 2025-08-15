@@ -3,6 +3,7 @@ import logging
 import sqlite3
 import cv2
 import os
+import re
 import shutil
 import random
 import argparse
@@ -185,16 +186,15 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
         e.g. [(image_path, image_id), ...]
     """
     video_names = set()
-    total_images = []
-    
-    # Step 1: Get unique video names and annotated frames
+    total_images = []  # Fix: Initialize the list here
     annotated_frames = set()
     for annotation_file in label_path.glob('*.txt'):
         parts = annotation_file.stem.split('_')
-        video_name = "_".join(parts[:8])
+        # Use regex to get video name to avoid errors
+        video_name = "_".join(parts[:8]) 
         video_names.add(video_name)
         annotated_frames.add(annotation_file.stem)
-    
+        
     logging.info(f"Found {len(video_names)} unique video names")
 
     # Step 2: Only get the corresponding annotated frames from image folders
@@ -211,7 +211,7 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
                         total_images.append((str(video_file.resolve()), image_id))
                         
     logging.info(f"Total annotated frames found: {len(total_images)}")
-    return total_images  
+    return total_images
 
 def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.DataFrame:
     """
@@ -274,10 +274,10 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
     
     # Add child_id to our dataframe by mapping through image names
     def get_child_id_from_filename(filename: str) -> str:
-        try:
-            return 'id' + filename.split('id')[1].split('_')[0]
-        except (IndexError, ValueError):
-            return None
+        match = re.search(r'id(\d+)_', filename)
+        if match:
+            return 'id' + match.group(1)
+        return None
     
     df['child_id'] = df['filename'].apply(get_child_id_from_filename)
     df.dropna(subset=['child_id'], inplace=True)
