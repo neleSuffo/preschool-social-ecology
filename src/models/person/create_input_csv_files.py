@@ -12,24 +12,34 @@ from config import PersonConfig, DataConfig
 logging.basicConfig(level=logging.INFO)
 
 def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
-    """
-    Fetches all annotations for specified categories, including age group, from the SQLite database.
-
+    """Fetch annotations for given category IDs from the SQLite database.
+    
     Parameters
     ----------
-    category_ids (List[int])
-        A list of integer IDs (e.g., [1, 2]) for the categories to fetch.
-
+    category_ids : List[int]
+        List of category IDs to filter annotations.
+        
     Returns
     -------
-    List[Tuple]
-        A list of tuples, where each tuple contains (video_id, frame_id, file_name, category_id, age_group)
-        for all detected instances of the specified categories.
+    List[Tuple]       
+        List of tuples containing annotation data.
     """
-    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
-    cursor = conn.cursor()
+    logging.info(f"Fetching annotations for category IDs: {category_ids}")
+    placeholders = ", ".join("?" * len(category_ids))
+    excluded_videos = [
+        'quantex_at_home_id260275_2022_05_27_01.mp4',
+        'quantex_at_home_id260275_2022_04_16_01.mp4', 
+        'quantex_at_home_id260275_2022_04_12_01.mp4',
+        'quantex_at_home_id258704_2022_05_07_03.mp4',
+        'quantex_at_home_id258704_2022_05_07_04.mp4',
+        'quantex_at_home_id258704_2022_05_10_02.mp4',
+        'quantex_at_home_id258704_2022_05_15_01.mp4',
+        'quantex_at_home_id262565_2022_05_26_03.mp4',
+    ]
 
-    placeholders = ", ".join("?" for _ in category_ids)
+    # Create a SQL string like: 'video1', 'video2', ...
+    excluded_videos_sql = ", ".join(f"'{v}'" for v in DataConfig.EXCLUDED_VIDEOS)
+
     query = f"""
     SELECT
         i.video_id,
@@ -44,14 +54,19 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
         ON a.video_id = v.id
     WHERE a.category_id IN ({placeholders})
       AND a.outside = 0
+      AND v.file_name NOT IN ({excluded_videos_sql})
     ORDER BY i.video_id, i.frame_id
     """
-    cursor.execute(query, category_ids)
-    rows = cursor.fetchall()
-    conn.close()
-
-    logging.info(f"Fetched {len(rows)} annotation rows")
-    return rows
+    
+    with sqlite3.connect(DataPaths.ANNO_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, category_ids)
+        results = cursor.fetchall()
+        
+    logging.info(f"Excluded {len(excluded_videos)} videos from query")
+    logging.info(f"Excluded videos: {excluded_videos}")
+    
+    return results
 
 def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int], model_class_mapping: Dict[int, str]) -> pd.DataFrame:
     """
@@ -218,7 +233,6 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = PersonConfig.TRAIN_
     for split_name, split_df in zip(["Train", "Val", "Test"], [df_train, df_val, df_test]):
         if len(split_df) > 0:
             ratio = split_df[PersonConfig.TARGET_LABELS[1]].sum() / len(split_df)
-            logging.info(f"{split_name} set: {len(split_df)} images, adult ratio: {ratio:.3f}")
 
     return df_train, df_val, df_test, train_ids, val_ids, test_ids
 
