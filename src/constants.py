@@ -18,7 +18,7 @@ class DataPaths:
     ANNO_XML_PATH = Path(ANNO_DIR/"annotations.xml")
     ANNO_INDIVIDUAL_DIR = Path(BasePaths.DATA_DIR/"quantex_annotations_individual/")
     ANNO_JSON_PATH = Path(ANNO_DIR/"annotations.json")
-    ANNO_DB_PATH = Path(ANNO_DIR/"quantex_annotations.db")
+    ANNO_DB_PATH = Path(ANNO_DIR/"annotations.db")
     RAWFRAMES_EXTRACTION_ERROR_LOG = Path(BasePaths.DATA_DIR/"rawframes_extraction_error.log")
     PROCESSED_VIDEOS_LOG = Path(BasePaths.DATA_DIR/"processed_videos.log")
     SUBJECTS_CSV_PATH = Path(BasePaths.DATA_DIR/"age_group.csv")
@@ -45,7 +45,7 @@ class PersonClassification:
     TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
 class FaceDetection:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12m_20250814_112743/weights/best.pt")
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12m_20250816_011938/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_cvat")
