@@ -24,6 +24,16 @@ class DataConfig:
     FRAME_HEIGHT = 1296
     VIDEO_BATCH_SIZE = 16
     VALID_EXTENSIONS = [".jpg", ".PNG"]
+    EXCLUDED_VIDEOS = [
+        'quantex_at_home_id260275_2022_05_27_01.mp4',
+        'quantex_at_home_id260275_2022_04_16_01.mp4', 
+        'quantex_at_home_id260275_2022_04_12_01.mp4',
+        'quantex_at_home_id258704_2022_05_07_03.mp4',
+        'quantex_at_home_id258704_2022_05_07_04.mp4',
+        'quantex_at_home_id258704_2022_05_10_02.mp4',
+        'quantex_at_home_id258704_2022_05_15_01.mp4',
+        'quantex_at_home_id262565_2022_05_26_03.mp4',
+    ]   
 
 class PipelineConfig:
     """Configuration for the overall detection pipeline."""
@@ -123,7 +133,7 @@ class PersonConfig:
 
 class FaceConfig:
     """Configuration for face detection and classification."""
-    MODEL_SIZE = 'm'  # Default model size
+    MODEL_SIZE = 'x'  # Default model size
     MODEL_NAME = f"yolo12{MODEL_SIZE}"
     AGE_GROUP_TO_CLASS_ID = {
         'infant': 0,
