@@ -40,19 +40,9 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
     """
     logging.info(f"Fetching annotations for category IDs: {category_ids}")
     placeholders = ", ".join("?" * len(category_ids))
-    excluded_videos = [
-        'quantex_at_home_id260275_2022_05_27_01.mp4',
-        'quantex_at_home_id260275_2022_04_16_01.mp4', 
-        'quantex_at_home_id260275_2022_04_12_01.mp4',
-        'quantex_at_home_id258704_2022_05_07_03.mp4',
-        'quantex_at_home_id258704_2022_05_07_04.mp4',
-        'quantex_at_home_id258704_2022_05_10_02.mp4',
-        'quantex_at_home_id258704_2022_05_15_01.mp4',
-        'quantex_at_home_id262565_2022_05_26_01.mp4'
-    ]
 
     # Create a SQL string like: 'video1', 'video2', ...
-    excluded_videos_sql = ", ".join(f"'{v}'" for v in excluded_videos)
+    excluded_videos_sql = ", ".join(f"'{v}'" for v in DataConfig.EXCLUDED_VIDEOS)
 
     query = f"""
     SELECT DISTINCT 
@@ -270,16 +260,6 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
     
     if not total_images:
         logging.error("No images provided to get_class_distribution")
-        return pd.DataFrame()
-    
-    # Debug: Show first few images
-    logging.info(f"Sample images: {total_images[:3]}")
-    
-    # Debug: Check the class mapping configuration
-    try:
-        logging.info(f"FaceConfig.MODEL_CLASS_ID_TO_LABEL: {FaceConfig.MODEL_CLASS_ID_TO_LABEL}")
-    except AttributeError:
-        logging.error("FaceConfig.MODEL_CLASS_ID_TO_LABEL not found in configuration!")
         return pd.DataFrame()
     
     image_class_mapping = []
