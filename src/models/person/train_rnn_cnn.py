@@ -361,7 +361,13 @@ def calculate_metrics(y_true, y_pred, class_names=PersonConfig.TARGET_LABELS):
         y_true = np.column_stack([y_true, y_true])
         y_pred = np.column_stack([y_pred, y_pred])
     
+    # Debug: Check class distribution
     print(f"Debug: y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
+    for i, class_name in enumerate(class_names):
+        true_pos = y_true[:, i].sum()
+        pred_pos = y_pred[:, i].sum()
+        total = len(y_true)
+        print(f"  {class_name}: True positives: {true_pos}/{total} ({true_pos/total:.3f}), Predicted positives: {pred_pos}/{total} ({pred_pos/total:.3f})")
     
     metrics = {}
     
@@ -718,6 +724,21 @@ def setup_models_and_optimizers(device):
     cnn = CNNEncoder(backbone=PersonConfig.BACKBONE, pretrained=True, feat_dim=PersonConfig.FEAT_DIM).to(device)
     rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim).to(device)
 
+    # Initialize weights properly
+    def init_weights(m):
+        if isinstance(m, nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            m.bias.data.fill_(0.01)
+        elif isinstance(m, nn.LSTM):
+            for param in m.parameters():
+                if len(param.shape) >= 2:
+                    torch.nn.init.orthogonal_(param.data)
+                else:
+                    torch.nn.init.normal_(param.data)
+    
+    # Only initialize RNN (CNN is pretrained)
+    rnn_model.apply(init_weights)
+
     try:
         cnn = torch.compile(cnn)
         rnn_model = torch.compile(rnn_model)
@@ -725,9 +746,28 @@ def setup_models_and_optimizers(device):
     except Exception as e:
         print(f"Could not compile models: {e}")
 
-    opt_cnn = torch.optim.Adam(filter(lambda p: p.requires_grad, cnn.parameters()), lr=PersonConfig.LR) if not PersonConfig.FREEZE_CNN else None
-    opt_rnn = torch.optim.Adam(rnn_model.parameters(), lr=PersonConfig.LR, weight_decay=PersonConfig.WEIGHT_DECAY)
-    criterion = nn.BCEWithLogitsLoss()
+    # Improved learning rates and optimizers
+    if not PersonConfig.FREEZE_CNN:
+        opt_cnn = torch.optim.AdamW(cnn.parameters(), 
+                                   lr=PersonConfig.LR * 0.01,  # Much lower for CNN
+                                   weight_decay=PersonConfig.WEIGHT_DECAY * 0.1,
+                                   betas=(0.9, 0.999))
+    else:
+        opt_cnn = None
+    
+    opt_rnn = torch.optim.AdamW(rnn_model.parameters(), 
+                               lr=PersonConfig.LR * 2.0,  # Higher for RNN
+                               weight_decay=PersonConfig.WEIGHT_DECAY,
+                               betas=(0.9, 0.999))
+    
+    # Improved loss function with stronger class weights
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([3.0, 3.0]).to(device))
+    
+    print(f"Model setup complete:")
+    print(f"  CNN learning rate: {PersonConfig.LR * 0.01 if not PersonConfig.FREEZE_CNN else 'Frozen'}")
+    print(f"  RNN learning rate: {PersonConfig.LR * 2.0}")
+    print(f"  Loss function: BCEWithLogitsLoss with pos_weight=[3.0, 3.0]")
+    print(f"  Optimizer: AdamW with improved settings")
     
     return cnn, rnn_model, opt_cnn, opt_rnn, criterion
 
@@ -851,6 +891,72 @@ def save_script_and_hparams(out_dir, args):
     with open(hparams_path, "w") as f:
         json.dump(hparams, f, indent=4)
 
+def handle_checkpointing_and_early_stopping(out_dir, epoch, cnn, rnn_model, opt_cnn, opt_rnn, 
+                                           train_metrics, val_metrics, best_val_f1, patience_counter):
+    """Handle model checkpointing and early stopping logic.
+    
+    Parameters
+    ----------
+    out_dir : str
+        Output directory for saving checkpoints.
+    epoch : int
+        Current epoch number.
+    cnn : nn.Module
+        CNN model.
+    rnn_model : nn.Module
+        RNN model.
+    opt_cnn : torch.optim.Optimizer
+        CNN optimizer.
+    opt_rnn : torch.optim.Optimizer
+        RNN optimizer.
+    train_metrics : Dict[str, float]
+        Training metrics.
+    val_metrics : Dict[str, float]
+        Validation metrics.
+    best_val_f1 : float
+        Best validation F1 score so far.
+    patience_counter : int
+        Current patience counter.
+        
+    Returns
+    -------
+    Tuple[float, int, bool]
+        Updated best_val_f1, patience_counter, and whether to stop early.
+    """
+    ckpt = {
+        'epoch': epoch,
+        'cnn_state': cnn.state_dict(),
+        'rnn_state': rnn_model.state_dict(),
+        'opt_rnn': opt_rnn.state_dict(),
+        'opt_cnn': opt_cnn.state_dict() if opt_cnn else None,
+        'val_metrics': val_metrics,
+        'train_metrics': train_metrics
+    }
+    
+    # Save periodic checkpoints
+    if epoch % 10 == 0 or epoch == PersonConfig.NUM_EPOCHS:
+        ckpt_path = os.path.join(out_dir, f'ckpt_epoch{epoch:03d}.pth')
+        torch.save(ckpt, ckpt_path)
+
+    # Early stopping and best model tracking
+    should_stop = False
+    if val_metrics['macro_f1'] > best_val_f1:
+        best_val_f1 = val_metrics['macro_f1']
+        patience_counter = 0  # Reset patience counter
+        best_path = os.path.join(out_dir, 'best.pth')
+        torch.save(ckpt, best_path)
+        print(f"  ⭐ New best macro F1: {best_val_f1:.3f}!")
+    else:
+        patience_counter += 1
+        print(f"  No improvement for {patience_counter}/{PersonConfig.PATIENCE} epochs")
+
+        if patience_counter >= PersonConfig.PATIENCE:
+            print(f"\n🛑 Early stopping triggered! No improvement for {PersonConfig.PATIENCE} epochs.")
+            print(f"Best validation macro F1: {best_val_f1:.3f}")
+            should_stop = True
+    
+    return best_val_f1, patience_counter, should_stop
+
 def run_training_loop(out_dir, device, scaler, train_loader, val_loader, cnn, rnn_model, opt_cnn, opt_rnn, criterion, csv_log_path):
     """Run the main training loop with early stopping.
     
@@ -927,6 +1033,7 @@ def main():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--diagnose', action='store_true', help='Run diagnostics only')
     args = parser.parse_args()
 
     # Setup training environment
@@ -937,6 +1044,17 @@ def main():
     
     # Setup models and optimizers
     cnn, rnn_model, opt_cnn, opt_rnn, criterion = setup_models_and_optimizers(device)
+    
+    # Run diagnostics if requested
+    if args.diagnose:
+        print("Running diagnostics on training data...")
+        diagnostics = diagnose_learning_issues((cnn, rnn_model), train_loader, device)
+        suggestions = suggest_improvements(diagnostics)
+        
+        print("\n💡 Suggested Improvements:")
+        for suggestion in suggestions:
+            print(f"  • {suggestion}")
+        return
     
     # Initialize logging
     csv_log_path = initialize_training_logging(out_dir)
@@ -951,3 +1069,220 @@ def main():
         
 if __name__ == '__main__':
     main()
+
+def diagnose_learning_issues(models, dataloader, device, num_batches=5):
+    """Diagnose potential learning issues in the model.
+    
+    Parameters
+    ----------
+    models : Tuple[nn.Module, nn.Module]
+        Tuple containing (CNN encoder, RNN classifier) models.
+    dataloader : DataLoader
+        Data loader to analyze.
+    device : torch.device
+        Device to run diagnostics on.
+    num_batches : int, default=5
+        Number of batches to analyze.
+        
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing diagnostic information.
+    """
+    cnn, rnn = models
+    cnn.eval()
+    rnn.eval()
+    
+    diagnostics = {
+        'label_distribution': {'child': 0, 'adult': 0, 'total_samples': 0},
+        'gradient_norms': [],
+        'activations': [],
+        'loss_values': [],
+        'prediction_stats': {'all_zeros': 0, 'all_ones': 0, 'mixed': 0}
+    }
+    
+    criterion = nn.BCEWithLogitsLoss()
+    
+    print("🔍 Running Learning Diagnostics...")
+    print("=" * 50)
+    
+    with torch.no_grad():
+        for batch_idx, (images_padded, labels_padded, lengths, _) in enumerate(dataloader):
+            if batch_idx >= num_batches:
+                break
+                
+            images_padded = images_padded.to(device)
+            labels_padded = labels_padded.to(device)
+            mask = (labels_padded != -100)
+            
+            # Analyze label distribution
+            valid_labels = labels_padded[mask]
+            if len(valid_labels) > 0:
+                adult_count = (valid_labels[:, 1] == 1).sum().item()
+                child_count = (valid_labels[:, 0] == 1).sum().item()
+                diagnostics['label_distribution']['adult'] += adult_count
+                diagnostics['label_distribution']['child'] += child_count
+                diagnostics['label_distribution']['total_samples'] += len(valid_labels)
+            
+            # Forward pass
+            feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
+            logits = rnn(feats, lengths)
+            
+            # Check activations
+            diagnostics['activations'].append({
+                'cnn_features_mean': feats.mean().item(),
+                'cnn_features_std': feats.std().item(),
+                'logits_mean': logits.mean().item(),
+                'logits_std': logits.std().item(),
+                'logits_min': logits.min().item(),
+                'logits_max': logits.max().item()
+            })
+            
+            # Check predictions
+            probs = torch.sigmoid(logits)
+            preds = (probs > 0.5).float()
+            valid_preds = preds[mask[:, :, 0]]
+            
+            if len(valid_preds) > 0:
+                all_zeros = (valid_preds.sum(dim=1) == 0).sum().item()
+                all_ones = (valid_preds.sum(dim=1) == 2).sum().item()
+                mixed = len(valid_preds) - all_zeros - all_ones
+                
+                diagnostics['prediction_stats']['all_zeros'] += all_zeros
+                diagnostics['prediction_stats']['all_ones'] += all_ones
+                diagnostics['prediction_stats']['mixed'] += mixed
+            
+            # Calculate loss
+            mask_flat = mask.view(-1, 2)
+            logits_flat = logits.view(-1, 2)[mask_flat[:, 0] != -100]
+            labels_flat = labels_padded.view(-1, 2)[mask_flat[:, 0] != -100]
+            
+            if len(logits_flat) > 0:
+                loss = criterion(logits_flat, labels_flat)
+                diagnostics['loss_values'].append(loss.item())
+    
+    # Print diagnostics
+    print(f"📊 Label Distribution:")
+    total = diagnostics['label_distribution']['total_samples']
+    adult_pct = diagnostics['label_distribution']['adult'] / total * 100 if total > 0 else 0
+    child_pct = diagnostics['label_distribution']['child'] / total * 100 if total > 0 else 0
+    print(f"  Adult: {diagnostics['label_distribution']['adult']}/{total} ({adult_pct:.1f}%)")
+    print(f"  Child: {diagnostics['label_distribution']['child']}/{total} ({child_pct:.1f}%)")
+    
+    if diagnostics['activations']:
+        avg_activations = {
+            key: np.mean([a[key] for a in diagnostics['activations']])
+            for key in diagnostics['activations'][0].keys()
+        }
+        print(f"\n🧠 Activation Statistics:")
+        print(f"  CNN Features - Mean: {avg_activations['cnn_features_mean']:.4f}, Std: {avg_activations['cnn_features_std']:.4f}")
+        print(f"  Logits - Mean: {avg_activations['logits_mean']:.4f}, Std: {avg_activations['logits_std']:.4f}")
+        print(f"  Logits Range: [{avg_activations['logits_min']:.4f}, {avg_activations['logits_max']:.4f}]")
+    
+    if diagnostics['loss_values']:
+        avg_loss = np.mean(diagnostics['loss_values'])
+        std_loss = np.std(diagnostics['loss_values'])
+        print(f"\n💥 Loss Statistics:")
+        print(f"  Average Loss: {avg_loss:.4f} ± {std_loss:.4f}")
+    
+    pred_total = sum(diagnostics['prediction_stats'].values())
+    if pred_total > 0:
+        print(f"\n🎯 Prediction Patterns:")
+        print(f"  All Zeros: {diagnostics['prediction_stats']['all_zeros']}/{pred_total} ({diagnostics['prediction_stats']['all_zeros']/pred_total*100:.1f}%)")
+        print(f"  All Ones: {diagnostics['prediction_stats']['all_ones']}/{pred_total} ({diagnostics['prediction_stats']['all_ones']/pred_total*100:.1f}%)")
+        print(f"  Mixed: {diagnostics['prediction_stats']['mixed']}/{pred_total} ({diagnostics['prediction_stats']['mixed']/pred_total*100:.1f}%)")
+    
+    # Identify potential issues
+    print(f"\n⚠️  Potential Issues:")
+    issues = []
+    
+    if adult_pct < 5 or child_pct < 5:
+        issues.append(f"Severe class imbalance detected")
+    
+    if avg_activations and abs(avg_activations['logits_mean']) > 2:
+        issues.append(f"Logits saturated (mean: {avg_activations['logits_mean']:.2f})")
+    
+    if avg_activations and avg_activations['logits_std'] < 0.1:
+        issues.append(f"Low logit variance - model not learning")
+    
+    if diagnostics['prediction_stats']['all_zeros'] > pred_total * 0.9:
+        issues.append(f"Model predicting mostly zeros")
+    elif diagnostics['prediction_stats']['all_ones'] > pred_total * 0.9:
+        issues.append(f"Model predicting mostly ones")
+    
+    if avg_loss and avg_loss > 1.5:
+        issues.append(f"High loss indicates learning difficulties")
+    
+    if not issues:
+        issues.append("No obvious issues detected")
+    
+    for issue in issues:
+        print(f"  • {issue}")
+    
+    print("=" * 50)
+    return diagnostics
+
+def suggest_improvements(diagnostics):
+    """Suggest improvements based on diagnostic results.
+    
+    Parameters
+    ----------
+    diagnostics : Dict[str, Any]
+        Results from diagnose_learning_issues function.
+        
+    Returns
+    -------
+    List[str]
+        List of suggested improvements.
+    """
+    suggestions = []
+    
+    # Check class imbalance
+    total = diagnostics['label_distribution']['total_samples']
+    if total > 0:
+        adult_pct = diagnostics['label_distribution']['adult'] / total * 100
+        child_pct = diagnostics['label_distribution']['child'] / total * 100
+        
+        if adult_pct < 10 or child_pct < 10:
+            suggestions.append("Use stronger class weights in loss function")
+            suggestions.append("Consider focal loss for extreme imbalance")
+            suggestions.append("Try oversampling minority class")
+    
+    # Check activations
+    if diagnostics['activations']:
+        avg_activations = {
+            key: np.mean([a[key] for a in diagnostics['activations']])
+            for key in diagnostics['activations'][0].keys()
+        }
+        
+        if avg_activations['logits_std'] < 0.1:
+            suggestions.append("Increase learning rate")
+            suggestions.append("Reduce regularization (weight decay, dropout)")
+            suggestions.append("Check if CNN is frozen when it shouldn't be")
+        
+        if abs(avg_activations['logits_mean']) > 2:
+            suggestions.append("Add gradient clipping")
+            suggestions.append("Reduce learning rate")
+            suggestions.append("Check for label encoding issues")
+    
+    # Check prediction patterns
+    pred_total = sum(diagnostics['prediction_stats'].values())
+    if pred_total > 0:
+        zero_pct = diagnostics['prediction_stats']['all_zeros'] / pred_total
+        one_pct = diagnostics['prediction_stats']['all_ones'] / pred_total
+        
+        if zero_pct > 0.8:
+            suggestions.append("Model stuck predicting zeros - increase positive class weight")
+            suggestions.append("Try different initialization")
+        elif one_pct > 0.8:
+            suggestions.append("Model stuck predicting ones - decrease positive class weight")
+    
+    # Check loss
+    if diagnostics['loss_values']:
+        avg_loss = np.mean(diagnostics['loss_values'])
+        if avg_loss > 1.5:
+            suggestions.append("High loss - check label format and data quality")
+            suggestions.append("Consider simpler model architecture")
+            suggestions.append("Increase training time")
+    
+    return suggestions
