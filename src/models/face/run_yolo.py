@@ -9,7 +9,7 @@ from supervision import Detections
 from pathlib import Path
 from PIL import Image
 from constants import FaceDetection
-from config import FaceConfig
+from config import DataConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -97,7 +97,7 @@ def main():
         # Setup paths - try different file extensions
         image_path = None
         
-        for ext in FaceConfig.VALID_EXTENSIONS:
+        for ext in DataConfig.VALID_EXTENSIONS:
             potential_path = FaceDetection.IMAGES_INPUT_DIR / video_folder / (Path(args.image).stem + ext)
             if potential_path.exists():
                 image_path = potential_path
