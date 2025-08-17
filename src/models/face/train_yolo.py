@@ -20,8 +20,8 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Set thread limits
-    os.environ['OMP_NUM_THREADS'] = '6'
-    torch.set_num_threads(6)
+    os.environ['OMP_NUM_THREADS'] = '24'
+    torch.set_num_threads(24)
 
     base_output_dir = FaceDetection.OUTPUT_DIR
 
@@ -47,32 +47,8 @@ def main():
         name=experiment_name,
         augment=True,
 
-        # Learning rate settings
-        lr0=0.005, # Reduced initial learning rate
-        lrf=0.0005, # Reduced final learning rate
-        cos_lr=True,
-
-        # Regularization improvements
-        weight_decay=0.0005,
-        dropout=0.1,
-
         # Early stopping with more patience
         patience=30,
-
-        # Data augmentation improvements (tuned for face detection)
-        hsv_h=0.015,
-        hsv_s=0.7,
-        hsv_v=0.4,
-        degrees=0.0, # Reduced to 0 for face detection
-        translate=0.1,
-        scale=0.5,
-        shear=0.0, # Reduced to 0 for face detection
-        perspective=0.0, # Reduced to 0
-        flipud=0.0, # Set to 0 as vertical flips are unnatural for faces
-        fliplr=0.5, # Keep horizontal flips
-        mosaic=0.5, # Reduced mosaic probability
-        mixup=0.0, # Disabled mixup
-        copy_paste=0.0, # Disabled copy-paste
 
         # Training settings
         device=args.device,
@@ -80,27 +56,6 @@ def main():
 
         # Validation settings
         val=True,
-
-        # Additional settings
-        close_mosaic=10,
-        amp=True,
-        fraction=1.0,
-        profile=False,
-        freeze=None,
-
-        # Optimizer settings
-        optimizer='AdamW',
-        momentum=0.937,
-
-        # Loss function improvements
-        box=7.5,
-        cls=1.0, # Increased classification loss weight to distinguish classes better
-        dfl=1.5,
-
-        # Multi-scale training
-        rect=False,
-        overlap_mask=True,
-        mask_ratio=4,
 
         # Workspace settings
         exist_ok=True,
