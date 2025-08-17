@@ -133,6 +133,8 @@ class PersonConfig:
     CONFIDENCE_THRESHOLD = 0.5
     MODEL_ID = 2
     BATCH_SIZE_INFERENCE = 64
+    WINDOW_SIZE = 60
+    STRIDE = 30
 
 class FaceConfig:
     """Configuration for face detection and classification."""
