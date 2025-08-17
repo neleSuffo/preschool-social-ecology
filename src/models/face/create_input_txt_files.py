@@ -255,9 +255,7 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
     -------
     pd.DataFrame
         DataFrame containing image filenames, IDs, and their corresponding one-hot encoded class labels.
-    """
-    logging.info(f"Processing {len(total_images)} images for class distribution")
-    
+    """   
     if not total_images:
         logging.error("No images provided to get_class_distribution")
         return pd.DataFrame()
@@ -268,12 +266,6 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
     for i, (image_path, image_id) in enumerate(total_images):
         image_file = Path(image_path)
         annotation_file = annotation_folder / image_file.with_suffix('.txt').name
-
-        # Debug: Log first few iterations
-        if i < 3:
-            logging.info(f"Processing image {i}: {image_file.name}")
-            logging.info(f"  Looking for annotation: {annotation_file}")
-            logging.info(f"  Annotation exists: {annotation_file.exists()}")
 
         # Get labels from annotation file
         labels = []
@@ -287,10 +279,6 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
                         labels = [FaceConfig.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceConfig.MODEL_CLASS_ID_TO_LABEL]
             except Exception as e:
                 logging.warning(f"Error reading annotation file {annotation_file}: {e}")
-
-        # Debug: Show labels for first few images
-        if i < 3:
-            logging.info(f"  Labels found: {labels}")
 
         # Create one-hot encoded dictionary for the image
         try:
@@ -312,17 +300,8 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
         except Exception as e:
             logging.error(f"Error creating mapping entry for {image_file.name}: {e}")
             continue
-
-    # Debug: Check the mapping structure
-    if image_class_mapping:
-        logging.info(f"Sample mapping entry: {image_class_mapping[0]}")
-    else:
-        logging.error("No valid mapping entries created!")
-        return pd.DataFrame()
         
     df = pd.DataFrame(image_class_mapping)
-    logging.info(f"Created DataFrame with shape: {df.shape}")
-    logging.info(f"Columns: {df.columns.tolist()}")
     
     return df
 
@@ -353,7 +332,6 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
 
     # --- Counts per child ---
     class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
-    logging.info(f"Class columns identified: {class_columns}")
     
     if not class_columns:
         logging.error("No class columns found in DataFrame")
@@ -439,7 +417,6 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
         if len(split_df) > 0:
             ratio_0 = split_df[class_columns[0]].sum() / len(split_df)
             ratio_1 = split_df[class_columns[1]].sum() / len(split_df)
-            logging.info(f"{split_name} set: {len(split_df)} images, {class_columns[0]} ratio: {ratio_0:.3f}, {class_columns[1]} ratio: {ratio_1:.3f}")
 
     return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
             train_df, val_df, test_df)
@@ -483,11 +460,12 @@ def move_images(image_names: list,
         try:
             # Handle face detection cases - get video folder from image name
             image_parts = image_name.split("_")
-            if len(image_parts) < 7:
+            if len(image_parts) < 9:
                 logging.debug(f"Invalid image name format: {image_name}")
                 return False
-                
-            image_folder = "_".join(image_parts[:7])
+            
+            # from quantex_at_home_id255237_2022_05_08_04_000240.jpg to quantex_at_home_id255237_2022_05_08_04
+            image_folder = "_".join(image_parts[:8])
             
             # Try to find image with any valid extension
             image_src = None
@@ -613,7 +591,6 @@ def split_yolo_data(annotation_folder: Path):
     try:
         # Get annotated frames
         total_images = get_total_number_of_annotated_frames(annotation_folder)
-        logging.info(f"Found {len(total_images)} total annotated images")
         
         if not total_images:
             logging.error("No annotated images found. Check your annotation folder and image paths.")
@@ -663,9 +640,9 @@ def split_yolo_data(annotation_folder: Path):
 
 def main():       
     try:
-        anns = fetch_all_annotations(FaceConfig.DATABASE_CATEGORY_IDS)
-        logging.info(f"Fetched {len(anns)} annotations.")
-        save_annotations(anns)
+        #anns = fetch_all_annotations(FaceConfig.DATABASE_CATEGORY_IDS)
+        #logging.info(f"Fetched {len(anns)} annotations.")
+        #save_annotations(anns)
         split_yolo_data(FaceDetection.LABELS_INPUT_DIR)
         logging.info("Conversion completed successfully.")
     except Exception as e:
