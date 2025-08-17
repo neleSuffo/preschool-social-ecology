@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 # Import model classes and constants
 from constants import DataPaths, PersonClassification
-from config import PersonConfig
+from config import PersonConfig, PersonConfig
 from models.person.person_classifier import load_model, CNNEncoder, FrameRNNClassifier
 from inference import get_video_id, get_frame_paths
 
@@ -121,7 +121,7 @@ def process_video_frames(video_name: str, cnn: CNNEncoder, rnn_model: FrameRNNCl
             ''', (
                 int(video_id),
                 int(frame_number),
-                int(PersonClassification.MODEL_ID),
+                int(PersonConfig.MODEL_ID),
                 int(preds[idx, 1]),
                 float(averaged_probs[idx, 1]),
                 int(preds[idx, 0]),
