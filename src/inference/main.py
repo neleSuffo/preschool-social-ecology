@@ -7,7 +7,7 @@ import numpy as np
 import run_person, run_face_proximity, run_speech_type
 from pathlib import Path
 from ultralytics import YOLO
-from setup_detection_database import setup_detection_database
+from setup_interaction_db import setup_interaction_db
 from constants import DataPaths
 
 # Configure logging
@@ -20,7 +20,7 @@ def get_balanced_videos(videos_per_group: int) -> list:
     Parameters:
     ----------
     videos_per_group : int
-        Number of videos to select from each age group
+        Number of videos to select from each age group (videos only contain video_names without extension)
         
     Returns:
     -------
@@ -68,7 +68,7 @@ def main(frame_step: int = 10, num_videos_per_age: int = None):
         If specified, it will select a balanced number of videos from each age group.
     """
     # Setup the detection database which will hold the detection results (if it doesnt already exist)
-    setup_detection_database()
+    setup_interaction_db()
     
     # Select videos to process
     if num_videos_per_age is None:
@@ -82,8 +82,8 @@ def main(frame_step: int = 10, num_videos_per_age: int = None):
         logging.info(f"Processing {len(selected_videos)} selected videos ({num_videos_per_age} per age group)")
 
     # Run the detection pipeline
-    #run_person.main(selected_videos)
-    run_face_proximity.main(selected_videos, frame_step)
+    run_person.main(selected_videos)
+    #run_face_proximity.main(selected_videos, frame_step)
     #run_audio_classification.main(selected_videos)
 
 if __name__ == "__main__":
