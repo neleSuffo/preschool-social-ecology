@@ -9,22 +9,14 @@ from pathlib import Path
 from ultralytics import YOLO
 from tqdm import tqdm
 from constants import DataPaths, FaceDetection
+from config import FaceConfig
 from models.proximity.estimate_proximity import calculate_proximity
+from inference import process_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def get_video_id(video_name: str, cursor: sqlite3.Cursor) -> int:
-    """Get video_id from Videos table using video name"""
-    cursor.execute('SELECT video_id FROM Videos WHERE video_name = ?', (video_name,))
-    result = cursor.fetchone()
-    if result:
-        return result[0]
-    else:
-        logging.error(f"Video {video_name} not found in Videos table")
-        return None
-
 def process_frame(frame_path: Path, video_id: int, frame_number: int, 
-                 face_model: YOLO, cursor: sqlite3.Cursor) -> int:
+                 model: YOLO, cursor: sqlite3.Cursor) -> int:
     """
     Process a single frame for face detection
     
@@ -39,7 +31,7 @@ def process_frame(frame_path: Path, video_id: int, frame_number: int,
         return 0
     
     # Run YOLO face detection
-    results = face_model.predict(frame, verbose=False)
+    results = model.predict(frame, verbose=False)
     
     face_count = 0
     for result in results:
@@ -60,69 +52,12 @@ def process_frame(frame_path: Path, video_id: int, frame_number: int,
                     (video_id, frame_number, model_id, confidence_score, 
                      x_min, y_min, x_max, y_max, age_class, proximity)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (video_id, frame_number, 1, float(confidence), 
+                ''', (video_id, frame_number, FaceConfig.MODEL_ID, float(confidence), 
                       float(x1), float(y1), float(x2), float(y2), class_id, proximity))
                 
                 face_count += 1
     
     return face_count
-
-def process_video(video_name: str, frame_step: int, 
-                 face_model: YOLO, cursor: sqlite3.Cursor, conn: sqlite3.Connection):
-    """Process all frames for a video"""
-    logging.info(f"Processing video: {video_name}")
-    
-    # Get video_id from database
-    video_id = get_video_id(video_name, cursor)
-    if video_id is None:
-        return
-    
-    # Find frame files for this video
-    frames_dir = DataPaths.IMAGES_INPUT_DIR / video_name
-    if not frames_dir.exists():
-        logging.error(f"Frames directory not found: {frames_dir}")
-        return
-    
-    frame_files = sorted(frames_dir.glob(f"{video_name}_*.jpg"))
-    if not frame_files:
-        logging.warning(f"No frame files found for video: {video_name}")
-        return
-        
-    processed_frames = 0
-    total_faces = 0
-    
-    # Filter frames that will be processed (respecting frame_step)
-    frames_to_process = []
-    for frame_file in frame_files:
-        try:
-            frame_number = int(frame_file.stem.split('_')[-1])
-            if frame_step > 1 and frame_number % frame_step != 0:
-                continue
-            frames_to_process.append((frame_file, frame_number))
-        except ValueError:
-            logging.warning(f"Could not extract frame number from: {frame_file}")
-            continue
-    
-    # Process frames with progress bar
-    with tqdm(frames_to_process, desc=f"Processing {video_name}", unit="frames") as pbar:
-        for frame_file, frame_number in pbar:
-            # Process frame
-            face_count = process_frame(frame_file, video_id, frame_number, face_model, cursor)
-            total_faces += face_count
-            processed_frames += 1
-            
-            # Update progress bar with current stats
-            pbar.set_postfix({
-                'faces_detected': total_faces,
-                'current_frame': frame_number
-            })
-            
-            # Commit every 100 frames
-            if processed_frames % 100 == 0:
-                conn.commit()
-    
-    conn.commit()
-    logging.info(f"Processed {processed_frames} frames, detected {total_faces} faces")
 
 def main(video_list: List[str], frame_step: int = 10):
     """
@@ -140,13 +75,13 @@ def main(video_list: List[str], frame_step: int = 10):
     cursor = conn.cursor()
     
     # Load YOLO face detection model
-    face_model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
+    model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
     logging.info(f"Loaded face detection model from {FaceDetection.TRAINED_WEIGHTS_PATH}")
     
     # Process each video
     for video_name in video_list:
         try:
-            process_video(video_name, frame_step, face_model, cursor, conn)
+            process_video(video_name, frame_step, model, cursor, conn, task="Detecting Faces", process_frame_func=process_frame)
         except Exception as e:
             logging.error(f"Error processing video {video_name}: {e}")
             continue
