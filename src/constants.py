@@ -22,7 +22,7 @@ class DataPaths:
     RAWFRAMES_EXTRACTION_ERROR_LOG = Path(BasePaths.DATA_DIR/"rawframes_extraction_error.log")
     PROCESSED_VIDEOS_LOG = Path(BasePaths.DATA_DIR/"processed_videos.log")
     SUBJECTS_CSV_PATH = Path(BasePaths.DATA_DIR/"age_group.csv")
-    INFERENCE_DB_PATH = Path(BasePaths.OUTPUT_DIR/"quantex_inference/inference_database.db")
+    INFERENCE_DB_PATH = Path(BasePaths.OUTPUT_DIR/"quantex_inference/inference.db")
 
 class AudioClassification:
     AUDIO_FILES_DIR = Path(BasePaths.DATA_DIR/"childlens_audio")
@@ -45,7 +45,7 @@ class PersonClassification:
     TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
 class FaceDetection:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12m_20250816_011938/weights/best.pt")
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12x_20250816_211808/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_cvat")

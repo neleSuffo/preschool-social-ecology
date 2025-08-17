@@ -126,14 +126,17 @@ class PersonConfig:
     WEIGHT_DECAY = 1e-5
     FEAT_DIM = 512
     RNN_HIDDEN = 256
-    RNN_LAYERS = 1
+    RNN_LAYERS = 2
     BIDIRECTIONAL = True
     NUM_OUTPUTS = 2
     BACKBONE = 'resnet18'
+    CONFIDENCE_THRESHOLD = 0.5
+    MODEL_ID = 2
+    BATCH_SIZE_INFERENCE = 64
 
 class FaceConfig:
     """Configuration for face detection and classification."""
-    MODEL_SIZE = 'x'  # Default model size
+    MODEL_SIZE = 'l'  # Default model size
     MODEL_NAME = f"yolo12{MODEL_SIZE}"
     AGE_GROUP_TO_CLASS_ID = {
         'infant': 0,
@@ -152,12 +155,14 @@ class FaceConfig:
     MAX_CLASS_RATIO_THRESHOLD = 0.60
     NUM_EPOCHS = 300
     BATCH_SIZE = 16
-    IMG_SIZE = 640
+    IMG_SIZE = 960
     LR = 1e-4
+    MODEL_ID = 1
 
 class AudioConfig:
     """Configuration for audio classification."""
     VALID_RTTM_CLASSES = ['OHS', 'CDS', 'KCHI', 'SPEECH']
+    MODEL_ID = 3
 
 # Yolo Model and Training Configurations
 class YoloConfig:
