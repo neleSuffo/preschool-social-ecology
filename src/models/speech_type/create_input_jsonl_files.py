@@ -7,7 +7,7 @@ import datetime
 from tqdm import tqdm
 from pathlib import Path
 import re
-from constants import AudioClassification, DataPaths
+from constants import AudioClassification, DataPaths, BasePaths
 from config import AudioConfig
 
 def convert_rttm_to_training_segments(rttm_path, audio_files_dir, valid_rttm_classes, window_duration, window_step, sr, n_mels, hop_length, output_segments_path):
@@ -229,7 +229,7 @@ def save_data_preparation_summary(output_dir, segment_files, segment_counts, uni
         'total_segments': sum(segment_counts.values())
     }
     
-    summary_path = DataPaths.LOGGING_DIR / 'audio_data_preparation_summary.json'
+    summary_path = BasePaths.LOGGING_DIR / 'audio_data_preparation_summary.json'
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=4)
     
@@ -266,10 +266,14 @@ def update_constants_with_segment_paths(segment_files):
         with open(constants_file, 'r') as f:
             content = f.read()
         
-        # Convert paths to use Path objects in the constants file
-        train_path_str = f"Path(r'{segment_files['train']}')"
-        val_path_str = f"Path(r'{segment_files['val']}')"
-        test_path_str = f"Path(r'{segment_files['test']}')"
+        # Convert paths to relative paths using INPUT_DIR
+        train_filename = Path(segment_files['train']).name
+        val_filename = Path(segment_files['val']).name
+        test_filename = Path(segment_files['test']).name
+        
+        train_path_str = f'Path(INPUT_DIR / "{train_filename}")'
+        val_path_str = f'Path(INPUT_DIR / "{val_filename}")'
+        test_path_str = f'Path(INPUT_DIR / "{test_filename}")'
         
         # Update or add the segment file paths in AudioClassification class
         # Pattern to find the AudioClassification class
