@@ -138,7 +138,7 @@ class PersonConfig:
 
 class FaceConfig:
     """Configuration for face detection and classification."""
-    MODEL_SIZE = 'l'  # Default model size
+    MODEL_SIZE = 'x'  # Default model size
     MODEL_NAME = f"yolo12{MODEL_SIZE}"
     AGE_GROUP_TO_CLASS_ID = {
         'infant': 0,
@@ -156,14 +156,15 @@ class FaceConfig:
     TRAIN_SPLIT_RATIO = 0.6
     MAX_CLASS_RATIO_THRESHOLD = 0.60
     NUM_EPOCHS = 300
-    BATCH_SIZE = 16
-    IMG_SIZE = 960
+    BATCH_SIZE = 20
+    IMG_SIZE = 832
     LR = 1e-4
     MODEL_ID = 1
 
 class AudioConfig:
     """Configuration for audio classification."""
     VALID_RTTM_CLASSES = ['OHS', 'CDS', 'KCHI', 'SPEECH']
+    VALID_EVENT_IDS = {"child_talking", "other_person_talking", "overheard_speech", "singing/humming"}
     SR = 16000
     N_MELS = 256
     HOP_LENGTH = 512
