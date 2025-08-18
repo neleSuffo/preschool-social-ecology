@@ -7,7 +7,7 @@ from config import FaceConfig
 
 def main():
     model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
-    folder_name = Path(f"yolo_{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+    folder_name = Path(f"{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
 
     # Validate the model
     metrics = model.val(
