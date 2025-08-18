@@ -164,6 +164,11 @@ class FaceConfig:
 class AudioConfig:
     """Configuration for audio classification."""
     VALID_RTTM_CLASSES = ['OHS', 'CDS', 'KCHI', 'SPEECH']
+    SR = 16000
+    N_MELS = 256
+    HOP_LENGTH = 512
+    WINDOW_DURATION = 3.0
+    WINDOW_STEP = 1.0
     MODEL_ID = 3
 
 # Yolo Model and Training Configurations
