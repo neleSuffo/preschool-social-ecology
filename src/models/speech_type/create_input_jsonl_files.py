@@ -6,6 +6,7 @@ import json
 import datetime
 from tqdm import tqdm
 from pathlib import Path
+import re
 from constants import AudioClassification, DataPaths
 from config import AudioConfig
 
@@ -209,12 +210,12 @@ def save_data_preparation_summary(output_dir, segment_files, segment_counts, uni
     summary = {
         'timestamp': datetime.datetime.now().isoformat(),
         'configuration': {
-            'window_duration': AudioClsConfig.window_duration,
-            'window_step': AudioClsConfig.window_step,
-            'sample_rate': AudioClsConfig.sr,
-            'n_mels': AudioClsConfig.n_mels,
-            'hop_length': AudioClsConfig.hop_length,
-            'valid_rttm_classes': AudioClassification.valid_rttm_classes
+            'window_duration': AudioConfig.WINDOW_DURATION,
+            'window_step': AudioConfig.WINDOW_STEP,
+            'sample_rate': AudioConfig.SR,
+            'n_mels': AudioConfig.N_MELS,
+            'hop_length': AudioConfig.HOP_LENGTH,
+            'valid_rttm_classes': AudioConfig.VALID_RTTM_CLASSES
         },
         'input_files': {
             'audio_files_dir': str(AudioClassification.AUDIO_FILES_DIR),
@@ -240,6 +241,100 @@ def save_data_preparation_summary(output_dir, segment_files, segment_counts, uni
     print(f"  Unique labels: {len(unique_labels)} {unique_labels}")
     print(f"\n✅ Summary saved to: {summary_path}")
 
+def update_constants_with_segment_paths(segment_files):
+    """
+    Update the constants.py file with the generated segment file paths.
+    
+    This function writes the generated segment file paths back to the constants.py
+    file, overwriting existing values for TRAIN_SEGMENTS_FILE, VAL_SEGMENTS_FILE,
+    and TEST_SEGMENTS_FILE in the AudioClassification class.
+    
+    Parameters:
+    ----------
+    segment_files (dict): Dictionary containing paths to generated segment files
+                         with keys 'train', 'val', 'test'
+    """   
+    # Find the constants.py file
+    constants_file = Path(__file__).parent.parent.parent / 'constants.py'
+    
+    if not constants_file.exists():
+        print(f"Warning: constants.py not found at {constants_file}")
+        return False
+    
+    try:
+        # Read the current constants file
+        with open(constants_file, 'r') as f:
+            content = f.read()
+        
+        # Convert paths to use Path objects in the constants file
+        train_path_str = f"Path(r'{segment_files['train']}')"
+        val_path_str = f"Path(r'{segment_files['val']}')"
+        test_path_str = f"Path(r'{segment_files['test']}')"
+        
+        # Update or add the segment file paths in AudioClassification class
+        # Pattern to find the AudioClassification class
+        class_pattern = r'(class AudioClassification[^:]*:.*?)(?=class|\Z)'
+        class_match = re.search(class_pattern, content, re.DOTALL)
+        
+        if class_match:
+            class_content = class_match.group(1)
+            
+            # Update existing or add new segment file variables
+            patterns_and_replacements = [
+                (r'(\s+)TRAIN_SEGMENTS_FILE\s*=.*', rf'\1TRAIN_SEGMENTS_FILE = {train_path_str}'),
+                (r'(\s+)VAL_SEGMENTS_FILE\s*=.*', rf'\1VAL_SEGMENTS_FILE = {val_path_str}'),
+                (r'(\s+)TEST_SEGMENTS_FILE\s*=.*', rf'\1TEST_SEGMENTS_FILE = {test_path_str}')
+            ]
+            
+            updated_class_content = class_content
+            variables_added = []
+            
+            for pattern, replacement in patterns_and_replacements:
+                if re.search(pattern, updated_class_content):
+                    updated_class_content = re.sub(pattern, replacement, updated_class_content)
+                    var_name = replacement.split('=')[0].strip()
+                    variables_added.append(var_name)
+                else:
+                    # Add the variable at the end of the class if it doesn't exist
+                    var_name = replacement.split('=')[0].strip()
+                    var_line = f"    {replacement.split('=')[0].strip()} = {replacement.split('=')[1].strip()}\n"
+                    
+                    # Find the last line of the class (before next class or end of file)
+                    lines = updated_class_content.split('\n')
+                    insert_pos = len(lines) - 1
+                    
+                    # Find the last non-empty line that's indented (part of the class)
+                    for i in range(len(lines) - 1, -1, -1):
+                        if lines[i].strip() and (lines[i].startswith('    ') or lines[i].startswith('\t')):
+                            insert_pos = i + 1
+                            break
+                    
+                    lines.insert(insert_pos, var_line.rstrip())
+                    updated_class_content = '\n'.join(lines)
+                    variables_added.append(f"Added {var_name}")
+            
+            # Replace the class content in the full file content
+            updated_content = content.replace(class_content, updated_class_content)
+            
+            # Write back to the file
+            with open(constants_file, 'w') as f:
+                f.write(updated_content)
+            
+            print(f"\n🔄 Updated constants.py:")
+            for var_change in variables_added:
+                print(f"  ✓ {var_change}")
+            print(f"  📁 File: {constants_file}")
+            
+            return True
+            
+        else:
+            print("Warning: AudioClassification class not found in constants.py")
+            return False
+            
+    except Exception as e:
+        print(f"Error updating constants.py: {e}")
+        return False
+
 def main():
     """
     Main function for audio data preparation.
@@ -255,6 +350,10 @@ def main():
         # Process RTTM data for all splits
         print("📊 Processing RTTM data splits...")
         segment_files, segment_counts, unique_labels = process_rttm_data_splits(output_dir)
+        
+        # Update constants.py with the generated segment file paths
+        print("🔄 Updating constants.py with segment file paths...")
+        update_success = update_constants_with_segment_paths(segment_files)
         
         # Save summary
         save_data_preparation_summary(output_dir, segment_files, segment_counts, unique_labels)
