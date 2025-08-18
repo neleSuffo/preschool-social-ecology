@@ -2,13 +2,13 @@ import librosa
 import numpy as np
 import pandas as pd
 import json
-import datetime
 from tqdm import tqdm
 from pathlib import Path
+from datetime import datetime
 import re
 from glob import glob
 from collections import Counter, defaultdict
-from constants import AudioClassification, DataPaths, BasePaths
+from constants import AudioClassification, BasePaths
 from config import AudioConfig
 
 def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_duration, window_step, output_dir):
@@ -182,19 +182,24 @@ def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_du
     return segment_files, segment_counts, sorted(list(all_unique_labels)), label_counts_per_split
 
 
-def save_data_preparation_summary(output_dir, segment_files, segment_counts, unique_labels, label_counts_per_split):
+def save_data_preparation_summary(segment_files, segment_counts, unique_labels, label_counts_per_split):
     """
-    Save enhanced summary of data preparation results.
+    Save enhanced summary of data preparation results in a .txt file (instead of JSON).
     
     Parameters:
     ----------
-    output_dir (Path): Output directory for saving summary
-    segment_files (dict): Paths to generated segment files
-    segment_counts (dict): Number of segments per split
-    unique_labels (list): All unique labels found
-    label_counts_per_split (dict): Label counts per split
+    segment_files (dict): 
+        Paths to generated segment files
+    segment_counts (dict): 
+        Number of segments per split
+    unique_labels (list): 
+        All unique labels found
+    label_counts_per_split (dict): 
+        Label counts per split
     """
-    output_dir = Path(output_dir)
+    # Save as .txt file instead of JSON
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary_path = BasePaths.LOGGING_DIR / f"split_distribution_audio_{timestamp}.txt"
     
     # Build input files information
     input_files = {
@@ -203,149 +208,64 @@ def save_data_preparation_summary(output_dir, segment_files, segment_counts, uni
         'annotations_dir': str(Path(AudioClassification.CHILDLENS_PARTICIPANT_INFO).parent)
     }
     
-    # Convert label counts to regular dict format and calculate percentages
-    label_counts_dict = {}
+    # Convert label counts to regular dict and calculate percentages
     label_percentages_dict = {}
-    
     for split_name, counts in label_counts_per_split.items():
-        label_counts_dict[split_name] = dict(counts)
-        
-        # Calculate percentages for this split
         total_labels_in_split = sum(counts.values())
-        label_percentages_dict[split_name] = {}
-        
-        for label, count in counts.items():
-            percentage = (count / total_labels_in_split * 100) if total_labels_in_split > 0 else 0
-            label_percentages_dict[split_name][label] = round(percentage, 2)
-    
-    summary = {
-        'timestamp': datetime.datetime.now().isoformat(),
-        'configuration': {
-            'window_duration': AudioConfig.WINDOW_DURATION,
-            'window_step': AudioConfig.WINDOW_STEP,
-            'sample_rate': AudioConfig.SR,
-            'n_mels': AudioConfig.N_MELS,
-            'hop_length': AudioConfig.HOP_LENGTH,
-            'valid_rttm_classes': AudioConfig.VALID_RTTM_CLASSES,
-            'valid_event_ids': ["child_talking", "other_person_talking", "overheard_speech", "singing/humming"]
-        },
-        'input_files': input_files,
-        'output_files': {k: str(v) for k, v in segment_files.items()},
-        'segment_counts': segment_counts,
-        'label_counts_per_split': label_counts_dict,
-        'label_percentages_per_split': label_percentages_dict,
-        'unique_labels': unique_labels,
-        'total_segments': sum(segment_counts.values())
-    }
-    
-    summary_path = output_dir / 'audio_data_preparation_summary.json'
-    with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=4)
-    
-    print(f"\n📊 Data Preparation Summary:")
-    print(f"  Training segments: {segment_counts.get('train', 0):,}")
-    print(f"  Validation segments: {segment_counts.get('val', 0):,}")
-    print(f"  Test segments: {segment_counts.get('test', 0):,}")
-    print(f"  Total segments: {sum(segment_counts.values()):,}")
-    print(f"  Unique labels: {len(unique_labels)} {unique_labels}")
-    
-    # Print label counts and percentages per split
-    print(f"\n📈 Label counts and percentages per split:")
-    for split_name in ['train', 'val', 'test']:
-        if split_name in label_counts_dict:
-            print(f"  {split_name.title()}:")
-            for label in unique_labels:
-                count = label_counts_dict[split_name].get(label, 0)
-                percentage = label_percentages_dict[split_name].get(label, 0.0)
-                print(f"    {label}: {count:,} ({percentage}%)")
-    
-    print(f"\n✅ Summary saved to: {summary_path}")
-
-def update_constants_with_segment_paths(segment_files):
-    """
-    Update the constants.py file with the generated segment file paths.
-    
-    This function updates existing values for TRAIN_SEGMENTS_FILE, VAL_SEGMENTS_FILE,
-    and TEST_SEGMENTS_FILE in the AudioClassification class of constants.py.
-    
-    Parameters
-    ----------
-    segment_files : dict
-        Dictionary containing paths to generated segment files
-        with keys 'train', 'val', 'test'
-    """   
-    constants_file = Path(__file__).parent.parent.parent / 'constants.py'
-    
-    if not constants_file.exists():
-        print(f"⚠️ Warning: constants.py not found at {constants_file}")
-        return False
-    
-    try:
-        # Read the current constants file
-        with open(constants_file, 'r') as f:
-            content = f.read()
-        
-        # Build replacement strings
-        train_filename = Path(segment_files['train']).name
-        val_filename = Path(segment_files['val']).name
-        test_filename = Path(segment_files['test']).name
-        
-        train_path_str = f'Path(INPUT_DIR / "{train_filename}")'
-        val_path_str = f'Path(INPUT_DIR / "{val_filename}")'
-        test_path_str = f'Path(INPUT_DIR / "{test_filename}")'
-        
-        # Pattern for AudioClassification class
-        class_pattern = r'(class AudioClassification[^:]*:.*?)(?=class|\Z)'
-        class_match = re.search(class_pattern, content, re.DOTALL)
-        
-        if not class_match:
-            print("⚠️ Warning: AudioClassification class not found in constants.py")
-            return False
-        
-        class_content = class_match.group(1)
-        
-        # Patterns for variables
-        patterns = {
-            'TRAIN_SEGMENTS_FILE': (r'(\s+)TRAIN_SEGMENTS_FILE\s*=.*', rf'\1TRAIN_SEGMENTS_FILE = {train_path_str}'),
-            'VAL_SEGMENTS_FILE': (r'(\s+)VAL_SEGMENTS_FILE\s*=.*', rf'\1VAL_SEGMENTS_FILE = {val_path_str}'),
-            'TEST_SEGMENTS_FILE': (r'(\s+)TEST_SEGMENTS_FILE\s*=.*', rf'\1TEST_SEGMENTS_FILE = {test_path_str}')
+        label_percentages_dict[split_name] = {
+            label: (count / total_labels_in_split * 100) if total_labels_in_split > 0 else 0
+            for label, count in counts.items()
         }
-        
-        updated_class_content = class_content
-        updated_vars = []
-        missing_vars = []
-        
-        for var_name, (pattern, replacement) in patterns.items():
-            if re.search(pattern, updated_class_content):
-                updated_class_content = re.sub(pattern, replacement, updated_class_content)
-                updated_vars.append(var_name)
-            else:
-                missing_vars.append(var_name)
-        
-        if missing_vars:
-            print(f"⚠️ Warning: These variables were not found in AudioClassification: {', '.join(missing_vars)}")
-        
-        if not updated_vars:
-            print("❌ No variables were updated.")
-            return False
-        
-        # Replace the class content in the full file content
-        updated_content = content.replace(class_content, updated_class_content)
-        
-        # Write back to the file
-        with open(constants_file, 'w') as f:
-            f.write(updated_content)
-        
-        print(f"\n✅ Updated constants.py:")
-        for var_name in updated_vars:
-            print(f"  ✓ {var_name}")
-        print(f"📁 File: {constants_file}")
-        
-        return True
-            
-    except Exception as e:
-        print(f"❌ Error updating constants.py: {e}")
-        return False
+    
+    # Create text summary
+    lines = []
+    lines.append("=== Data Preparation Summary ===")
+    lines.append(f"Timestamp: {datetime.now().isoformat()}")
+    lines.append("")
+    
+    lines.append("Configuration:")
+    lines.append(f"  Window duration: {AudioConfig.WINDOW_DURATION}")
+    lines.append(f"  Window step: {AudioConfig.WINDOW_STEP}")
+    lines.append(f"  Sample rate: {AudioConfig.SR}")
+    lines.append(f"  N mels: {AudioConfig.N_MELS}")
+    lines.append(f"  Hop length: {AudioConfig.HOP_LENGTH}")
+    lines.append("")
+    
+    lines.append("Input Files:")
+    for key, path in input_files.items():
+        lines.append(f"  {key}: {path}")
+    
+    lines.append("")
+    lines.append("Output Files:")
+    for key, path in segment_files.items():
+        lines.append(f"  {key}: {path}")
+    
+    lines.append("")
+    lines.append("Segment Counts:")
+    for split, count in segment_counts.items():
+        lines.append(f"  {split}: {count}")
+    lines.append(f"  Total: {sum(segment_counts.values())}")
+    
+    lines.append("")
+    lines.append(f"Unique Labels ({len(unique_labels)}): {', '.join(unique_labels)}")
+    lines.append("")
+    
+    # Label counts and percentages per split
+    lines.append("Label Counts and Percentages per Split:")
+    for split_name in ['train', 'val', 'test']:
+        if split_name in label_counts_per_split:
+            lines.append(f"  {split_name.title()}:")
+            for label in unique_labels:
+                count = label_counts_per_split[split_name].get(label, 0)
+                percentage = round(label_percentages_dict[split_name].get(label, 0.0), 2)
+                lines.append(f"    {label}: {count} ({percentage}%)")
+    
+    # Write to text file
+    with open(summary_path, 'w') as f:
+        f.write("\n".join(lines))
+    
+    print("\n📊 Data Preparation Summary:")
+    print(f"\n✅ Summary saved to: {summary_path}")
 
 def create_participant_splits():
     """
@@ -504,12 +424,8 @@ def main():
         if total_segments == 0:
             raise ValueError("No training segments were created. Check your annotations and audio files.")
         
-        # Update constants.py with the generated segment file paths
-        print("🔄 Updating constants.py with segment file paths...")
-        update_success = update_constants_with_segment_paths(segment_files)
-        
         # Save summary
-        save_data_preparation_summary(output_dir, segment_files, segment_counts, unique_labels, label_counts_per_split)
+        save_data_preparation_summary(segment_files, segment_counts, unique_labels, label_counts_per_split)
         
         print(f"\n✅ Streamlined data preparation pipeline completed successfully!")
 
