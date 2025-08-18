@@ -31,6 +31,9 @@ class AudioClassification:
     VAL_RTTM_FILE = Path(INPUT_DIR/"dev.rttm")
     TEST_RTTM_FILE = Path(INPUT_DIR/"test.rttm")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs")
+    TRAIN_SEGMENTS_FILE = Path(INPUT_DIR/"train_segments_w3p0_s1p0.jsonl")
+    VAL_SEGMENTS_FILE = Path(INPUT_DIR/"val_segments_w3p0_s1p0.jsonl")
+    TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments_w3p0_s1p0.jsonl")
 
 class PersonClassification:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/resnet18_bilstm_20250815_221214/best.pth')
