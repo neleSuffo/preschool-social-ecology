@@ -26,9 +26,10 @@ class DataPaths:
 
 class AudioClassification:
     AUDIO_FILES_DIR = Path(BasePaths.DATA_DIR/"childlens_audio")
-    TRAIN_RTTM_FILE = Path(BasePaths.DATA_DIR/"audio_cls_input/train.rttm")
-    VAL_RRTM_FILE = Path(BasePaths.DATA_DIR/"audio_cls_input/val.rttm")
-    TEST_RTTM_FILE = Path(BasePaths.DATA_DIR/"audio_cls_input/test.rttm")
+    INPUT_DIR = Path(BasePaths.DATA_DIR/"audio_cls_input")
+    TRAIN_RTTM_FILE = Path(INPUT_DIR/"train.rttm")
+    VAL_RTTM_FILE = Path(INPUT_DIR/"dev.rttm")
+    TEST_RTTM_FILE = Path(INPUT_DIR/"test.rttm")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs")
 
 class PersonClassification:
