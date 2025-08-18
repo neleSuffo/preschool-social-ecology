@@ -20,6 +20,8 @@ from inference import get_video_id, get_frame_paths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
+FINISHED_LOG = Path("finished_videos.txt")
+
 def process_video_frames(video_name: str, cnn: CNNEncoder, rnn_model: FrameRNNClassifier,
                          cursor, conn, device: str,
                          confidence_threshold: float = PersonConfig.CONFIDENCE_THRESHOLD,
@@ -129,9 +131,14 @@ def process_video_frames(video_name: str, cnn: CNNEncoder, rnn_model: FrameRNNCl
             ))
         except Exception as e:
             logging.error(f"DB insert error for frame {frame_number}: {e}")
-
-    conn.commit()
+            
+    conn.commit() 
     logging.info(f"Processed video {video_name}: {len(frame_indices)} frames classified")
+    
+    # Append to finished videos log
+    with FINISHED_LOG.open("a") as f:
+        f.write(video_name + "\n")
+
 
 def main(video_list: List[str], frame_step: int = 10, device: str = 'auto'):
     """
@@ -146,19 +153,25 @@ def main(video_list: List[str], frame_step: int = 10, device: str = 'auto'):
     device : str
         Device to use for inference ('cpu', 'cuda', or 'auto')
     """
-    # Connect to database
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     cursor = conn.cursor()
     
-     # Determine device
     device = 'cuda' if (device == 'auto' and torch.cuda.is_available()) else device
     
-    # Load models
     cnn, rnn_model = load_model(device, PersonClassification.TRAINED_WEIGHTS_PATH)
     cnn.eval()
     rnn_model.eval()
-          
+    
+    # Load finished videos
+    finished_videos = set()
+    if FINISHED_LOG.exists():
+        with FINISHED_LOG.open("r") as f:
+            finished_videos = set(line.strip() for line in f.readlines())
+    
     for video_name in video_list:
+        if video_name in finished_videos:
+            logging.info(f"Skipping already processed video: {video_name}")
+            continue
         try:
             process_video_frames(video_name, cnn, rnn_model, cursor, conn, device)
         except Exception as e:
