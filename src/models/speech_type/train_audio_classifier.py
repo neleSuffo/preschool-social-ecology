@@ -1,4 +1,3 @@
-import os
 import librosa
 import numpy as np
 import pandas as pd
@@ -8,7 +7,10 @@ import json
 import csv
 import time
 import shutil
+import argparse
 import matplotlib.pyplot as plt
+import os
+from pathlib import Path
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
 from sklearn.utils.class_weight import compute_class_weight
@@ -19,8 +21,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.metrics import Precision, Recall
 from tqdm import tqdm
 from contants import AudioClassification
-from config import AudioClsConfig
-import argparse
+from config import AudioConfig
 
 # Environment setup
 os.environ["OMP_NUM_THREADS"] = "6"
@@ -279,118 +280,6 @@ def extract_enhanced_features(audio_path, start_time, duration, sr=16000, n_mels
         print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
         return np.zeros((n_mels + 13, fixed_time_steps), dtype=np.float32)
 
-# --- RTTM Processing ---
-def convert_rttm_to_training_segments(rttm_path, audio_files_dir, valid_rttm_classes, window_duration, window_step, sr, n_mels, hop_length, output_segments_path):
-    """
-    Parse RTTM annotation files into windowed multi-label training segments.
-    
-    Converts continuous speaker/activity annotations into fixed-duration overlapping
-    windows suitable for supervised multi-label audio classification training.
-    
-    Parameters:
-    ----------
-    rttm_path (str):
-        Path to RTTM annotation file with speaker/activity labels
-    audio_files_dir (str):
-        Directory containing corresponding audio files (.wav)
-    valid_rttm_classes (list):
-        List of valid speaker/activity IDs to include (e.g., ['OHS', 'CDS', 'KCHI'])
-    window_duration (float):
-        Duration of each training segment in seconds (e.g., 3.0)
-    window_step (float):
-        Step size between windows in seconds (e.g., 1.0 for overlap)
-    sr (int):
-        Sample rate for audio processing (used for validation)
-    n_mels (int):
-        Number of mel filters (used for validation)
-    hop_length (int):
-        Hop length for feature extraction (used for validation)
-    output_segments_path (str):
-        Path where segment metadata will be saved (JSONL format)
-    
-    Returns:
-    -------
-    tuple: (segment_count, unique_labels_found)
-        segment_count (int): Number of valid segments created
-        unique_labels_found (list): Sorted list of unique labels found in data
-        
-    Output format (JSONL):
-        Each line contains: {"audio_path": str, "start": float, "duration": float, "labels": list}
-    
-    Processing logic:
-        1. Load RTTM file with speaker/activity time annotations
-        2. For each audio file, create sliding windows of specified duration
-        3. For each window, find all overlapping speaker/activity labels
-        4. Keep only windows with at least one valid label
-        5. Save segment metadata for training data generators
-        
-    RTTM format expected:
-        SPEAKER file_id channel start duration NA1 NA2 speaker_id NA3 NA4
-        
-    Note:
-        Handles audio duration mismatches and missing files gracefully.
-        Progress bar shows processing status across all audio files.
-    """
-    try:
-        rttm_df = pd.read_csv(rttm_path, sep=' ', header=None, 
-                              names=['type', 'file_id', 'channel', 'start', 'duration', 'NA1', 'NA2', 'speaker_id', 'NA3', 'NA4'])
-    except Exception as e:
-        print(f"Error reading RTTM file {rttm_path}: {e}")
-        return [], []
-    
-    all_unique_labels = set()
-    unique_file_ids = rttm_df['file_id'].unique()
-    print(f"Processing {len(unique_file_ids)} audio files from RTTM: {os.path.basename(rttm_path)}...")
-    
-    segment_counter = 0
-    with open(output_segments_path, 'w', newline='') as f_out:
-        for file_id in tqdm(unique_file_ids):
-            audio_path = os.path.join(audio_files_dir, f"{file_id}.wav")
-            if not os.path.exists(audio_path):
-                print(f"Warning: Audio file not found: {audio_path}. Skipping.")
-                continue
-            
-            file_segments = rttm_df[rttm_df['file_id'] == file_id].copy()
-            file_segments['end'] = file_segments['start'] + file_segments['duration']
-            
-            try:
-                audio_duration = librosa.get_duration(path=audio_path)
-            except Exception as e:
-                print(f"Warning: Could not get duration for {audio_path}: {e}. Skipping.")
-                continue
-                
-            max_time_rttm = file_segments['end'].max() if not file_segments.empty else 0
-            analysis_end_time = min(audio_duration, max_time_rttm)
-            
-            current_time = 0.0
-            while current_time < analysis_end_time:
-                window_start = current_time
-                window_end = min(current_time + window_duration, audio_duration, analysis_end_time)
-                
-                active_speaker_ids = set()
-                for _, row in file_segments.iterrows():
-                    segment_start = row['start']
-                    segment_end = row['end']
-                    if max(window_start, segment_start) < min(window_end, segment_end):
-                        active_speaker_ids.add(row['speaker_id'])
-                
-                active_labels = {sid for sid in active_speaker_ids if sid in valid_rttm_classes}
-                all_unique_labels.update(active_labels)
-                
-                if active_labels and (window_end - window_start) > 0:
-                    segment_data = {
-                        'audio_path': audio_path,
-                        'start': window_start,
-                        'duration': window_duration,
-                        'labels': sorted(list(active_labels))
-                    }
-                    f_out.write(json.dumps(segment_data) + '\n')
-                    segment_counter += 1
-                
-                current_time += window_step
-                
-    return segment_counter, sorted(list(all_unique_labels))
-
 # --- Deep Learning Model Architecture ---
 def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     """
@@ -511,49 +400,6 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     )
     model.log_dir = None  # For ThresholdOptimizer
     return model
-
-# --- Class Weights ---
-def calculate_balanced_class_weights(train_segments, mlb):
-    """
-    Calculate balanced class weights for handling class imbalance in training.
-    
-    Computes inverse frequency weights for each class to balance training
-    when dealing with imbalanced datasets. Uses total sample count normalized
-    by class frequency.
-    
-    Parameters
-    -----------
-    training_segments (list):
-        List of training segment dictionaries containing 'labels' key
-    mlb (MultiLabelBinarizer):
-        Fitted multi-label binarizer with class information
-        
-    Returns
-    --------
-    dict:
-        Dictionary mapping class indices to computed weights
-              
-    Weight calculation:
-        weight_i = total_samples / (num_classes * class_i_count)
-        
-    Note:
-        For ID-based split balanced datasets, this typically returns near-uniform weights.
-        Consider using uniform weights (None) for already balanced data.
-    """
-    class_counts = {label: 0 for label in mlb.classes_}
-    for seg in train_segments:
-        for label in seg['labels']:
-            if label in class_counts:
-                class_counts[label] += 1
-    
-    class_weights_for_keras = {}
-    total_samples = len(train_segments)
-    for i, class_name in enumerate(mlb.classes_):
-        count = class_counts.get(class_name, 1)
-        weight = (total_samples / (len(mlb.classes_) * count))  # Balanced weighting
-        class_weights_for_keras[i] = weight
-    
-    return class_weights_for_keras
 
 # --- Data Generator ---
 class EnhancedAudioSegmentDataGenerator(tf.keras.utils.Sequence):
@@ -679,59 +525,12 @@ def compute_cosine_annealing_lr(epoch=int):
         - cycle_length: 20 epochs per complete cosine cycle
         - Formula: min_lr + (max_lr - min_lr) * (1 + cos(π * epoch_in_cycle / cycle_length)) / 2
     """
-    """
-    Calculate learning rate using cosine annealing schedule.
-    
-    Implements cosine annealing with warm restarts every 20 epochs,
-    cycling between maximum and minimum learning rates.
-    
-    Parameters
-    ---------
-        epoch (int): Current training epoch (0-indexed)
-    
-    Returns:
-        float: Learning rate for the current epoch
-        
-    Schedule details:
-        - max_lr: 0.001 (peak learning rate)
-        - min_lr: 0.00001 (minimum learning rate)
-        - cycle_length: 20 epochs per complete cosine cycle
-        - Formula: min_lr + (max_lr - min_lr) * (1 + cos(π * epoch_in_cycle / cycle_length)) / 2
-    """
     max_lr = 0.001
     min_lr = 0.00001
     epochs_per_cycle = 20
     cos_inner = (np.pi * (epoch % epochs_per_cycle)) / epochs_per_cycle
     lr = min_lr + (max_lr - min_lr) * (1 + np.cos(cos_inner)) / 2
     return lr
-
-# --- Training Callbacks ---
-def create_training_callbacks(run_dir, val_generator, mlb_classes):
-    """
-    Create and configure training callbacks for model optimization.
-    
-    Args:
-        run_dir (str): Directory to save model checkpoints and logs
-        val_generator: Validation data generator for threshold optimization
-        mlb_classes (list): List of multi-label class names
-        
-    Returns:
-        list: Configured Keras callbacks for training
-    """
-    callbacks = [
-        EarlyStopping(monitor='val_macro_f1', patience=30, mode='max', restore_best_weights=True, verbose=1),
-        LearningRateScheduler(compute_cosine_annealing_lr, verbose=1),
-        ModelCheckpoint(
-            filepath=os.path.join(run_dir, 'best_model.h5'),
-            monitor='val_macro_f1',
-            mode='max',
-            save_best_only=True,
-            verbose=1
-        ),
-        ThresholdOptimizer(val_generator, mlb_classes),
-        TrainingLogger(run_dir, mlb_classes)
-    ]
-    return callbacks
 
 # --- Custom History and Plotting Callback ---
 class TrainingLogger(tf.keras.callbacks.Callback):
@@ -851,90 +650,42 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         plt.savefig(os.path.join(self.log_dir, 'macro_f1_plot.png'))
         plt.close()
 
-# --- Setup Functions ---
+# --- Setup and Training Functions --
 def setup_training_environment():
     """
     Set up training environment with directories and configuration.
     
+    Parameters:
+    ----------
+    data_dir (str): Directory containing prepared data files
+    
     Returns:
-        tuple: (run_dir, segment_files_dict) containing training directory 
-               and paths to segment files for train/val/test splits
+    -------
+    str: Path to training run directory
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = os.path.join(AudioClassification.output_dir, timestamp)
+    run_dir = AudioClassification.OUTPUT_DIR / timestamp
     os.makedirs(run_dir, exist_ok=True)
     print(f"Training run output directory: {run_dir}")
     
-    # Generate segment file paths
-    window_duration_str = str(AudioClsConfig.window_duration).replace('.', 'p')
-    window_step_str = str(AudioClsConfig.window_step).replace('.', 'p')
-    
-    segment_files = {
-        'train': os.path.join(os.path.dirname(run_dir), f'train_segments_w{window_duration_str}_s{window_step_str}.jsonl'),
-        'val': os.path.join(os.path.dirname(run_dir), f'val_segments_w{window_duration_str}_s{window_step_str}.jsonl'),
-        'test': os.path.join(os.path.dirname(run_dir), f'test_segments_w{window_duration_str}_s{window_step_str}.jsonl')
-    }
-    
     # Copy current script for reproducibility
     current_script_path = os.path.abspath(__file__)
-    shutil.copy(current_script_path, os.path.join(run_dir, 'train_audio_classifier.py'))
+    shutil.copy(current_script_path, (run_dir / 'train_audio_classifier.py'))
     
-    return run_dir, segment_files
-
-def process_rttm_data_splits(segment_files):
-    """
-    Process RTTM files for all data splits (train/val/test) with ID-based splitting already applied.
-    
-    Args:
-        segment_files (dict): Dictionary with keys 'train', 'val', 'test' and paths as values
-        
-    Returns:
-        tuple: (segment_counts, unique_labels) where segment_counts is dict with counts per split
-               and unique_labels contains all unique labels found across splits
-    """
-    # RTTM file paths (already ID-split)
-    rttm_files = {
-        'train': AudioClassification.train_rttm_file,
-        'val': AudioClassification.val_rttm_file,  # Assuming this exists in config
-        'test': AudioClassification.test_rttm_file  # Assuming this exists in config
-    }
-    
-    segment_counts = {}
-    all_unique_labels = set()
-    
-    for split_name in ['train', 'val', 'test']:
-        print(f"--- Processing {split_name.title()} Data ---")
-        
-        num_segments, unique_labels = convert_rttm_to_training_segments(
-            rttm_files[split_name], 
-            AudioClassification.audio_files_dir, 
-            AudioClassification.valid_rttm_classes,
-            AudioClsConfig.window_duration, 
-            AudioClsConfig.window_step, 
-            AudioClsConfig.sr, 
-            AudioClsConfig.n_mels, 
-            AudioClsConfig.hop_length, 
-            segment_files[split_name]
-        )
-        
-        segment_counts[split_name] = num_segments
-        all_unique_labels.update(unique_labels)
-        
-        if num_segments == 0:
-            raise ValueError(f"No segments found for {split_name} split. Check RTTM file: {rttm_files[split_name]}")
-    
-    return segment_counts, sorted(list(all_unique_labels))
+    return run_dir
 
 def setup_multilabel_encoder(unique_labels):
     """
     Set up multi-label binarizer for voice type classification.
     
-    Args:
-        unique_labels (list): List of unique voice type labels found in data
+    Parameters:
+    ----------
+    unique_labels (list): List of unique voice type labels found in data
         
     Returns:
-        tuple: (mlb, num_classes) where mlb is fitted MultiLabelBinarizer 
-               and num_classes is the number of classes
+    -------
+    tuple: (mlb, num_classes) where mlb is fitted MultiLabelBinarizer 
+           and num_classes is the number of classes
     """
     mlb = MultiLabelBinarizer(classes=unique_labels)
     mlb.fit([[]])  # Fit with empty list to initialize
@@ -943,267 +694,198 @@ def setup_multilabel_encoder(unique_labels):
     print(f"\nDetected {num_classes} unique target classes: {mlb.classes_}")
     return mlb, num_classes
 
-def determine_class_weights(mlb, use_balanced_weights=False):
-    """
-    Determine class weights for training. Since ID-based splitting is used,
-    data should be balanced, so uniform weights are typically sufficient.
-    
-    Args:
-        mlb: Fitted MultiLabelBinarizer
-        use_balanced_weights (bool): Whether to calculate balanced weights or use uniform
-        
-    Returns:
-        dict or None: Class weights for Keras training, None for uniform weighting
-    """
-    if use_balanced_weights:
-        # Calculate weights if needed (typically not necessary with ID-split balanced data)
-        print("Calculating balanced class weights...")
-        # Implementation would go here if needed
-        return {i: 1.0 for i in range(len(mlb.classes_))}
-    else:
-        print("Using uniform class weighting (recommended for ID-split balanced data)")
-        return None
-
 def create_data_generators(segment_files, mlb):
     """
     Create data generators for training, validation, and testing.
     
-    Args:
-        segment_files (dict): Paths to segment files for each split
-        mlb: Fitted MultiLabelBinarizer
+    Parameters:
+    ----------
+    segment_files (dict): Paths to segment files for each split
+    mlb: Fitted MultiLabelBinarizer
         
     Returns:
-        tuple: (train_generator, val_generator, test_generator)
+    -------
+    tuple: (train_generator, val_generator, test_generator)
     """
     # Calculate fixed time steps for consistent input shape
-    fixed_time_steps = int(np.ceil(AudioClsConfig.window_duration * AudioClsConfig.sr / AudioClsConfig.hop_length))
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
     
     train_generator = EnhancedAudioSegmentDataGenerator(
         segment_files['train'], mlb, 
-        AudioClsConfig.n_mels, AudioClsConfig.hop_length, AudioClsConfig.sr, 
-        AudioClsConfig.window_duration, fixed_time_steps,
+        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
+        AudioConfig.WINDOW_DURATION, fixed_time_steps,
         batch_size=32, shuffle=True, augment=True
     )
     
     val_generator = EnhancedAudioSegmentDataGenerator(
         segment_files['val'], mlb,
-        AudioClsConfig.n_mels, AudioClsConfig.hop_length, AudioClsConfig.sr,
-        AudioClsConfig.window_duration, fixed_time_steps,
+        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
+        AudioConfig.WINDOW_DURATION, fixed_time_steps,
         batch_size=32, shuffle=False, augment=False
     )
     
     test_generator = EnhancedAudioSegmentDataGenerator(
         segment_files['test'], mlb,
-        AudioClsConfig.n_mels, AudioClsConfig.hop_length, AudioClsConfig.sr,
-        AudioClsConfig.window_duration, fixed_time_steps,
+        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
+        AudioConfig.WINDOW_DURATION, fixed_time_steps,
         batch_size=32, shuffle=False, augment=False
     )
     
     return train_generator, val_generator, test_generator
 
-def train_model_with_callbacks(model, train_generator, val_generator, callbacks, class_weights=None, epochs=100):
+def create_training_callbacks(run_dir, val_generator, mlb_classes):
+    """
+    Create and configure training callbacks for model optimization.
+    
+    Parameters:
+    ----------
+    run_dir (str): Directory to save model checkpoints and logs
+    val_generator: Validation data generator for threshold optimization
+    mlb_classes (list): List of multi-label class names
+        
+    Returns:
+    -------
+    list: Configured Keras callbacks for training
+    """
+    callbacks = [
+        EarlyStopping(monitor='val_macro_f1', patience=30, mode='max', restore_best_weights=True, verbose=1),
+        LearningRateScheduler(compute_cosine_annealing_lr, verbose=1),
+        ModelCheckpoint(
+            filepath=(run_dir / 'best_model.h5'),
+            monitor='val_macro_f1',
+            mode='max',
+            save_best_only=True,
+            verbose=1
+        ),
+        ThresholdOptimizer(val_generator, mlb_classes),
+        TrainingLogger(run_dir, mlb_classes)
+    ]
+    return callbacks
+
+def create_model_and_setup(unique_labels):
+    """
+    Create and compile the multi-label classification model.
+    
+    Parameters:
+    ----------
+    unique_labels (list): List of unique voice type labels
+        
+    Returns:
+    -------
+    tuple: (model, mlb, num_classes, fixed_time_steps) where:
+           - model: Compiled Keras model
+           - mlb: Fitted MultiLabelBinarizer
+           - num_classes: Number of classes
+           - fixed_time_steps: Fixed time steps for model input
+    """
+    # Setup multi-label encoder
+    mlb, num_classes = setup_multilabel_encoder(unique_labels)
+    
+    # Calculate fixed time steps for consistent input shape
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+
+    # Build model architecture
+    model = build_model_multi_label(
+        n_mels=AudioConfig.N_MELS,
+        fixed_time_steps=fixed_time_steps,
+        num_classes=num_classes
+    )
+    
+    return model, mlb, num_classes, fixed_time_steps
+
+def train_model_with_callbacks(model, train_generator, val_generator, callbacks, epochs):
     """
     Train the model with specified callbacks and data generators.
     
-    Args:
-        model: Compiled Keras model
-        train_generator: Training data generator
-        val_generator: Validation data generator
-        callbacks: List of Keras callbacks
-        class_weights: Class weights for imbalanced data (None for uniform)
-        epochs (int): Number of training epochs
+    Parameters:
+    ----------
+    model: Compiled Keras model
+    train_generator: Training data generator
+    val_generator: Validation data generator
+    callbacks: List of Keras callbacks
+    epochs (int): Number of training epochs
         
     Returns:
-        History: Keras training history object
+    -------
+    History: Keras training history object
     """
     print(f"\nStarting training for {epochs} epochs...")
     
     if len(train_generator) == 0 or len(val_generator) == 0:
-        raise ValueError("No batches available for training/validation. Check your RTTM files and data paths.")
+        raise ValueError("No batches available for training/validation. Check your segment files and data paths.")
+    
+    # Using uniform class weights for ID-split balanced data
+    class_weight = None
+    print("Using uniform class weighting (recommended for ID-split balanced data)")
     
     history = model.fit(
         train_generator,
         validation_data=val_generator,
         epochs=epochs,
         callbacks=callbacks,
-        class_weight=class_weights,
+        class_weight=class_weight,
         verbose=1
     )
     
     return history
 
-def evaluate_model_performance(model, val_generator, test_generator, mlb, run_dir):
+def main():
     """
-    Evaluate trained model on validation and test sets with detailed metrics.
-    
-    Args:
-        model: Trained Keras model
-        val_generator: Validation data generator
-        test_generator: Test data generator  
-        mlb: MultiLabelBinarizer for label handling
-        run_dir (str): Directory containing saved thresholds and logs
-    """
-    print("\n" + "="*60)
-    print("FINAL VALIDATION RESULTS (from best restored weights)")
-    print("="*60)
-    
-    val_results = model.evaluate(val_generator, verbose=0)
-    val_metrics_dict = dict(zip(model.metrics_names, val_results))
-    for name, value in val_metrics_dict.items():
-        print(f"Validation {name}: {value:.4f}")
-    
-    if test_generator and len(test_generator) > 0:
-        print("\n" + "="*60)
-        print("DETAILED TEST SET EVALUATION")
-        print("="*60)
-        
-        # Get predictions and true labels
-        test_predictions = model.predict(test_generator, verbose=1)
-        test_true_labels = []
-        for i in tqdm(range(len(test_generator)), desc="Collecting true labels"):
-            _, labels = test_generator[i]
-            test_true_labels.extend(labels)
-        test_true_labels = np.array(test_true_labels)
-        
-        # Handle shape mismatches
-        if test_predictions.shape[0] != test_true_labels.shape[0]:
-            print(f"Warning: Test predictions ({test_predictions.shape[0]}) and true labels ({test_true_labels.shape[0]}) mismatch.")
-            min_samples = min(test_predictions.shape[0], test_true_labels.shape[0])
-            test_predictions = test_predictions[:min_samples]
-            test_true_labels = test_true_labels[:min_samples]
-            print(f"Adjusted to {min_samples} samples for evaluation.")
-        
-        # Load optimized thresholds
-        try:
-            with open(os.path.join(run_dir, 'thresholds.json'), 'r') as f:
-                thresholds_dict = json.load(f)
-            thresholds = [thresholds_dict[class_name] for class_name in mlb.classes_]
-        except:
-            thresholds = [0.5] * len(mlb.classes_)
-            print("Using default thresholds (0.5) - optimized thresholds not found.")
-        
-        # Apply thresholds and calculate metrics
-        test_pred_binary = np.array([(test_predictions[:, i] > thresholds[i]).astype(int) for i in range(len(mlb.classes_))]).T
-        
-        if test_true_labels.sum() > 0:
-            precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
-                test_true_labels, test_pred_binary, average=None, zero_division=0
-            )
-            macro_precision = precision_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
-            macro_recall = recall_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
-            macro_f1 = f1_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
-            subset_accuracy = accuracy_score(test_true_labels, test_pred_binary)
-            
-            print(f"\nTest Metrics (optimized thresholds: {[f'{t:.3f}' for t in thresholds]}):")
-            print(f"  Subset Accuracy (exact match): {subset_accuracy:.4f}")
-            print(f"  Macro Precision: {macro_precision:.4f}")
-            print(f"  Macro Recall: {macro_recall:.4f}")
-            print(f"  Macro F1-score: {macro_f1:.4f}")
-            
-            print(f"\nPer-Class Results:")
-            print(f"{'Class':<15} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'Support':<10}")
-            print("-" * 65)
-            for i, class_name in enumerate(mlb.classes_):
-                print(f"{class_name:<15} {precision_per_class[i]:<10.4f} {recall_per_class[i]:<10.4f} "
-                      f"{f1_per_class[i]:<10.4f} {support_per_class[i]:<10}")
-            print("-" * 65)
-            print(f"{'MACRO AVG':<15} {macro_precision:<10.4f} {macro_recall:<10.4f} {macro_f1:<10.4f}")
-        else:
-            print("Warning: No positive instances in test set for metrics calculation.")
-    
-    print("\nTraining completed successfully! Check the run directory for logs and plots.")
-
-def print_dataset_summary(segment_counts):
-    """
-    Print summary of dataset splits and segment counts.
-    
-    Args:
-        segment_counts (dict): Dictionary with segment counts per split
-    """
-    print(f"\nDataset Summary (ID-based splits):")
-    print(f"  Training segments: {segment_counts['train']:,}")
-    print(f"  Validation segments: {segment_counts['val']:,}")
-    print(f"  Test segments: {segment_counts['test']:,}")
-    print(f"  Total segments: {sum(segment_counts.values()):,}")
-
-def create_model_and_setup(unique_labels):
-    """
-    Create and compile the multi-label classification model.
-    
-    Args:
-        unique_labels (list): List of unique voice type labels
-        
-    Returns:
-        tuple: (model, mlb, num_classes, fixed_time_steps) where:
-               - model: Compiled Keras model
-               - mlb: Fitted MultiLabelBinarizer
-               - num_classes: Number of classes
-               - fixed_time_steps: Fixed time steps for model input
-    """
-    # Setup multi-label encoder
-    mlb, num_classes = setup_multilabel_encoder(unique_labels)
-    
-    # Calculate fixed time steps for consistent input shape
-    fixed_time_steps = int(np.ceil(AudioClsConfig.window_duration * AudioClsConfig.sr / AudioClsConfig.hop_length))
-    
-    # Build model architecture
-    model = build_model_multi_label(
-        n_mels=AudioClsConfig.n_mels, 
-        fixed_time_steps=fixed_time_steps, 
-        num_classes=num_classes
-    )
-    
-    return model, mlb, num_classes, fixed_time_steps
-
-# --- Main Execution ---
-if __name__ == "__main__":
-    """
-    Main execution entry point for audio classification training.
-    
-    Runs the complete training pipeline with proper error handling.
-    """
+    Main function for audio classification training.
+    """   
+    unique_labels = AudioConfig.VALID_RTTM_CLASSES
+    segment_files = {
+        'train': AudioClassification.TRAIN_SEGMENTS_FILE,
+        'val': AudioClassification.VAL_SEGMENTS_FILE,
+        'test': AudioClassification.TEST_SEGMENTS_FILE
+    }
+    data_dir = AudioClassification.DATA_DIR
     try:
         print("🚀 Starting Audio Classification Training Pipeline")
         print("=" * 60)
+                
+        # 1. Setup training environment
+        print("🏗️ Setting up training environment...")
+        run_dir = setup_training_environment()
         
-        # 1. Setup training environment and paths
-        print("📁 Setting up training environment...")
-        run_dir, segment_files = setup_training_environment()
-        
-        # 2. Process RTTM data for all splits (ID-based splitting already applied)
-        print("📊 Processing RTTM data splits...")
-        segment_counts, unique_labels = process_rttm_data_splits(segment_files)
-        print_dataset_summary(segment_counts)
-        
-        # 3. Create model and setup encoders
+        # 2. Create model and setup encoders
         print("🧠 Creating model and setting up encoders...")
         model, mlb, num_classes, fixed_time_steps = create_model_and_setup(unique_labels)
         model.log_dir = run_dir  # For ThresholdOptimizer callback
-        
-        # 4. Determine class weights (uniform for ID-split balanced data)
-        print("⚖️ Determining class weights...")
-        class_weights = determine_class_weights(mlb, use_balanced_weights=False)
-        
-        # 5. Create data generators
+
+        # 3. Create data generators
         print("🔄 Creating data generators...")
         train_generator, val_generator, test_generator = create_data_generators(segment_files, mlb)
-        
-        # 6. Setup training callbacks
+
+        # 4. Setup training callbacks
         print("🎯 Setting up training callbacks...")
         callbacks = create_training_callbacks(run_dir, val_generator, mlb.classes_)
-        
-        # 7. Train the model
+
+        # 5. Train the model
         print("🏋️ Starting model training...")
         history = train_model_with_callbacks(
-            model, train_generator, val_generator, callbacks, 
-            class_weights=class_weights, epochs=100
+            model, train_generator, val_generator, callbacks, AudioConfig.EPOCHS
         )
         
-        # 8. Evaluate model performance
-        print("📈 Evaluating model performance...")
-        evaluate_model_performance(model, val_generator, test_generator, mlb, run_dir)
+        # 6. Evaluate model performance
+        print("📈 Evaluating model on validation set...")
+        val_results = model.evaluate(val_generator, verbose=0)
+        val_metrics_dict = dict(zip(model.metrics_names, val_results))
+        
+        print("\n" + "="*60)
+        print("FINAL VALIDATION RESULTS (from best restored weights)")
+        print("="*60)
+        for name, value in val_metrics_dict.items():
+            print(f"Validation {name}: {value:.4f}")
         
         print("✅ Training pipeline completed successfully!")
+        print(f"📁 Results saved to: {run_dir}")
+        print(f"\n🔍 To evaluate on test set, run:")
+        print(f"   python evaluate_audio_classifier.py --model_path {run_dir}/best_model.h5 --run_dir {run_dir}")
+        
     except Exception as e:
         print(f"❌ Training pipeline failed with error: {e}")
         raise
+
+if __name__ == "__main__":
+    main()
