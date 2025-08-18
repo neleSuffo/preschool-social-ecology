@@ -199,10 +199,10 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
             json.dump(dict(zip(self.mlb_classes, best_thresholds)), f)
 
 # --- Feature Extraction ---
-def extract_enhanced_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=None):
+def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=None):
     """
-    Extract enhanced audio features (mel-spectrogram + MFCC) from audio segment.
-    
+    Extract audio features (mel-spectrogram + MFCC) from audio segment.
+
     Processes audio segments to create combined feature representations suitable
     for deep learning models. Applies preprocessing, normalization, and padding
     to ensure consistent output dimensions.
@@ -402,7 +402,7 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     return model
 
 # --- Data Generator ---
-class EnhancedAudioSegmentDataGenerator(tf.keras.utils.Sequence):
+class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
     """
     Keras data generator for audio classification with enhanced features and augmentation.
     
@@ -480,7 +480,7 @@ class EnhancedAudioSegmentDataGenerator(tf.keras.utils.Sequence):
         X_batch = []
         y_batch = []
         for segment in batch_segments:
-            mel = extract_enhanced_features(
+            mel = extract_features(
                 segment['audio_path'], segment['start'], segment['duration'],
                 sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
                 fixed_time_steps=self.fixed_time_steps
@@ -710,21 +710,21 @@ def create_data_generators(segment_files, mlb):
     # Calculate fixed time steps for consistent input shape
     fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
     
-    train_generator = EnhancedAudioSegmentDataGenerator(
+    train_generator = AudioSegmentDataGenerator(
         segment_files['train'], mlb, 
         AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
         AudioConfig.WINDOW_DURATION, fixed_time_steps,
         batch_size=32, shuffle=True, augment=True
     )
     
-    val_generator = EnhancedAudioSegmentDataGenerator(
+    val_generator = AudioSegmentDataGenerator(
         segment_files['val'], mlb,
         AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
         AudioConfig.WINDOW_DURATION, fixed_time_steps,
         batch_size=32, shuffle=False, augment=False
     )
     
-    test_generator = EnhancedAudioSegmentDataGenerator(
+    test_generator = AudioSegmentDataGenerator(
         segment_files['test'], mlb,
         AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
         AudioConfig.WINDOW_DURATION, fixed_time_steps,
