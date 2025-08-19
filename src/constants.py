@@ -25,7 +25,7 @@ class DataPaths:
     INFERENCE_DB_PATH = Path(BasePaths.OUTPUT_DIR/"quantex_inference/inference.db")
 
 class AudioClassification:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs/20250701-223648/best_model.h5")
+    RESULTS_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs/20250703-165356")
     ANNOTATIONS_INPUT_DIR = Path(BasePaths.DATA_DIR/"childlens_annotations/keeper/v1")
     CHILDLENS_PARTICIPANT_INFO = Path(ANNOTATIONS_INPUT_DIR/"childlens_participant_info.csv")
     AUDIO_FILES_DIR = Path(BasePaths.DATA_DIR/"childlens_audio")
