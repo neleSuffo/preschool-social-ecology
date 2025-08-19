@@ -5,6 +5,7 @@ import numpy as np
 import re
 from typing import List, Callable
 from pathlib import Path
+from config import DataConfig
 
 def get_video_id(video_name: str, cursor: sqlite3.Cursor) -> int:
     """Get video_id from Videos table using video name"""
