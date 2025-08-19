@@ -95,7 +95,7 @@ def process_video(
                 conn.commit()
 
     conn.commit()
-    logging.info(f"Processed video {video_name}: {len(processed_frames)} frames classified")
+    logging.info(f"Processed video {video_name}: {processed_frames} frames classified")
 
 def process_frame(frame_path: Path, video_id: int, frame_number: int, 
                  model: YOLO, cursor: sqlite3.Cursor) -> int:
