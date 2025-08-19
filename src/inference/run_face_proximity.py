@@ -4,7 +4,7 @@ import argparse
 import sqlite3
 import pandas as pd
 import numpy as np
-from typing import List
+from typing import List, Callable
 from pathlib import Path
 from ultralytics import YOLO
 from tqdm import tqdm
@@ -95,8 +95,8 @@ def process_video(
                 conn.commit()
 
     conn.commit()
-    logging.info(f"Processed {processed_frames} frames, metric total: {metric_sum}")  
-    
+    logging.info(f"Processed video {video_name}: {len(processed_frames)} frames classified")
+
 def process_frame(frame_path: Path, video_id: int, frame_number: int, 
                  model: YOLO, cursor: sqlite3.Cursor) -> int:
     """
