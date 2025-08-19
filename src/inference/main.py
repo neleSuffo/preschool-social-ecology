@@ -82,8 +82,8 @@ def main(frame_step: int = 10, num_videos_per_age: int = None):
         logging.info(f"Processing {len(selected_videos)} selected videos ({num_videos_per_age} per age group)")
 
     # Run the detection pipeline
-    run_person.main(selected_videos)
-    #run_face_proximity.main(selected_videos, frame_step)
+    #run_person.main(selected_videos)
+    run_face_proximity.main(selected_videos, frame_step)
     #run_audio_classification.main(selected_videos)
 
 if __name__ == "__main__":
