@@ -138,7 +138,7 @@ class PersonConfig:
 
 class FaceConfig:
     """Configuration for face detection and classification."""
-    MODEL_SIZE = 'x'  # Default model size
+    MODEL_SIZE = 'm'  # Default model size
     MODEL_NAME = f"yolo12{MODEL_SIZE}"
     AGE_GROUP_TO_CLASS_ID = {
         'infant': 0,
