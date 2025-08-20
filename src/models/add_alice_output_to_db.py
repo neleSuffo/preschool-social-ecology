@@ -185,7 +185,6 @@ def process_alice_output(alice_file: Path, cursor: sqlite3.Cursor, conn: sqlite3
                 
                 # Log progress every 100 entries
                 if processed_count % 100 == 0:
-                    logging.info(f"Processed {processed_count} entries...")
                     conn.commit()
                 
             except Exception as e:
