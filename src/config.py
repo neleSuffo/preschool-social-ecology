@@ -131,10 +131,10 @@ class PersonConfig:
     NUM_OUTPUTS = 2
     BACKBONE = 'resnet18'
     CONFIDENCE_THRESHOLD = 0.5
-    MODEL_ID = 2
     BATCH_SIZE_INFERENCE = 64
     WINDOW_SIZE = 60
     STRIDE = 30
+    MODEL_ID = 2
 
 class FaceConfig:
     """Configuration for face detection and classification."""
@@ -163,7 +163,7 @@ class FaceConfig:
 
 class AudioConfig:
     """Configuration for audio classification."""
-    VALID_RTTM_CLASSES = ['OHS', 'CDS', 'KCHI', 'SPEECH']
+    VALID_RTTM_CLASSES = ['OHS', 'CDS', 'KCHI']
     VALID_EVENT_IDS = {"child_talking", "other_person_talking", "overheard_speech", "singing/humming"}
     SR = 16000
     N_MELS = 256
@@ -172,6 +172,10 @@ class AudioConfig:
     WINDOW_STEP = 1.0
     EPOCHS = 100
     MODEL_ID = 3
+
+class KchiVoc_Config:
+    """Configuration for KCHI vocalizations."""
+    MODEL_ID = 4
 
 # Yolo Model and Training Configurations
 class YoloConfig:
