@@ -38,9 +38,10 @@ class AudioClassification:
     VAL_SEGMENTS_FILE = Path(INPUT_DIR/"val_segments_w3p0_s1p0.jsonl")
     TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments_w3p0_s1p0.jsonl")
 
-class Kchi_Vocalizations:
+class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
-    ALICE_OUTPUT_FILE = ALICE_OUTPUT_DIR / "ALICE_output_utterances.txt"
+    KCHI_OUTPUT_FILE = ALICE_OUTPUT_DIR / "KCHI_output_utterances.txt"
+    OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "OTH_output_utterances.txt"
 
 class PersonClassification:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/resnet18_bilstm_20250815_221214/best.pth')
