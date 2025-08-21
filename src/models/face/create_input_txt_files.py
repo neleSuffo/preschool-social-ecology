@@ -190,7 +190,7 @@ def save_annotations(annotations: List[Tuple]) -> None:
 
 def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = FaceDetection.IMAGES_INPUT_DIR) -> list:
     """
-    This function returns only the frames that have annotations (every 30th frame).
+    This function returns frames that have any face annotations plus an equal number of random frames without faces.
     
     Parameters
     ----------
@@ -202,42 +202,93 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
     Returns
     -------
     list
-        the annotated frames (formatted as a list of tuples)
+        the annotated frames plus negative samples (formatted as a list of tuples)
         e.g. [(image_path, image_id), ...]
     """
     video_names = set()
-    total_images = []  # Fix: Initialize the list here
+    annotated_images = []
+    negative_images = []
     annotated_frames = set()
+    
+    # Step 1: Get all frames that have ANY face annotations (adult, child, or both)
     for annotation_file in label_path.glob('*.txt'):
-        parts = annotation_file.stem.split('_')
-        # Example: quantex_at_home_id255237_2022_05_08_04_000240 -> quantex_at_home_id255237_2022_05_08_04
-        video_name = "_".join(parts[:8]) 
-        video_names.add(video_name)
-        annotated_frames.add(annotation_file.stem)
+        # Only include files that have actual content (any face annotations)
+        if annotation_file.stat().st_size > 0:
+            try:
+                with open(annotation_file, 'r') as f:
+                    content = f.read().strip()
+                    if content:  # File has actual annotations
+                        parts = annotation_file.stem.split('_')
+                        # Example: quantex_at_home_id255237_2022_05_08_04_000240 -> quantex_at_home_id255237_2022_05_08_04
+                        video_name = "_".join(parts[:8]) 
+                        video_names.add(video_name)
+                        annotated_frames.add(annotation_file.stem)
+            except Exception as e:
+                logging.warning(f"Error reading annotation file {annotation_file}: {e}")
         
     logging.info(f"Found {len(video_names)} unique video names")
+    logging.info(f"Found {len(annotated_frames)} frames with any face annotations")
 
-    # Step 2: Only get the corresponding annotated frames from image folders
+    # Step 2: Get annotated frames and collect potential negative frames
+    video_negative_candidates = {}  # Initialize the dictionary here
+    
     for video_name in video_names:
         video_path = image_folder / video_name
         if video_path.exists() and video_path.is_dir():
+            video_negative_candidates[video_name] = []
+            
             # Iterate through all frames in the video folder
             for frame in video_path.iterdir():
                 if frame.is_file():
-                    # Only include if the frame is in our annotated frames set
+                    image_name = frame.name
+                    parts = image_name.split("_")
+                    
+                    # Extract image ID
+                    if len(parts) > 3 and parts[3].startswith('id'):
+                        image_id = parts[3].replace("id", "")
+                    else:
+                        image_id = frame.stem
+                    
                     if frame.stem in annotated_frames:
-                        image_name = frame.name
-                        parts = image_name.split("_")
-                        # For quantex_at_home_id255237_2022_05_08_04_000240.jpg
-                        # parts[3] would be 'id255237' -> extract '255237'
-                        if len(parts) > 3 and parts[3].startswith('id'):
-                            image_id = parts[3].replace("id", "")
-                        else:
-                            # Fallback: use filename as ID
-                            image_id = frame.stem
-                        total_images.append((str(frame.resolve()), image_id))
-                        
-    logging.info(f"Total annotated frames found: {len(total_images)}")
+                        # This is an annotated frame (has any faces)
+                        annotated_images.append((str(frame.resolve()), image_id))
+                    else:
+                        # This is a potential negative frame (no faces)
+                        video_negative_candidates[video_name].append((str(frame.resolve()), image_id))
+    
+    # Step 3: Randomly sample negative frames to match annotated frames exactly
+    random.seed(42)  # For reproducible results
+    num_annotated = len(annotated_images)
+    
+    # Collect negative samples from each video proportionally
+    total_candidates = sum(len(candidates) for candidates in video_negative_candidates.values())
+    
+    if total_candidates == 0:
+        logging.warning("No negative frames found. Using only annotated frames.")
+        total_images = annotated_images
+    else:
+        # Sample exactly the same number of negative frames as frames with any faces
+        if total_candidates >= num_annotated:
+            # We have enough candidates, sample 75% of the amount of num_annotated
+            all_candidates = []
+            for candidates in video_negative_candidates.values():
+                all_candidates.extend(candidates)
+
+            negative_images = random.sample(all_candidates, int(num_annotated * 0.75))
+        else:
+            # Use all available candidates if we don't have enough
+            negative_images = []
+            for candidates in video_negative_candidates.values():
+                negative_images.extend(candidates)
+            logging.warning(f"Only {len(negative_images)} negative frames available, less than {num_annotated} frames with faces")
+        
+        total_images = annotated_images + negative_images
+    
+    logging.info(f"Total frames with any face annotations: {len(annotated_images)}")
+    logging.info(f"Total negative frames (without faces): {len(negative_images)}")
+    logging.info(f"Total frames for training: {len(total_images)}")
+    logging.info(f"Face coverage ratio: {len(annotated_images) / len(total_images):.2%}")
+    
     return total_images
 
 def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.DataFrame:
@@ -305,10 +356,49 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
     
     return df
 
+def get_all_frames_for_children(child_ids: List[str], image_folder: Path) -> List[Tuple[str, str]]:
+    """
+    Get ALL frames (not just annotated ones) for specified child IDs from all their videos.
+    
+    Parameters
+    ----------
+    child_ids : List[str]
+        List of child IDs to get frames for
+    image_folder : Path
+        Path to the image folder
+        
+    Returns
+    -------
+    List[Tuple[str, str]]
+        List of tuples containing (image_path, image_id)
+    """
+    all_frames = []
+    
+    for child_id in child_ids:
+        # Find all video folders for this child
+        for video_folder in image_folder.iterdir():
+            if video_folder.is_dir() and child_id in video_folder.name:
+                # Get all frames from this video folder
+                for frame in video_folder.iterdir():
+                    if frame.is_file() and frame.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                        # Extract image ID
+                        parts = frame.name.split("_")
+                        if len(parts) > 3 and parts[3].startswith('id'):
+                            image_id = parts[3].replace("id", "")
+                        else:
+                            image_id = frame.stem
+                        
+                        all_frames.append((str(frame.resolve()), image_id))
+    
+    logging.info(f"Found {len(all_frames)} total frames for test children: {child_ids}")
+    return all_frames
+
 def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO):
     """
     Splits the DataFrame into training, validation, and test sets using child IDs as the unit,
     while keeping each split's class ratio close to the global dataset ratio.
+    
+    For test set: Keeps ALL frames from test children (not just annotated ones) to reflect real-world scenarios.
     """
    
     # Check if 'filename' column exists, if not, return empty splits
@@ -330,7 +420,7 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
     
     df.dropna(subset=['child_id'], inplace=True)
 
-    # --- Counts per child ---
+    # --- Counts per child (including face coverage) ---
     class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
     
     if not class_columns:
@@ -338,6 +428,13 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
         return [], [], [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     child_group_counts = df.groupby('child_id')[class_columns].sum()
+    
+    # Also calculate face coverage per child
+    child_face_coverage = df.groupby('child_id').agg({
+        'has_annotation': ['sum', 'count']
+    }).round(2)
+    child_face_coverage.columns = ['faces_count', 'total_count']
+    child_face_coverage['face_ratio'] = child_face_coverage['faces_count'] / child_face_coverage['total_count']
 
     # Global target ratio (first class proportion)
     global_counts = child_group_counts[class_columns].sum()
@@ -364,13 +461,16 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
 
     # --- Initialize splits ---
     split_info = {
-        'train': {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns)},
-        'val':   {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns)},
-        'test':  {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns)},
+        'train': {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns), 'face_count': 0, 'total_count': 0},
+        'val':   {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns), 'face_count': 0, 'total_count': 0},
+        'test':  {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns), 'face_count': 0, 'total_count': 0},
     }
 
-    # Randomize assignment order to reduce bias
-    random.shuffle(sorted_child_ids)
+    # Sort children by their face count (descending) to ensure balanced distribution
+    child_face_counts = [(child_id, child_face_coverage.loc[child_id, 'faces_count']) for child_id in sorted_child_ids]
+    child_face_counts.sort(key=lambda x: x[1], reverse=True)
+    
+    logging.info(f"Child face counts: {child_face_counts}")
 
     def deviation_from_target(current_counts, child_counts):
         """Absolute difference from target class ratio after adding this child."""
@@ -379,9 +479,20 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
             return 0
         new_ratio = new_counts[class_columns[0]] / new_counts.sum()
         return abs(new_ratio - target_class_0_ratio)
+    
+    def face_coverage_deviation(current_face_count, current_total_count, child_face_count, child_total_count):
+        """Calculate how much the face coverage would deviate from 50% after adding this child."""
+        new_face_count = current_face_count + child_face_count
+        new_total_count = current_total_count + child_total_count
+        if new_total_count == 0:
+            return 0
+        new_face_ratio = new_face_count / new_total_count
+        return abs(new_face_ratio - 0.5)  # Target 50% face coverage
 
-    for child_id in sorted_child_ids:
+    # Assign children using a balanced approach that considers both class ratio and face coverage
+    for child_id, child_face_count in child_face_counts:
         child_counts = child_group_counts.loc[child_id, class_columns]
+        child_total_count = child_face_coverage.loc[child_id, 'total_count']
 
         # Find eligible splits (still have room for more IDs)
         eligible_splits = []
@@ -393,15 +504,21 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
             logging.warning(f"No split has space left for child {child_id}. Skipping.")
             continue
 
-        # Pick split that gets closest to global ratio
+        # Pick split that minimizes both class ratio deviation AND face coverage deviation
         best_split = min(
             eligible_splits,
-            key=lambda s: deviation_from_target(split_info[s]['current_counts'], child_counts)
+            key=lambda s: (
+                deviation_from_target(split_info[s]['current_counts'], child_counts) * 0.3 +  # 30% weight on class balance
+                face_coverage_deviation(split_info[s]['face_count'], split_info[s]['total_count'], 
+                                       child_face_count, child_total_count) * 0.7  # 70% weight on face coverage balance
+            )
         )
 
         # Assign child
         split_info[best_split]['ids'].append(child_id)
         split_info[best_split]['current_counts'] += child_counts
+        split_info[best_split]['face_count'] += child_face_count
+        split_info[best_split]['total_count'] += child_total_count
 
     # --- Build final DataFrames ---
     train_ids = split_info['train']['ids']
@@ -411,6 +528,39 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
     train_df = df[df["child_id"].isin(train_ids)].copy()
     val_df = df[df["child_id"].isin(val_ids)].copy()
     test_df = df[df["child_id"].isin(test_ids)].copy()
+    
+    # Log face coverage for train/val splits before test enhancement
+    train_face_coverage = len(train_df[train_df['has_annotation'] == True]) / len(train_df) if len(train_df) > 0 else 0
+    val_face_coverage = len(val_df[val_df['has_annotation'] == True]) / len(val_df) if len(val_df) > 0 else 0
+    logging.info(f"Pre-test enhancement - Train face coverage: {train_face_coverage:.2%}, Val face coverage: {val_face_coverage:.2%}")
+    
+    # For test set: Add ALL frames from test child videos (not just annotated ones)
+    logging.info(f"Adding all frames from test children: {test_ids}")
+    additional_test_frames = get_all_frames_for_children(test_ids, FaceDetection.IMAGES_INPUT_DIR)
+    
+    # Add these additional frames to test_df
+    if additional_test_frames:
+        additional_entries = []
+        for image_path, image_id in additional_test_frames:
+            image_file = Path(image_path)
+            # Check if this frame is already in our DataFrame
+            if image_file.stem not in test_df['filename'].values:
+                # Create entry for this additional frame
+                entry = {
+                    "filename": image_file.stem,
+                    "id": image_id,
+                    "has_annotation": False,  # These are additional frames without annotations
+                    "child_id": get_child_id_from_filename(image_file.stem)
+                }
+                # Add zero values for all class columns (no annotations)
+                for class_name in class_columns:
+                    entry[class_name] = 0
+                additional_entries.append(entry)
+        
+        if additional_entries:
+            additional_df = pd.DataFrame(additional_entries)
+            test_df = pd.concat([test_df, additional_df], ignore_index=True)
+            logging.info(f"Added {len(additional_entries)} additional frames to test set")
 
     # Log final split information
     for split_name, split_df in zip(["Train", "Val", "Test"], [train_df, val_df, test_df]):
@@ -458,6 +608,7 @@ def move_images(image_names: list,
     def process_single_image(image_name: str) -> bool:
         """Process a single image and its label."""
         try:
+            
             # Handle face detection cases - get video folder from image name
             image_parts = image_name.split("_")
             if len(image_parts) < 9:
@@ -488,7 +639,6 @@ def move_images(image_names: list,
             if not label_src.exists():
                 label_dst.touch()
             else:
-                import shutil
                 shutil.copy2(label_src, label_dst)
 
             # Handle image file
@@ -525,41 +675,50 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_path = BasePaths.LOGGING_DIR / f"split_distribution_face_det_{timestamp}.txt"
     
-    total_images = len(df)
+    # Calculate totals based on original balanced dataset (before test enhancement)
+    original_total = len(df_train) + len(df_val) + len(df_test[df_test['has_annotation'] == True])
     
     with open(file_path, "w") as f:
         f.write(f"Dataset Split Information - {timestamp}\n\n")
         
         class_0, class_1 = FaceConfig.TARGET_LABELS
-        total_0 = df[class_0].sum()
-        total_1 = df[class_1].sum()
+        
+        # Original distribution (before test enhancement)
+        original_0 = df_train[class_0].sum() + df_val[class_0].sum() + df_test[df_test['has_annotation'] == True][class_0].sum()
+        original_1 = df_train[class_1].sum() + df_val[class_1].sum() + df_test[df_test['has_annotation'] == True][class_1].sum()
+        
+        f.write(f"Original Balanced Distribution (before test enhancement):\n")
+        f.write(f"Total Images: {original_total}\n")
+        f.write(f"Class 0 {FaceConfig.TARGET_LABELS[0]}: {original_0} images ({original_0 / original_total:.2%})\n")
+        f.write(f"Class 1 {FaceConfig.TARGET_LABELS[1]}: {original_1} images ({original_1 / original_total:.2%})\n\n")
 
-        f.write(f"Initial Distribution:\n")
-        f.write(f"Total Images: {total_images}\n")
-        f.write(f"Class 0 {FaceConfig.TARGET_LABELS[0]}: {total_0} images ({total_0 / total_images:.2%})\n")
-        f.write(f"Class 1 {FaceConfig.TARGET_LABELS[1]}: {total_1} images ({total_1 / total_images:.2%})\n\n")
-
-        f.write("Split Distribution:\n")
+        f.write("Split Distribution (within each split):\n")
         f.write("--------------------------------------------------\n\n")
 
         def write_split_info(split_name, split_df):
             total_split = len(split_df)
-            total_split_percent = total_split / total_images if total_images > 0 else 0
-
+            
             count_0 = split_df[FaceConfig.TARGET_LABELS[0]].sum()
             count_1 = split_df[FaceConfig.TARGET_LABELS[1]].sum()
             
+            # Calculate percentages WITHIN the split
             ratio_0 = count_0 / total_split if total_split > 0 else 0
             ratio_1 = count_1 / total_split if total_split > 0 else 0
             
-            f.write(f"{split_name} Set: ({total_split_percent:.2%})\n")
+            # Calculate face coverage (frames with any faces)
+            frames_with_faces = split_df[split_df['has_annotation'] == True]
+            face_coverage = len(frames_with_faces) / total_split if total_split > 0 else 0
+            
+            f.write(f"{split_name} Set:\n")
             f.write(f"Total Images: {total_split}\n")
-            f.write(f"{FaceConfig.TARGET_LABELS[0]}: {count_0} ({ratio_0:.2%})\n")
-            f.write(f"{FaceConfig.TARGET_LABELS[1]}: {count_1} ({ratio_1:.2%})\n\n")
+            f.write(f"Face Coverage: {len(frames_with_faces)} ({face_coverage:.2%}) - frames with any faces\n")
+            f.write(f"No Face: {total_split - len(frames_with_faces)} ({1-face_coverage:.2%}) - frames without faces\n")
+            f.write(f"{FaceConfig.TARGET_LABELS[0]}: {count_0} ({ratio_0:.2%}) - within split\n")
+            f.write(f"{FaceConfig.TARGET_LABELS[1]}: {count_1} ({ratio_1:.2%}) - within split\n\n")
 
+        write_split_info("Train", df_train)
         write_split_info("Validation", df_val)
         write_split_info("Test", df_test)
-        write_split_info("Train", df_train)
 
         f.write("ID Distribution:\n")
         f.write(f"Training IDs: {len(train_ids)}, {train_ids}\n")
@@ -576,6 +735,14 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
             f.write("Overlap found: No\n")
     
     logging.info(f"Statistics file generated at {file_path}")
+    
+    # Also log the key statistics to console
+    train_face_coverage = len(df_train[df_train['has_annotation'] == True]) / len(df_train) if len(df_train) > 0 else 0
+    val_face_coverage = len(df_val[df_val['has_annotation'] == True]) / len(df_val) if len(df_val) > 0 else 0
+    test_face_coverage = len(df_test[df_test['has_annotation'] == True]) / len(df_test) if len(df_test) > 0 else 0
+    
+    logging.info(f"Face Coverage - Train: {train_face_coverage:.2%}, Val: {val_face_coverage:.2%}, Test: {test_face_coverage:.2%}")
+    logging.info(f"Train images: {len(df_train)}, Val images: {len(df_val)}, Test images: {len(df_test)}")
 
 def split_yolo_data(annotation_folder: Path):
     """
@@ -611,6 +778,7 @@ def split_yolo_data(annotation_folder: Path):
         val_ids = df_val['child_id'].unique().tolist() if 'child_id' in df_val.columns else []
         test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
         
+        # Use the original balanced DataFrame (df) for statistics, not the enhanced test set
         generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
         
         # Move images for each split
