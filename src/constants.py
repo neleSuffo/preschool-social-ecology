@@ -22,7 +22,7 @@ class DataPaths:
     RAWFRAMES_EXTRACTION_ERROR_LOG = Path(BasePaths.DATA_DIR/"rawframes_extraction_error.log")
     PROCESSED_VIDEOS_LOG = Path(BasePaths.DATA_DIR/"processed_videos.log")
     SUBJECTS_CSV_PATH = Path(BasePaths.DATA_DIR/"age_group.csv")
-    INFERENCE_DB_PATH = Path(BasePaths.OUTPUT_DIR/"quantex_inference/inference.db")
+    INFERENCE_DB_PATH = Path(BasePaths.OUTPUT_DIR/"quantex_inference/interaction_inference.db")
 
 class AudioClassification:
     RESULTS_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs/20250703-165356")
