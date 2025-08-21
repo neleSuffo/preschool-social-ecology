@@ -15,15 +15,15 @@ import logging
 import re
 from pathlib import Path
 from typing import Tuple, Optional
-from constants import DataPaths, Kchi_Vocalizations
+from constants import DataPaths, Vocalizations
 from config import KchiVoc_Config
 from inference.inference import get_video_id
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def create_kchi_vocalizations_table(cursor: sqlite3.Cursor):
+def create_vocalizations_table(cursor: sqlite3.Cursor):
     """
-    Create the KchiVocalizations table if it doesn't exist.
+    Create the Vocalizations table if it doesn't exist.
     Also insert the ALICE model into the Models table.
     
     Parameters:
@@ -34,12 +34,12 @@ def create_kchi_vocalizations_table(cursor: sqlite3.Cursor):
     # Insert ALICE model into Models table
     cursor.execute('''
         INSERT OR IGNORE INTO Models (model_name, description, output_variables) VALUES 
-        ('kchi_vocalization', 'ALICE for KCHI vocalization analysis',
+        ('vocalization', 'ALICE for vocalization analysis',
          '{"phonemes": "float", "syllables": "float", "words": "float"}')
     ''')
     
     # Get the model_id for the ALICE model
-    cursor.execute('SELECT model_id FROM Models WHERE model_name = ?', ('kchi_vocalization',))
+    cursor.execute('SELECT model_id FROM Models WHERE model_name = ?', ('vocalization',))
     result = cursor.fetchone()
     alice_model_id = result[0] if result else None
     
@@ -49,9 +49,10 @@ def create_kchi_vocalizations_table(cursor: sqlite3.Cursor):
     
     # Create KchiVocalizations table without DEFAULT for model_id
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS KchiVocalizations (
+        CREATE TABLE IF NOT EXISTS Vocalizations (
             vocalization_id INTEGER PRIMARY KEY AUTOINCREMENT,
             video_id INTEGER,
+            speaker STRING,
             start_time_seconds REAL,
             end_time_seconds REAL,
             phonemes REAL,
@@ -62,7 +63,7 @@ def create_kchi_vocalizations_table(cursor: sqlite3.Cursor):
             FOREIGN KEY (model_id) REFERENCES Models(model_id)
         )
     ''')
-    logging.info(f"Created/verified KchiVocalizations table and inserted ALICE model (model_id: {alice_model_id})")
+    logging.info(f"Created/verified Vocalizations table and inserted ALICE model (model_id: {alice_model_id})")
     
     return alice_model_id
 
@@ -144,7 +145,20 @@ def process_alice_output(alice_file: Path, cursor: sqlite3.Cursor, conn: sqlite3
     alice_model_id : int
         Model ID for the ALICE model
     """
+    # Validate input file
+    if not alice_file.exists():
+        logging.error(f"ALICE output file not found: {alice_file}")
+        return
+    
     logging.info(f"Processing ALICE output file: {alice_file}")
+    
+    if 'KCHI' in str(alice_file):
+        speaker = 'KCHI'
+    elif 'OTH' in str(alice_file):
+        speaker = 'OTH'
+    else:
+        logging.error(f"Unknown speaker in file: {alice_file}")
+        return
     
     processed_count = 0
     skipped_count = 0
@@ -176,10 +190,10 @@ def process_alice_output(alice_file: Path, cursor: sqlite3.Cursor, conn: sqlite3
                 
                 # Insert into database with explicit model_id
                 cursor.execute('''
-                    INSERT INTO KchiVocalizations 
-                    (video_id, start_time_seconds, end_time_seconds, phonemes, syllables, words, model_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (video_id, start_time, end_time, phonemes, syllables, words, alice_model_id))
+                    INSERT INTO Vocalizations 
+                    (video_id, speaker, start_time_seconds, end_time_seconds, phonemes, syllables, words, model_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (video_id, speaker, start_time, end_time, phonemes, syllables, words, alice_model_id))
                 
                 processed_count += 1
                 
@@ -202,22 +216,18 @@ def process_alice_output(alice_file: Path, cursor: sqlite3.Cursor, conn: sqlite3
 def main():
     """
     Main function to process ALICE output and add to database.
-    """   
-    # Validate input file
-    if not Kchi_Vocalizations.ALICE_OUTPUT_FILE.exists():
-        logging.error(f"ALICE output file not found: {Kchi_Vocalizations.ALICE_OUTPUT_FILE}")
-        return
-    
+    """       
     try:
         # Connect to database
         conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
         cursor = conn.cursor()
         
         # Create table and get model_id
-        alice_model_id = create_kchi_vocalizations_table(cursor)
+        alice_model_id = create_vocalizations_table(cursor)
         
-        # Process ALICE output with the model_id
-        process_alice_output(Kchi_Vocalizations.ALICE_OUTPUT_FILE, cursor, conn, alice_model_id)
+        # Process ALICE output with the model_id for KCHI and OTH
+        process_alice_output(Vocalizations.KCHI_OUTPUT_FILE, cursor, conn, alice_model_id)
+        process_alice_output(Vocalizations.OTH_OUTPUT_FILE, cursor, conn, alice_model_id)
 
         # Close database connection
         conn.close()
