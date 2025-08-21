@@ -66,6 +66,7 @@ transformers = {version = ">=4.21.0,<4.30.0", extras = ["torch"]}
 seaborn = "^0.13.2"
 tensorflow = "2.11.0"
 nvidia-cudnn-cu11 = "8.6.0.163"
+natsort = "^8.4.0"
 
 
 [tool.poetry.group.dev.dependencies]
