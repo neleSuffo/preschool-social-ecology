@@ -4,7 +4,6 @@ import pandas as pd
 from pathlib import Path
 from constants import DataPaths
 
-
 # SQL queries
 face_frame_categories_query = """
 WITH UniqueFrames AS (
@@ -110,9 +109,41 @@ def run_query_to_csv(conn, query, output_path, description):
     print(f"✅ Saved {description} to {output_path}")
     return df
 
+def round_to_nearest(x, base=ROUND_TO):
+    return int(base * round(float(x) / base))
+
+def load_person_face_data(conn):
+    query = """
+        SELECT
+            p.video_id,
+            p.frame_number,
+            CASE WHEN p.has_child_person=1 OR f_c.age_class=0 THEN 1 ELSE 0 END AS child_present,
+            CASE WHEN p.has_adult_person=1 OR f_a.age_class=1 THEN 1 ELSE 0 END AS adult_present
+        FROM PersonClassifications p
+        LEFT JOIN (SELECT video_id, frame_number, age_class FROM FaceDetections WHERE age_class = 0) f_c
+            ON p.video_id = f_c.video_id AND p.frame_number = f_c.frame_number
+        LEFT JOIN (SELECT video_id, frame_number, age_class FROM FaceDetections WHERE age_class = 1) f_a
+            ON p.video_id = f_a.video_id AND p.frame_number = f_a.frame_number
+    """
+    return pd.read_sql(query, conn)
+
+def load_vocalizations(conn):
+    vocal_df = pd.read_sql("SELECT video_id, start_time_seconds, end_time_seconds, speaker FROM Vocalizations;", conn)
+    vocal_df['start_frame'] = (vocal_df['start_time_seconds'] * FPS).apply(round_to_nearest)
+    vocal_df['end_frame'] = (vocal_df['end_time_seconds'] * FPS).apply(round_to_nearest)
+    return vocal_df
+
+def expand_speech(vocal_df):
+    vocal_df['frame_range'] = vocal_df.apply(
+        lambda row: list(range(row['start_frame'], row['end_frame'] + ROUND_TO, ROUND_TO)), axis=1
+    )
+    return vocal_df.explode('frame_range').rename(columns={'frame_range': 'frame_number'})[['video_id', 'frame_number', 'speaker']]
+
 def main():
     OUTPUT_DIR = DataPaths.INFERENCE_DIR
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    FPS = 30
+    ROUND_TO = 10
 
     # Connect to database
     with sqlite3.connect(DataPaths.INFERENCE_DB_PATH) as conn:
@@ -137,6 +168,18 @@ def main():
             conn,
             OUTPUT_DIR / "combined_face_person_categories.csv"
         )
+        
+        person_alone_df = load_person_face_data(conn)
+        vocal_df = load_vocalizations(conn)
+        speech_df = expand_speech(vocal_df)
+        alone_not_alone_df = person_alone_df.merge(speech_df, on=['video_id', 'frame_number'], how='left')
+
+        # Add flags
+        alone_not_alone_df['kchi_speech_present'] = (alone_not_alone_df['speaker'] == 'KCHI').astype(int)
+        alone_not_alone_df['other_speech_present'] = (alone_not_alone_df['speaker'] == 'OTH').astype(int)
+        alone_not_alone_df['not_alone_detection'] = (alone_not_alone_df['adult_present'] == 1) | (alone_not_alone_df['child_present'] == 1) | (alone_not_alone_df['speaker'] == 'OTH')
+        alone_not_alone_df = alone_not_alone_df[['only_child_present', 'only_adult_present', 'both_present', 'no_one_present', 'total_frames_analyzed']]
+        alone_not_alone_df.to_csv(OUTPUT_DIR / "alone_not_alone_analysis.csv", index=False)
 
     print("🎯 All queries executed successfully.")
 
