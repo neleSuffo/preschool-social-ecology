@@ -25,13 +25,16 @@ def get_all_analysis_data(conn):
     GROUP BY frame_number, video_id;
     """)
     
-    # Create simplified vocalization mapping
+    # Create simplified vocalization mapping with KCHI priority
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS VocalizationFrames AS
     SELECT DISTINCT 
         video_id,
         frame_number,
-        speaker
+        CASE 
+            WHEN COUNT(CASE WHEN speaker = 'KCHI' THEN 1 END) > 0 THEN 'KCHI'
+            ELSE MAX(speaker)
+        END as speaker
     FROM (
         SELECT 
             v.video_id,
@@ -42,7 +45,8 @@ def get_all_analysis_data(conn):
         WHERE pf.frame_number BETWEEN 
             CAST(ROUND(v.start_time_seconds * 30 / 10) * 10 AS INTEGER) AND 
             CAST(ROUND(v.end_time_seconds * 30 / 10) * 10 AS INTEGER)
-    );
+    )
+    GROUP BY video_id, frame_number;
     """)
     
     # Main query without ambiguous joins
