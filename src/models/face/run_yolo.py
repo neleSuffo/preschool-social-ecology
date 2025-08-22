@@ -25,17 +25,20 @@ def process_image(model: YOLO, image_path: Path) -> Tuple[np.ndarray, Detections
     logging.info(f"{len(results.xyxy)} face detection(s)")
     return image, results
 
-def draw_detections_and_ground_truth(image: np.ndarray, predictions: Detections, ground_truth_boxes: np.ndarray, ground_truth_classes: np.ndarray) -> np.ndarray:
-    """Draw both predictions and ground truth boxes on image"""
+def draw_detections_and_ground_truth(image: np.ndarray, predictions: Detections,
+                                     ground_truth_boxes: np.ndarray = None,
+                                     ground_truth_classes: np.ndarray = None) -> np.ndarray:
+    """Draw predictions and (optionally) ground truth boxes on image"""
     annotated_image = image.copy()
     
-    # Draw ground truth boxes in blue
-    for i, (gt_box, gt_class) in enumerate(zip(ground_truth_boxes, ground_truth_classes)):
-        x1, y1, x2, y2 = map(int, gt_box)
-        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
-        gt_label = "GT-Child" if gt_class == 0 else "GT-Adult"
-        cv2.putText(annotated_image, gt_label, (x1+10, y1+20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+    # Draw ground truth boxes in blue (if provided)
+    if ground_truth_boxes is not None and len(ground_truth_boxes) > 0:
+        for i, (gt_box, gt_class) in enumerate(zip(ground_truth_boxes, ground_truth_classes)):
+            x1, y1, x2, y2 = map(int, gt_box)
+            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            gt_label = "GT-Child" if gt_class == 0 else "GT-Adult"
+            cv2.putText(annotated_image, gt_label, (x1+10, y1+20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
     
     # Draw prediction boxes in green
     for i, (bbox, conf, class_id) in enumerate(zip(predictions.xyxy, predictions.confidence, predictions.class_id)):
@@ -80,23 +83,20 @@ def load_ground_truth(label_path: str, img_width: int, img_height: int) -> Tuple
 def main():
     parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
     parser.add_argument('--image', type=str, required=True,
-                        help='Image filename (e.g., quantex_at_home_id261609_2022_04_01_01_000000.PNG)')
+                        help='Image filename (e.g., quantex_at_home_id261609_2022_04_01_01_000000)')
     args = parser.parse_args()
     
-    # Setup paths for face detection
     output_dir = FaceDetection.OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Parse image filename to get folder structure
+        # Parse image filename
         basename = os.path.basename(args.image)
         name, ext = os.path.splitext(basename)
         parts = name.split('_')
         video_folder = '_'.join(parts[:-1])
         
-        # Setup paths - try different file extensions
         image_path = None
-        
         for ext in DataConfig.VALID_EXTENSIONS:
             potential_path = FaceDetection.IMAGES_INPUT_DIR / video_folder / (Path(args.image).stem + ext)
             if potential_path.exists():
@@ -104,10 +104,11 @@ def main():
                 break
         
         if image_path is None:
-            raise FileNotFoundError(f"Image not found with .jpg or .PNG extension in {FaceDetection.IMAGES_INPUT_DIR / video_folder}")
+            raise FileNotFoundError(f"Image not found with valid extension in {FaceDetection.IMAGES_INPUT_DIR / video_folder}")
         
         logging.info(f"Using image: {image_path}")
-        label_path = FaceDetection.LABELS_INPUT_DIR / Path(args.image).with_suffix('.txt')
+        label_path = FaceDetection.LABELS_INPUT_DIR / f"{args.image}.txt"
+        print(f"Label path: {label_path}")
         
         # Load model and process image
         model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
@@ -115,35 +116,34 @@ def main():
 
         image, results = process_image(model, image_path)
         
-        # Get image dimensions and load ground truth
         img_height, img_width = image.shape[:2]
-        ground_truth_boxes, ground_truth_classes = load_ground_truth(str(label_path), img_width, img_height)
-        logging.info(f"Found {len(ground_truth_boxes)} ground truth boxes")
+        ground_truth_boxes = None
+        ground_truth_classes = None
         
-        # Calculate IoU for each detection
-        for i, (detected_bbox, conf, class_id) in enumerate(zip(results.xyxy, results.confidence, results.class_id)):
-            class_name = "Child" if int(class_id) == 0 else "Adult"
-            
-            if len(ground_truth_boxes) > 0:
+        # Only if label file exists
+        if label_path.exists():
+            ground_truth_boxes, ground_truth_classes = load_ground_truth(str(label_path), img_width, img_height)
+            logging.info(f"Found {len(ground_truth_boxes)} ground truth boxes")
+
+            # Calculate IoU for each detection
+            for i, (detected_bbox, conf, class_id) in enumerate(zip(results.xyxy, results.confidence, results.class_id)):
+                class_name = "Child" if int(class_id) == 0 else "Adult"
                 iou_scores = [calculate_iou(detected_bbox, gt_bbox) for gt_bbox in ground_truth_boxes]
-                max_iou = max(iou_scores)
+                max_iou = max(iou_scores) if iou_scores else 0
                 logging.info(f"Detection {i+1} - {class_name} - Max IoU: {max_iou:.4f}")
-            else:
-                logging.warning(f"No ground truth boxes found for detection {i+1}")
+        else:
+            logging.warning(f"No label file found for {args.image}. Skipping IoU and GT drawing.")
         
-        # Draw detections and save
+        # Draw detections (GT only if available)
         annotated_image = draw_detections_and_ground_truth(image, results, ground_truth_boxes, ground_truth_classes)
         
         output_filename = Path(args.image).stem + "_annotated.jpg"
         output_path = output_dir / output_filename
         
-        # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Try to save with JPEG quality parameters for better compatibility
         success = cv2.imwrite(str(output_path), annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
         if not success:
-            # Fallback: try without quality parameters
             success = cv2.imwrite(str(output_path), annotated_image)
             if not success:
                 raise RuntimeError(f"Failed to save image to {output_path}")
