@@ -154,8 +154,8 @@ def process_alice_output(alice_file: Path, cursor: sqlite3.Cursor, conn: sqlite3
     
     if 'KCHI' in str(alice_file):
         speaker = 'KCHI'
-    elif 'OTH' in str(alice_file):
-        speaker = 'OTH'
+    elif 'FEM_MAL' in str(alice_file):
+        speaker = 'FEM_MAL'
     else:
         logging.error(f"Unknown speaker in file: {alice_file}")
         return
