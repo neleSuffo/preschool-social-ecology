@@ -23,7 +23,7 @@ class DataPaths:
     PROCESSED_VIDEOS_LOG = Path(BasePaths.DATA_DIR/"processed_videos.log")
     SUBJECTS_CSV_PATH = Path(BasePaths.DATA_DIR/"age_group.csv")
     INFERENCE_DIR = Path(BasePaths.OUTPUT_DIR/"quantex_inference/")
-    INFERENCE_DB_PATH = Path(INFERENCE_DIR/"interaction_inference.db")
+    INFERENCE_DB_PATH = Path(INFERENCE_DIR/"inference.db")
 
 class AudioClassification:
     RESULTS_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs/20250703-165356")
@@ -42,7 +42,7 @@ class AudioClassification:
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
     KCHI_OUTPUT_FILE = ALICE_OUTPUT_DIR / "KCHI_output_utterances.txt"
-    OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "OTH_output_utterances.txt"
+    OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "FEM_MAL_output_utterances.txt"
 
 class PersonClassification:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/resnet18_bilstm_20250815_221214/best.pth')
