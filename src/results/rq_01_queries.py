@@ -1,4 +1,4 @@
-# Optimized query analysis for naturalistic social data
+# Research Question: How much language does the key child produce (utterances and words)?
 import sqlite3
 import pandas as pd
 from pathlib import Path
@@ -18,7 +18,7 @@ def get_all_analysis_data(conn):
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS FaceAgg AS
     SELECT 
-        frame_number, video_id,
+        frame_number, video_id, proximity,
         MAX(CASE WHEN age_class = 0 THEN 1 ELSE 0 END) AS has_child_face,
         MAX(CASE WHEN age_class = 1 THEN 1 ELSE 0 END) AS has_adult_face
     FROM FaceDetections
@@ -60,6 +60,8 @@ def get_all_analysis_data(conn):
         -- Face presence  
         COALESCE(fa.has_child_face, 0) AS has_child_face,
         COALESCE(fa.has_adult_face, 0) AS has_adult_face,
+        -- Face proximity
+        fa.proximity,
         -- Combined presence
         CASE WHEN COALESCE(fa.has_child_face,0)=1 OR pd.has_child_person=1 THEN 1 ELSE 0 END AS child_present,
         CASE WHEN COALESCE(fa.has_adult_face,0)=1 OR pd.has_adult_person=1 THEN 1 ELSE 0 END AS adult_present,
@@ -135,11 +137,15 @@ def run_analysis():
         
         # Add speech flags and save comprehensive dataset
         all_data['kchi_speech_present'] = (all_data['speaker'] == 'KCHI').astype(int)
-        all_data['other_speech_present'] = (all_data['speaker'] == 'OTH').astype(int)
+        all_data['other_speech_present'] = (all_data['speaker'] == 'FEM_MAL').astype(int)
         all_data['not_alone_detection'] = (
-            (all_data['adult_present'] == 1) | 
-            (all_data['child_present'] == 1) | 
-            (all_data['speaker'] == 'OTH')
+            # Rule 1: Proximity ≥ 0.5 (face detected and close)
+            (all_data['proximity'] >= 0.5) |
+            # Rule 2: Person detection AND other speech
+            (
+                ((all_data['adult_present'] == 1) | (all_data['child_present'] == 1)) & 
+                (all_data['speaker'] == 'FEM_MAL')
+            )
         ).astype(int)
         
         # Save comprehensive dataset
