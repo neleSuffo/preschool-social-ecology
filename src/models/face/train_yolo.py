@@ -48,7 +48,7 @@ def main():
         augment=True,
 
         # Early stopping with more patience
-        patience=30,
+        patience=20,
 
         # Training settings
         device=args.device,
