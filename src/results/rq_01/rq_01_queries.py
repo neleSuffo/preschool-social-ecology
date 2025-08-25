@@ -18,6 +18,8 @@ from config import DataConfig
 OUTPUT_DIR = Path("/home/nele_pauline_suffo/projects/naturalistic-social-analysis/src/results/rq_01")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 ROUND_TO = 10
+AUDIO_WINDOW_SEC = 3  # seconds
+FPS = 30  # frames per second
 
 def get_all_analysis_data(conn):
     """
@@ -193,6 +195,57 @@ def get_all_analysis_data(conn):
     """
     return pd.read_sql(query, conn)
 
+def check_audio_interaction_turn_taking(df, window_size_frames, fps):
+    """
+    Checks for turn-taking audio interaction within a sliding window.
+    
+    A turn-taking interaction is defined as the presence of both 'KCHI'
+    and another speaker (non-KCHI) within the specified time window.
+    
+    Args:
+        df (pd.DataFrame): The input DataFrame with a 'speaker' column.
+        window_size_frames (int): The size of the sliding window in frames.
+        fps (int): Frames per second.
+        
+    Returns:
+        pd.Series: A boolean Series indicating if an audio interaction occurred.
+    """
+    print(f"Analyzing turn-taking with window size: {window_size_frames} frames ({window_size_frames/fps:.1f} seconds)")
+    
+    # Create binary flags for each speaker type
+    df_copy = df.copy()
+    df_copy['has_kchi'] = (df_copy['speaker'] == 'KCHI').astype(int)
+    df_copy['has_other'] = ((~df_copy['speaker'].isna()) & (df_copy['speaker'] != 'KCHI')).astype(int)
+    
+    # Process each video separately to handle rolling windows correctly
+    all_results = []
+    
+    for video_id, video_df in df_copy.groupby('video_id'):
+        video_df = video_df.sort_values('frame_number').reset_index(drop=True)
+        
+        # Apply rolling sum to numeric columns (this works with pandas rolling)
+        kchi_window = video_df['has_kchi'].rolling(window=window_size_frames, center=True, min_periods=1).sum()
+        other_window = video_df['has_other'].rolling(window=window_size_frames, center=True, min_periods=1).sum()
+        
+        # Turn-taking detected if both KCHI and other speakers present in window
+        video_df['is_audio_interaction'] = ((kchi_window > 0) & (other_window > 0)).astype(bool)
+        
+        all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
+    
+    # Combine all videos
+    result_df = pd.concat(all_results, ignore_index=True)
+    
+    # Merge back to original dataframe order
+    df_with_audio = df.merge(result_df, on=['frame_number', 'video_id'], how='left')
+    
+    # Fill any missing values with False
+    df_with_audio['is_audio_interaction'] = df_with_audio['is_audio_interaction'].fillna(False)
+    
+    audio_interaction_count = df_with_audio['is_audio_interaction'].sum()
+    print(f"Found {audio_interaction_count:,} frames with turn-taking audio interaction ({audio_interaction_count/len(df)*100:.1f}%)")
+    
+    return df_with_audio['is_audio_interaction']
+
 def run_analysis():
     """
     Main analysis function that orchestrates multimodal social interaction analysis.
@@ -258,10 +311,18 @@ def run_analysis():
         print(f"📊 Integrated {len(all_data):,} frames across {all_data['video_id'].nunique()} videos")
         
         # ====================================================================
-        # STEP 2: SPEECH MODALITY FEATURE EXTRACTION
+        # STEP 2: AUDIO TURN-TAKING ANALYSIS
+        # ====================================================================
+        print(f"🎤 Analyzing turn-taking in a {AUDIO_WINDOW_SEC}-second window...")
+        # Add the audio interaction flag to the DataFrame
+        all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
+            all_data, AUDIO_WINDOW_SEC * FPS, FPS
+        )
+        
+        # ====================================================================
+        # STEP 3: SPEECH MODALITY FEATURE EXTRACTION
         # ====================================================================
         # Binary flags for speech presence by speaker type
-        # Enables separate analysis of child vs. other vocalizations
         all_data['kchi_speech_present'] = (all_data['speaker'] == 'KCHI').astype(int)
         all_data['other_speech_present'] = ((~all_data['speaker'].isna()) & (all_data['speaker'] != 'KCHI')).astype(int)
         
@@ -273,25 +334,23 @@ def run_analysis():
         print(f"🎤 Speech analysis: {speech_stats['kchi_frames']:,} child speech frames, {speech_stats['other_speech_frames']:,} other speech frames")
         
         # ====================================================================
-        # STEP 3: SOCIAL INTERACTION CLASSIFICATION
+        # STEP 4: SOCIAL INTERACTION CLASSIFICATION (with audio priority)
         # ====================================================================
         # Three-tier classification system based on interaction intensity
-        def classify_interaction(row):
+        def classify_interaction_with_audio(row):
             """
-            Hierarchical social interaction classifier.
+            Hierarchical social interaction classifier with audio priority.
             
             CLASSIFICATION LOGIC:
             1. INTERACTING: Active social engagement
-               - Close proximity (>= 0.5) indicates intimate social contact
-               - OR other person speaking indicates active communication
+               - Turn-taking audio interaction detected (highest priority)
+               - OR Close proximity (>= 0.5) from video
+               - OR other person speaking from audio
                
             2. CO-PRESENT SILENT: Passive social presence
                - Person detected but no interaction indicators
-               - Physical proximity without active engagement
                
-            3. ALONE: Social isolation
-               - No people detected in visual modalities
-               - Complete absence of social presence
+            3. ALONE: No social presence detected
             
             Args:
                 row: DataFrame row with detection flags and proximity values
@@ -299,8 +358,8 @@ def run_analysis():
             Returns:
                 str: Interaction category ('Interacting', 'Co-present Silent', 'Alone')
             """
-            # High-confidence interaction indicators
-            if (row['proximity'] >= 0.5) or row['other_speech_present']:
+            # High-confidence interaction indicators (Audio has highest priority)
+            if row['is_audio_interaction'] or (row['proximity'] >= 0.5) or row['other_speech_present']:
                 return "Interacting"
             # Physical presence without interaction
             elif (row['has_child_person'] == 1) or (row['has_adult_person'] == 1):
@@ -309,10 +368,11 @@ def run_analysis():
             else:
                 return "Alone"
         
-        all_data['interaction_category'] = all_data.apply(classify_interaction, axis=1)
+        # Now use the new classification function
+        all_data['interaction_category'] = all_data.apply(classify_interaction_with_audio, axis=1)
         
         # ====================================================================
-        # STEP 4: PRESENCE PATTERN CATEGORIZATION
+        # STEP 5: PRESENCE PATTERN CATEGORIZATION
         # ====================================================================
         # Face-level categorization for social attention analysis
         def classify_face_category(row):
@@ -362,7 +422,27 @@ def run_analysis():
         print(f"🚶 Person pattern distribution: {dict(person_dist)}")
         
         # ====================================================================
-        # STEP 6: DATA EXPORT AND PERSISTENCE
+        # STEP 6: STATISTICAL SUMMARY GENERATION
+        # ====================================================================
+        summaries = {}
+        
+        # Interaction distribution analysis
+        interaction_dist = all_data['interaction_category'].value_counts()
+        summaries['interaction_distribution'] = interaction_dist.to_dict()
+        print(f"🤝 Interaction distribution: {dict(interaction_dist)}")
+        
+        # Face presence pattern analysis
+        face_dist = all_data['face_frame_category'].value_counts()
+        summaries['face_category_distribution'] = face_dist.to_dict()
+        print(f"👤 Face pattern distribution: {dict(face_dist)}")
+        
+        # Person presence pattern analysis  
+        person_dist = all_data['person_frame_category'].value_counts()
+        summaries['person_category_distribution'] = person_dist.to_dict()
+        print(f"🚶 Person pattern distribution: {dict(person_dist)}")
+        
+        # ====================================================================
+        # STEP 7: DATA EXPORT AND PERSISTENCE
         # ====================================================================
         # Combined summary statistics (single row with all metrics)
         summary_df = pd.DataFrame([{
