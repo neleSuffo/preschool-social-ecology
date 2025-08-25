@@ -195,56 +195,72 @@ def get_all_analysis_data(conn):
     """
     return pd.read_sql(query, conn)
 
-def check_audio_interaction_turn_taking(df, window_size_frames, fps):
+def check_audio_interaction_turn_taking(df, window_size_frames, fps, debug_video_id=None, debug_frames=None):
     """
-    Checks for turn-taking audio interaction within a sliding window.
+    Checks for turn-taking audio interaction within a sliding frame-number-based window.
     
     A turn-taking interaction is defined as the presence of both 'KCHI'
-    and another speaker (non-KCHI) within the specified time window.
+    and another speaker (non-KCHI) within the specified frame-number range.
     
     Args:
-        df (pd.DataFrame): The input DataFrame with a 'speaker' column.
-        window_size_frames (int): The size of the sliding window in frames.
+        df (pd.DataFrame): The input DataFrame with columns: ['video_id', 'frame_number', 'speaker'].
+        window_size_frames (int): Size of the sliding window in frames (full width).
         fps (int): Frames per second.
-        
+        debug_video_id (optional): If provided, logs detailed debug info for this video only.
+        debug_frames (optional): List or range of frame numbers for detailed logging.
+    
     Returns:
         pd.Series: A boolean Series indicating if an audio interaction occurred.
     """
     print(f"Analyzing turn-taking with window size: {window_size_frames} frames ({window_size_frames/fps:.1f} seconds)")
     
-    # Create binary flags for each speaker type
     df_copy = df.copy()
     df_copy['has_kchi'] = (df_copy['speaker'] == 'KCHI').astype(int)
     df_copy['has_other'] = ((~df_copy['speaker'].isna()) & (df_copy['speaker'] != 'KCHI')).astype(int)
-    
-    # Process each video separately to handle rolling windows correctly
+
+    half_window = window_size_frames // 2
     all_results = []
-    
+
     for video_id, video_df in df_copy.groupby('video_id'):
         video_df = video_df.sort_values('frame_number').reset_index(drop=True)
         
-        # Apply rolling sum to numeric columns (this works with pandas rolling)
-        kchi_window = video_df['has_kchi'].rolling(window=window_size_frames, center=True, min_periods=1).sum()
-        other_window = video_df['has_other'].rolling(window=window_size_frames, center=True, min_periods=1).sum()
+        results = []  # Will hold dicts with frame_number, video_id, and interaction status
         
-        # Turn-taking detected if both KCHI and other speakers present in window
-        video_df['is_audio_interaction'] = ((kchi_window > 0) & (other_window > 0)).astype(bool)
+        for idx, row in video_df.iterrows():
+            current_frame = row['frame_number']
+            lower_bound = current_frame - half_window
+            upper_bound = current_frame + half_window
+            
+            window_subset = video_df[(video_df['frame_number'] >= lower_bound) &
+                                    (video_df['frame_number'] <= upper_bound)]
+            
+            has_kchi = window_subset['has_kchi'].sum() > 0
+            has_other = window_subset['has_other'].sum() > 0
+            
+            results.append({
+                'video_id': video_id,
+                'frame_number': current_frame,
+                'is_audio_interaction': has_kchi and has_other,
+                'has_kchi': has_kchi,
+                'has_other': has_other
+            })
+            
+            if debug_video_id == video_id and debug_frames and current_frame in debug_frames:
+                print(f"\nFrame {current_frame} (Video {video_id}): Window {lower_bound}-{upper_bound}")
+                print(window_subset[['frame_number', 'speaker', 'has_kchi', 'has_other']])
         
-        all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
-    
-    # Combine all videos
+        all_results.append(pd.DataFrame(results))
+
+    # Combine all results
     result_df = pd.concat(all_results, ignore_index=True)
-    
-    # Merge back to original dataframe order
-    df_with_audio = df.merge(result_df, on=['frame_number', 'video_id'], how='left')
-    
-    # Fill any missing values with False
+
+    # Merge back to original DataFrame
+    df_with_audio = df.merge(result_df, on=['video_id', 'frame_number'], how='left')
     df_with_audio['is_audio_interaction'] = df_with_audio['is_audio_interaction'].fillna(False)
-    
-    audio_interaction_count = df_with_audio['is_audio_interaction'].sum()
-    print(f"Found {audio_interaction_count:,} frames with turn-taking audio interaction ({audio_interaction_count/len(df)*100:.1f}%)")
-    
-    return df_with_audio['is_audio_interaction']
+
+    print(f"\nFound {df_with_audio['is_audio_interaction'].sum():,} frames with turn-taking interaction")
+
+    return df_with_audio
 
 def run_analysis():
     """
@@ -315,7 +331,7 @@ def run_analysis():
         # ====================================================================
         print(f"🎤 Analyzing turn-taking in a {AUDIO_WINDOW_SEC}-second window...")
         # Add the audio interaction flag to the DataFrame
-        all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
+        all_data[['is_audio_interaction', 'has_kchi', 'has_other']] = check_audio_interaction_turn_taking(
             all_data, AUDIO_WINDOW_SEC * FPS, FPS
         )
         
