@@ -136,11 +136,13 @@ def get_all_analysis_data(conn):
     #   1. PersonClassifications (pd) - PRIMARY: person body detections per frame
     #   2. FaceAgg (fa) - SECONDARY: aggregated face detections with proximity
     #   3. VocalizationFrames (vf) - TERTIARY: speech activity per frame
+    #   4. Videos (v) - METADATA: video information and naming
     #
     # Join Strategy:
     #   - LEFT JOIN ensures all PersonClassifications frames are preserved
     #   - Missing face/speech data filled with NULL/0 values using COALESCE
     #   - Frame and video IDs used as joint keys for temporal alignment
+    #   - Videos table joined to provide video metadata (name, etc.)
     #
     # Combined Presence Logic:
     #   - child_present = 1 IF (child face detected OR child person detected)
@@ -148,7 +150,7 @@ def get_all_analysis_data(conn):
     #   - OR logic maximizes detection sensitivity across modalities
     #
     # Output Columns:
-    #   - Identifiers: frame_number, video_id
+    #   - Identifiers: frame_number, video_id, video_name
     #   - Person flags: has_child_person, has_adult_person (original)
     #   - Face flags: has_child_face, has_adult_face (aggregated)
     #   - Social distance: proximity (0=far, 1=close, NULL=no faces)
@@ -163,6 +165,8 @@ def get_all_analysis_data(conn):
     SELECT
         pd.frame_number,
         pd.video_id,
+        v.video_name,                -- Video metadata: human-readable video name
+        
         -- PERSON DETECTION MODALITY
         -- Raw person body detections from YOLO model
         pd.has_child_person,        -- Binary: child body detected in frame
@@ -185,6 +189,7 @@ def get_all_analysis_data(conn):
     FROM PersonClassifications pd
     LEFT JOIN FaceAgg fa ON pd.frame_number = fa.frame_number AND pd.video_id = fa.video_id
     LEFT JOIN VocalizationFrames vf ON pd.frame_number = vf.frame_number AND pd.video_id = vf.video_id
+    LEFT JOIN Videos v ON pd.video_id = v.video_id
     """
     return pd.read_sql(query, conn)
 
