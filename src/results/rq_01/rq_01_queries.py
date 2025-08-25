@@ -10,6 +10,7 @@
 
 import sqlite3
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from constants import DataPaths
 from config import DataConfig
@@ -195,24 +196,23 @@ def get_all_analysis_data(conn):
     """
     return pd.read_sql(query, conn)
 
-def check_audio_interaction_turn_taking(df, window_size_frames, fps, debug_video_id=None, debug_frames=None):
+def check_audio_interaction_turn_taking(df, window_size_frames, fps):
     """
-    Checks for turn-taking audio interaction within a sliding frame-number-based window.
+    Simple turn-taking detection using actual frame number windows.
     
-    A turn-taking interaction is defined as the presence of both 'KCHI'
-    and another speaker (non-KCHI) within the specified frame-number range.
+    For each frame, looks at a window of ±window_size_frames/2 around that frame
+    and checks if both KCHI and other speakers are present in that window.
     
-    Args:
-        df (pd.DataFrame): The input DataFrame with columns: ['video_id', 'frame_number', 'speaker'].
-        window_size_frames (int): Size of the sliding window in frames (full width).
-        fps (int): Frames per second.
-        debug_video_id (optional): If provided, logs detailed debug info for this video only.
-        debug_frames (optional): List or range of frame numbers for detailed logging.
-    
-    Returns:
-        pd.Series: A boolean Series indicating if an audio interaction occurred.
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain ['video_id', 'frame_number', 'speaker']
+    window_size_frames : int
+        Full window size in frame numbers (e.g., 100 frames = ±50 around center)
+    fps : int
+        Frames per second
     """
-    print(f"Analyzing turn-taking with window size: {window_size_frames} frames ({window_size_frames/fps:.1f} seconds)")
+    print(f"🎤 Turn-taking analysis: {window_size_frames} frame window ({window_size_frames/fps:.1f} seconds)")
     
     df_copy = df.copy()
     df_copy['has_kchi'] = (df_copy['speaker'] == 'KCHI').astype(int)
@@ -224,43 +224,44 @@ def check_audio_interaction_turn_taking(df, window_size_frames, fps, debug_video
     for video_id, video_df in df_copy.groupby('video_id'):
         video_df = video_df.sort_values('frame_number').reset_index(drop=True)
         
-        results = []  # Will hold dicts with frame_number, video_id, and interaction status
+        kchi_frames = video_df[video_df['has_kchi'] == 1]['frame_number'].tolist()
+        other_frames = video_df[video_df['has_other'] == 1]['frame_number'].tolist()
+
+        interaction_flags = []
         
-        for idx, row in video_df.iterrows():
+        for _, row in video_df.iterrows():
             current_frame = row['frame_number']
-            lower_bound = current_frame - half_window
-            upper_bound = current_frame + half_window
             
-            window_subset = video_df[(video_df['frame_number'] >= lower_bound) &
-                                    (video_df['frame_number'] <= upper_bound)]
+            # Define the window around current frame
+            window_start = current_frame - half_window
+            window_end = current_frame + half_window
             
-            has_kchi = window_subset['has_kchi'].sum() > 0
-            has_other = window_subset['has_other'].sum() > 0
+            # Get all frames in this video that fall within the window
+            window_data = video_df[
+                (video_df['frame_number'] >= window_start) & 
+                (video_df['frame_number'] <= window_end)
+            ]
             
-            results.append({
-                'video_id': video_id,
-                'frame_number': current_frame,
-                'is_audio_interaction': has_kchi and has_other,
-                'has_kchi': has_kchi,
-                'has_other': has_other
-            })
-            
-            if debug_video_id == video_id and debug_frames and current_frame in debug_frames:
-                print(f"\nFrame {current_frame} (Video {video_id}): Window {lower_bound}-{upper_bound}")
-                print(window_subset[['frame_number', 'speaker', 'has_kchi', 'has_other']])
-        
-        all_results.append(pd.DataFrame(results))
+            # Check if both KCHI and other speakers are present in window
+            has_kchi_in_window = window_data['has_kchi'].sum() > 0
+            has_other_in_window = window_data['has_other'].sum() > 0
+            is_interaction = has_kchi_in_window and has_other_in_window
+            interaction_flags.append(is_interaction)
 
-    # Combine all results
+        video_df['is_audio_interaction'] = interaction_flags
+        all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
+
+    # Combine all videos
     result_df = pd.concat(all_results, ignore_index=True)
-
-    # Merge back to original DataFrame
-    df_with_audio = df.merge(result_df, on=['video_id', 'frame_number'], how='left')
-    df_with_audio['is_audio_interaction'] = df_with_audio['is_audio_interaction'].fillna(False)
-
-    print(f"\nFound {df_with_audio['is_audio_interaction'].sum():,} frames with turn-taking interaction")
-
-    return df_with_audio
+    
+    # Merge back to original dataframe
+    df_with_interaction = df.merge(result_df, on=['frame_number', 'video_id'], how='left')
+    df_with_interaction['is_audio_interaction'] = df_with_interaction['is_audio_interaction'].fillna(False)
+    
+    total_interactions = df_with_interaction['is_audio_interaction'].sum()
+    print(f"Found {total_interactions:,} frames with turn-taking interactions ({total_interactions/len(df)*100:.1f}%)")
+    
+    return df_with_interaction['is_audio_interaction']
 
 def run_analysis():
     """
@@ -331,7 +332,7 @@ def run_analysis():
         # ====================================================================
         print(f"🎤 Analyzing turn-taking in a {AUDIO_WINDOW_SEC}-second window...")
         # Add the audio interaction flag to the DataFrame
-        all_data[['is_audio_interaction', 'has_kchi', 'has_other']] = check_audio_interaction_turn_taking(
+        all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
             all_data, AUDIO_WINDOW_SEC * FPS, FPS
         )
         
@@ -459,19 +460,7 @@ def run_analysis():
         
         # ====================================================================
         # STEP 7: DATA EXPORT AND PERSISTENCE
-        # ====================================================================
-        # Combined summary statistics (single row with all metrics)
-        summary_df = pd.DataFrame([{
-            **{f"interaction_{k}": v for k, v in summaries['interaction_distribution'].items()},
-            **{f"face_{k}": v for k, v in summaries['face_category_distribution'].items()},
-            **{f"person_{k}": v for k, v in summaries['person_category_distribution'].items()},
-            **{f"speech_{k}": v for k, v in speech_stats.items()}
-        }])
-        
-        summary_path = OUTPUT_DIR / "comprehensive_interaction_summary.csv"
-        summary_df.to_csv(summary_path, index=False)
-        print(f"✅ Saved comprehensive summary to {summary_path}")
-        
+        # ====================================================================        
         # Complete frame-level dataset (for temporal analysis)
         full_path = OUTPUT_DIR / "frame_level_social_interactions.csv"
         all_data.to_csv(full_path, index=False)
