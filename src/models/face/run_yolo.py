@@ -82,7 +82,7 @@ def load_ground_truth(label_path: str, img_width: int, img_height: int) -> Tuple
 
 def main():
     parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
-    parser.add_argument('--image', type=str, required=True,
+    parser.add_argument('--image_path', type=str, required=True,
                         help='Image filename (e.g., quantex_at_home_id261609_2022_04_01_01_000000)')
     args = parser.parse_args()
     
@@ -91,30 +91,30 @@ def main():
     
     try:
         # Parse image filename
-        basename = os.path.basename(args.image)
-        name, ext = os.path.splitext(basename)
-        parts = name.split('_')
-        video_folder = '_'.join(parts[:-1])
+        # basename = os.path.basename(args.image_path)
+        # name, ext = os.path.splitext(basename)
+        # parts = name.split('_')
+        # video_folder = '_'.join(parts[:-1])
         
-        image_path = None
-        for ext in DataConfig.VALID_EXTENSIONS:
-            potential_path = FaceDetection.IMAGES_INPUT_DIR / video_folder / (Path(args.image).stem + ext)
-            if potential_path.exists():
-                image_path = potential_path
-                break
+        # image_path = None
+        # for ext in DataConfig.VALID_EXTENSIONS:
+        #     potential_path = FaceDetection.IMAGES_INPUT_DIR / video_folder / (Path(args.image).stem + ext)
+        #     if potential_path.exists():
+        #         image_path = potential_path
+        #         break
         
-        if image_path is None:
-            raise FileNotFoundError(f"Image not found with valid extension in {FaceDetection.IMAGES_INPUT_DIR / video_folder}")
+        # if image_path is None:
+        #     raise FileNotFoundError(f"Image not found with valid extension in {FaceDetection.IMAGES_INPUT_DIR / video_folder}")
         
-        logging.info(f"Using image: {image_path}")
-        label_path = FaceDetection.LABELS_INPUT_DIR / f"{args.image}.txt"
+        logging.info(f"Using image: {args.image_path}")
+        label_path = FaceDetection.LABELS_INPUT_DIR / f"{args.image_path}.txt"
         print(f"Label path: {label_path}")
         
         # Load model and process image
         model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
         logging.info(f"Model loaded from {FaceDetection.TRAINED_WEIGHTS_PATH}")
 
-        image, results = process_image(model, image_path)
+        image, results = process_image(model, args.image_path)
         
         img_height, img_width = image.shape[:2]
         ground_truth_boxes = None
@@ -132,12 +132,12 @@ def main():
                 max_iou = max(iou_scores) if iou_scores else 0
                 logging.info(f"Detection {i+1} - {class_name} - Max IoU: {max_iou:.4f}")
         else:
-            logging.warning(f"No label file found for {args.image}. Skipping IoU and GT drawing.")
+            logging.warning(f"No label file found for {args.image_path}. Skipping IoU and GT drawing.")
         
         # Draw detections (GT only if available)
         annotated_image = draw_detections_and_ground_truth(image, results, ground_truth_boxes, ground_truth_classes)
         
-        output_filename = Path(args.image).stem + "_annotated.jpg"
+        output_filename = Path(args.image_path).stem + "_annotated.jpg"
         output_path = output_dir / output_filename
         
         output_path.parent.mkdir(parents=True, exist_ok=True)
