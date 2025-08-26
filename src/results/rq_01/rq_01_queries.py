@@ -21,6 +21,107 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 ROUND_TO = 10
 AUDIO_WINDOW_SEC = 3  # seconds
 FPS = 30  # frames per second
+PROXIMITY_THRESHOLD = 0.5
+MIN_SEGMENT_DURATION = 5.0  # minimum segment duration in seconds
+MIN_CHANGE_DURATION = 5.0  # minimum duration to consider a state change
+
+def extract_segments_with_buffering(results_df):
+    """
+    Creates mutually exclusive segments, buffering small state changes.
+
+    Args:
+        results_df (pd.DataFrame): DataFrame with 'video_id', 'frame_number', 'interaction_category'.
+
+    Returns:
+        pd.DataFrame: A DataFrame of the extracted, buffered segments.
+    """
+    print("Creating segments...")
+    
+    all_segments = []
+    
+    for video_id, video_df in results_df.groupby('video_id'):
+        video_df = video_df.sort_values('frame_number').reset_index(drop=True)
+        
+        if len(video_df) == 0:
+            continue
+                    
+        # Get interaction states and frame numbers
+        states = video_df['interaction_category'].values
+        frame_numbers = video_df['frame_number'].values
+        video_name = video_df['video_name'].iloc[0]
+        
+        # Buffer short state changes
+        buffered_states = states.copy()
+        i = 0
+        while i < len(buffered_states) - 1:
+            current_state = buffered_states[i]
+            j = i + 1
+            # Find the end of the current run of states
+            while j < len(buffered_states) and buffered_states[j] == current_state:
+                j += 1
+            
+            # The length of the current run of states
+            run_length = j - i
+            run_duration = (frame_numbers[j-1] - frame_numbers[i]) / FPS
+            
+            # If the run is short and not at the beginning/end, merge it
+            if run_duration < MIN_CHANGE_DURATION and i > 0 and j < len(buffered_states):
+                # Replace the short run with the previous state
+                buffered_states[i:j] = buffered_states[i-1]
+                # Reset i to re-evaluate from the previous point
+                i = 0
+            else:
+                i = j
+        
+        # Now, find state changes in the buffered states
+        current_state = buffered_states[0]
+        segment_start_frame = frame_numbers[0]
+        
+        for i in range(1, len(buffered_states)):
+            if buffered_states[i] != current_state:
+                segment_end_frame = frame_numbers[i-1]
+                
+                # Only keep segments longer than minimum duration
+                segment_duration = (segment_end_frame - segment_start_frame) / FPS
+                if segment_duration >= MIN_SEGMENT_DURATION:
+                    all_segments.append({
+                        'video_id': video_id,
+                        'video_name': video_name,
+                        'category': current_state,
+                        'segment_start': segment_start_frame,
+                        'segment_end': segment_end_frame,
+                        'start_time_sec': segment_start_frame / FPS,
+                        'end_time_sec': segment_end_frame / FPS,
+                        'duration_sec': segment_duration
+                    })
+                
+                current_state = buffered_states[i]
+                segment_start_frame = frame_numbers[i]
+        
+        # Handle the final segment
+        segment_end_frame = frame_numbers[-1]
+        segment_duration = (segment_end_frame - segment_start_frame) / FPS
+        if segment_duration >= MIN_SEGMENT_DURATION:
+            all_segments.append({
+                'video_id': video_id,
+                'video_name': video_name,
+                'category': current_state,
+                'segment_start': segment_start_frame,
+                'segment_end': segment_end_frame,
+                'start_time_sec': segment_start_frame / FPS,
+                'end_time_sec': segment_end_frame / FPS,
+                'duration_sec': segment_duration
+            })
+    
+    if all_segments:
+        segments_df = pd.DataFrame(all_segments)
+        segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)
+    else:
+        segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'category',
+                                          'segment_start', 'segment_end', 
+                                          'start_time_sec', 'end_time_sec', 'duration_sec'])
+    
+    return segments_df
 
 def get_all_analysis_data(conn):
     """
@@ -353,40 +454,72 @@ def run_analysis():
         # ====================================================================
         # STEP 4: SOCIAL INTERACTION CLASSIFICATION (with audio priority)
         # ====================================================================
-        # Three-tier classification system based on interaction intensity
-        def classify_interaction_with_audio(row):
+        # Three-tier classification system based on interaction intensity                
+        def classify_interaction_with_audio(row, results_df):
             """
-            Hierarchical social interaction classifier with audio priority.
+            Hierarchical social interaction classifier with dynamic proximity and audio priority.
             
             CLASSIFICATION LOGIC:
             1. INTERACTING: Active social engagement
-               - Turn-taking audio interaction detected (highest priority)
-               - OR Close proximity (>= 0.5) from video
-               - OR other person speaking from audio
-               
+            - Turn-taking audio interaction detected (highest priority)
+            - OR Very close proximity (>= PROXIMITY_THRESHOLD)
+            - OR other person speaking
+            - OR an adult face (proximity doesn't matter) + recent speech (last 3 sec)
+            
             2. CO-PRESENT SILENT: Passive social presence
-               - Person detected but no interaction indicators
-               
+            - Person detected but no active interaction indicators
+            
             3. ALONE: No social presence detected
             
             Args:
                 row: DataFrame row with detection flags and proximity values
+                results_df: The full DataFrame to enable window-based lookups
+                window_size_frames: The size of the sliding window in frames
+                PROXIMITY_THRESHOLD: The threshold for defining "close" proximity
                 
             Returns:
                 str: Interaction category ('Interacting', 'Co-present Silent', 'Alone')
             """
-            # High-confidence interaction indicators (Audio has highest priority)
-            if row['is_audio_interaction'] or (row['proximity'] >= 0.5) or row['other_speech_present']:
+    
+            # Calculate recent proximity once at the beginning
+            current_index = row.name
+            window_start = max(0, current_index - AUDIO_WINDOW_SEC)
+            recent_speech_exists = (results_df.loc[window_start:current_index, 'other_speech_present'] == 1).any()
+
+            # Check if a person is present at all, using the combined flags
+            person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
+            
+            # =======================================================================
+            # Tier 1: INTERACTING (Active engagement)
+            # This tier is evaluated first due to its high-confidence indicators.
+            # =======================================================================
+            is_active_interaction = (
+                row['is_audio_interaction'] or # turn taking
+                (row['proximity'] >= PROXIMITY_THRESHOLD) or # very close proximity
+                row['other_speech_present'] or # other person speaking
+                (row['has_adult_face'] == 1 and recent_speech_exists) # adult face + recent speech
+            )
+
+            if is_active_interaction:
                 return "Interacting"
-            # Physical presence without interaction
-            elif (row['has_child_person'] == 1) or (row['has_adult_person'] == 1):
+
+            # =======================================================================
+            # Tier 2: CO-PRESENT SILENT (Passive presence)
+            # This tier is evaluated if no active interaction is found.
+            # =======================================================================
+            if person_is_present:
                 return "Co-present Silent"
-            # No social presence detected
-            else:
-                return "Alone"
-        
-        # Now use the new classification function
-        all_data['interaction_category'] = all_data.apply(classify_interaction_with_audio, axis=1)
+
+            # =======================================================================
+            # Tier 3: ALONE (No presence)
+            # This is the default if no social presence is detected.
+            # =======================================================================
+            return "Alone"
+
+        # Use a lambda function to pass the DataFrame into the `apply` call
+        all_data['interaction_category'] = all_data.apply(
+            lambda row: classify_interaction_with_audio(row, all_data), axis=1
+        )
         
         # ====================================================================
         # STEP 5: PRESENCE PATTERN CATEGORIZATION
