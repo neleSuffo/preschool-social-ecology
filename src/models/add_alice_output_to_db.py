@@ -154,7 +154,7 @@ def process_alice_output(alice_file: Path, cursor: sqlite3.Cursor, conn: sqlite3
     
     if 'KCHI' in str(alice_file):
         speaker = 'KCHI'
-    elif 'FEM_MAL' in str(alice_file):
+    elif 'OTH' in str(alice_file):
         speaker = 'FEM_MAL'
     else:
         logging.error(f"Unknown speaker in file: {alice_file}")
@@ -226,7 +226,7 @@ def main():
         alice_model_id = create_vocalizations_table(cursor)
         
         # Process ALICE output with the model_id for KCHI and OTH
-        process_alice_output(Vocalizations.KCHI_OUTPUT_FILE, cursor, conn, alice_model_id)
+        #process_alice_output(Vocalizations.KCHI_OUTPUT_FILE, cursor, conn, alice_model_id)
         process_alice_output(Vocalizations.OTH_OUTPUT_FILE, cursor, conn, alice_model_id)
 
         # Close database connection
