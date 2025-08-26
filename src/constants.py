@@ -42,7 +42,8 @@ class AudioClassification:
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
     KCHI_OUTPUT_FILE = ALICE_OUTPUT_DIR / "KCHI_output_utterances.txt"
-    OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "FEM_MAL_output_utterances.txt"
+    #OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "FEM_MAL_output_utterances.txt"
+    OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "OTH_output_utterances.txt"
 
 class PersonClassification:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/resnet18_bilstm_20250815_221214/best.pth')
