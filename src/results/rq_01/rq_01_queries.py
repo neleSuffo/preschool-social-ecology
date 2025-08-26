@@ -424,7 +424,6 @@ def run_analysis():
         # ====================================================================
         # STEP 2: AUDIO TURN-TAKING ANALYSIS
         # ====================================================================
-        print(f"🎤 Analyzing turn-taking in a {Research_QuestionConfig.TURN_TAKING_WINDOW_SEC}-second window...")
         # Add the audio interaction flag to the DataFrame
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
             all_data, Research_QuestionConfig.TURN_TAKING_WINDOW_SEC * FPS, FPS
