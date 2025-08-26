@@ -13,17 +13,10 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from constants import DataPaths
-from config import DataConfig
+from config import DataConfig, Research_QuestionConfig
 
 # Constants
-OUTPUT_DIR = Path("/home/nele_pauline_suffo/projects/naturalistic-social-analysis/src/results/rq_01")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-ROUND_TO = 10
-AUDIO_WINDOW_SEC = 3  # seconds
-FPS = 30  # frames per second
-PROXIMITY_THRESHOLD = 0.5
-MIN_SEGMENT_DURATION = 5.0  # minimum segment duration in seconds
-MIN_CHANGE_DURATION = 5.0  # minimum duration to consider a state change
+FPS = DataConfig.FPS # frames per second
 
 def extract_segments_with_buffering(results_df):
     """
@@ -65,7 +58,7 @@ def extract_segments_with_buffering(results_df):
             run_duration = (frame_numbers[j-1] - frame_numbers[i]) / FPS
             
             # If the run is short and not at the beginning/end, merge it
-            if run_duration < MIN_CHANGE_DURATION and i > 0 and j < len(buffered_states):
+            if run_duration < Research_QuestionConfig.RQ1_MIN_CHANGE_DURATION_SEC and i > 0 and j < len(buffered_states):
                 # Replace the short run with the previous state
                 buffered_states[i:j] = buffered_states[i-1]
                 # Reset i to re-evaluate from the previous point
@@ -83,7 +76,7 @@ def extract_segments_with_buffering(results_df):
                 
                 # Only keep segments longer than minimum duration
                 segment_duration = (segment_end_frame - segment_start_frame) / FPS
-                if segment_duration >= MIN_SEGMENT_DURATION:
+                if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
                     all_segments.append({
                         'video_id': video_id,
                         'video_name': video_name,
@@ -101,7 +94,7 @@ def extract_segments_with_buffering(results_df):
         # Handle the final segment
         segment_end_frame = frame_numbers[-1]
         segment_duration = (segment_end_frame - segment_start_frame) / FPS
-        if segment_duration >= MIN_SEGMENT_DURATION:
+        if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
             all_segments.append({
                 'video_id': video_id,
                 'video_name': video_name,
@@ -120,7 +113,7 @@ def extract_segments_with_buffering(results_df):
         segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'category',
                                           'segment_start', 'segment_end', 
                                           'start_time_sec', 'end_time_sec', 'duration_sec'])
-    
+    print(f"Created {len(segments_df)} segments after buffering.")
     return segments_df
 
 def get_all_analysis_data(conn):
@@ -431,10 +424,10 @@ def run_analysis():
         # ====================================================================
         # STEP 2: AUDIO TURN-TAKING ANALYSIS
         # ====================================================================
-        print(f"🎤 Analyzing turn-taking in a {AUDIO_WINDOW_SEC}-second window...")
+        print(f"🎤 Analyzing turn-taking in a {Research_QuestionConfig.TURN_TAKING_WINDOW_SEC}-second window...")
         # Add the audio interaction flag to the DataFrame
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
-            all_data, AUDIO_WINDOW_SEC * FPS, FPS
+            all_data, Research_QuestionConfig.TURN_TAKING_WINDOW_SEC * FPS, FPS
         )
         
         # ====================================================================
@@ -483,7 +476,7 @@ def run_analysis():
     
             # Calculate recent proximity once at the beginning
             current_index = row.name
-            window_start = max(0, current_index - AUDIO_WINDOW_SEC)
+            window_start = max(0, current_index - Research_QuestionConfig.TURN_TAKING_WINDOW_SEC)
             recent_speech_exists = (results_df.loc[window_start:current_index, 'other_speech_present'] == 1).any()
 
             # Check if a person is present at all, using the combined flags
@@ -495,7 +488,7 @@ def run_analysis():
             # =======================================================================
             is_active_interaction = (
                 row['is_audio_interaction'] or # turn taking
-                (row['proximity'] >= PROXIMITY_THRESHOLD) or # very close proximity
+                (row['proximity'] >= Research_QuestionConfig.RQ1_PROXIMITY_THRESHOLD) or # very close proximity
                 row['other_speech_present'] or # other person speaking
                 (row['has_adult_face'] == 1 and recent_speech_exists) # adult face + recent speech
             )
@@ -595,10 +588,10 @@ def run_analysis():
         # STEP 7: DATA EXPORT AND PERSISTENCE
         # ====================================================================        
         # Complete frame-level dataset (for temporal analysis)
-        full_path = OUTPUT_DIR / "frame_level_social_interactions.csv"
-        all_data.to_csv(full_path, index=False)
-        print(f"✅ Saved detailed frame-level analysis to {full_path}")
-        
+        Research_QuestionConfig.RQ1_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        all_data.to_csv(Research_QuestionConfig.FRAME_LEVEL_INTERACTIONS_CSV, index=False)
+        print(f"✅ Saved detailed frame-level analysis to {Research_QuestionConfig.FRAME_LEVEL_INTERACTIONS_CSV}")
+
     print("🎯 Multimodal social interaction analysis completed successfully.")
     print(f"📈 Dataset ready for longitudinal analysis, developmental patterns, and social context modeling.")
     return summaries
