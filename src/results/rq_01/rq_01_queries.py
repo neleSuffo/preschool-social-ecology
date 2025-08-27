@@ -1,4 +1,4 @@
-# Research Question 1: Social Interaction Analysis for Naturalistic Child Language Data
+# Research Question 1: 1. How much time do children spend alone?
 #
 # This script analyzes multimodal social interaction patterns by combining:
 # - Visual person detection (child/adult bodies)
@@ -12,7 +12,7 @@ import sqlite3
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from constants import DataPaths
+from constants import DataPaths, ResearchQuestions
 from config import DataConfig, Research_QuestionConfig
 
 # Constants
@@ -290,53 +290,73 @@ def get_all_analysis_data(conn):
     """
     return pd.read_sql(query, conn)
 
-def check_audio_interaction_turn_taking(df, window_size_frames, fps):
+def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_window_sec=15):
     """
-    Simple turn-taking detection using actual frame number windows.
-    
-    For each frame, looks at a window of ±window_size_frames/2 around that frame
-    and checks if both KCHI and other speakers are present in that window.
-    
+    Adaptive turn-taking detection:
+    - Uses smaller window (base_window_sec) when child is alone
+    - Expands window (extended_window_sec) if a person or face is visible
+
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain ['video_id', 'frame_number', 'speaker']
-    window_size_frames : int
-        Full window size in frame numbers (e.g., 100 frames = ±50 around center)
+        Must contain ['video_id', 'frame_number', 'speaker', 'child_present', 'adult_present']
     fps : int
         Frames per second
+    base_window_sec : int
+        Base window size in seconds (when child is alone)
+    extended_window_sec : int
+        Extended window size in seconds (when someone else is present)
     """
-    print(f"🎤 Turn-taking analysis: {window_size_frames} frame window ({window_size_frames/fps:.1f} seconds)")
-    
+    base_window_frames = base_window_sec * fps
+    extended_window_frames = extended_window_sec * fps
+    print(f"🎤 Adaptive turn-taking: base {base_window_sec}s, extended {extended_window_sec}s")
+
     df_copy = df.copy()
     df_copy['has_kchi'] = (df_copy['speaker'] == 'KCHI').astype(int)
     df_copy['has_other'] = ((~df_copy['speaker'].isna()) & (df_copy['speaker'] != 'KCHI')).astype(int)
 
-    half_window = window_size_frames // 2
     all_results = []
 
     for video_id, video_df in df_copy.groupby('video_id'):
         video_df = video_df.sort_values('frame_number').reset_index(drop=True)
-        
-        kchi_frames = video_df[video_df['has_kchi'] == 1]['frame_number'].tolist()
-        other_frames = video_df[video_df['has_other'] == 1]['frame_number'].tolist()
-
         interaction_flags = []
-        
+
         for _, row in video_df.iterrows():
             current_frame = row['frame_number']
-            
-            # Define the window around current frame
+
+            # Check initial small window for person/face
+            half_base_window = base_window_frames // 2
+            base_start = current_frame - half_base_window
+            base_end = current_frame + half_base_window
+
+            base_window_data = video_df[
+                (video_df['frame_number'] >= base_start) &
+                (video_df['frame_number'] <= base_end)
+            ]
+
+            # Check for ANY person (child or adult) present
+            person_present_in_base = (base_window_data['child_present'].sum() > 0) or (base_window_data['adult_present'].sum() > 0)
+            # Check for ANY face (child or adult) present
+            face_present_in_base = (base_window_data['has_child_face'].sum() > 0) or (base_window_data['has_adult_face'].sum() > 0)
+
+            # Decide window size based on context
+            if person_present_in_base or face_present_in_base:
+                # Use extended window
+                half_window = extended_window_frames // 2
+            else:
+                # Use base window
+                half_window = half_base_window
+
             window_start = current_frame - half_window
             window_end = current_frame + half_window
-            
-            # Get all frames in this video that fall within the window
+
+            # Get actual window data
             window_data = video_df[
-                (video_df['frame_number'] >= window_start) & 
+                (video_df['frame_number'] >= window_start) &
                 (video_df['frame_number'] <= window_end)
             ]
-            
-            # Check if both KCHI and other speakers are present in window
+
+            # Check for interaction
             has_kchi_in_window = window_data['has_kchi'].sum() > 0
             has_other_in_window = window_data['has_other'].sum() > 0
             is_interaction = has_kchi_in_window and has_other_in_window
@@ -345,16 +365,14 @@ def check_audio_interaction_turn_taking(df, window_size_frames, fps):
         video_df['is_audio_interaction'] = interaction_flags
         all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
 
-    # Combine all videos
+    # Combine and merge back
     result_df = pd.concat(all_results, ignore_index=True)
-    
-    # Merge back to original dataframe
     df_with_interaction = df.merge(result_df, on=['frame_number', 'video_id'], how='left')
     df_with_interaction['is_audio_interaction'] = df_with_interaction['is_audio_interaction'].fillna(False)
-    
+
     total_interactions = df_with_interaction['is_audio_interaction'].sum()
-    print(f"Found {total_interactions:,} frames with turn-taking interactions ({total_interactions/len(df)*100:.1f}%)")
-    
+    print(f"Found {total_interactions:,} frames with interactions ({total_interactions/len(df)*100:.1f}%)")
+
     return df_with_interaction['is_audio_interaction']
 
 def run_analysis():
@@ -426,7 +444,7 @@ def run_analysis():
         # ====================================================================
         # Add the audio interaction flag to the DataFrame
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
-            all_data, Research_QuestionConfig.TURN_TAKING_WINDOW_SEC * FPS, FPS
+            all_data, FPS, Research_QuestionConfig.TURN_TAKING_WINDOW_SEC, 
         )
         
         # ====================================================================
@@ -587,9 +605,9 @@ def run_analysis():
         # STEP 7: DATA EXPORT AND PERSISTENCE
         # ====================================================================        
         # Complete frame-level dataset (for temporal analysis)
-        Research_QuestionConfig.RQ1_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        all_data.to_csv(Research_QuestionConfig.FRAME_LEVEL_INTERACTIONS_CSV, index=False)
-        print(f"✅ Saved detailed frame-level analysis to {Research_QuestionConfig.FRAME_LEVEL_INTERACTIONS_CSV}")
+        ResearchQuestions.RQ1_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        all_data.to_csv(ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV, index=False)
+        print(f"✅ Saved detailed frame-level analysis to {ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV}")
 
     print("🎯 Multimodal social interaction analysis completed successfully.")
     print(f"📈 Dataset ready for longitudinal analysis, developmental patterns, and social context modeling.")
