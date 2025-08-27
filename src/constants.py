@@ -87,6 +87,7 @@ class ResearchQuestions:
     CHILD_ID_CSV = RQ1_OUTPUT_DIR / "child_id_age_mapping.csv"
     
     RQ_2_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_02"
+    UTTERANCE_SEGMENTS_CSV = RQ_2_OUTPUT_DIR / "utterance_segments.csv"
     
     
     RQ_3_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_03"
