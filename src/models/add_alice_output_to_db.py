@@ -226,7 +226,7 @@ def main():
         alice_model_id = create_vocalizations_table(cursor)
         
         # Process ALICE output with the model_id for KCHI and OTH
-        #process_alice_output(Vocalizations.KCHI_OUTPUT_FILE, cursor, conn, alice_model_id)
+        process_alice_output(Vocalizations.KCHI_OUTPUT_FILE, cursor, conn, alice_model_id)
         process_alice_output(Vocalizations.OTH_OUTPUT_FILE, cursor, conn, alice_model_id)
 
         # Close database connection
