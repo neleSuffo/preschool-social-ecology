@@ -88,8 +88,8 @@ class ResearchQuestions:
     
     RQ_2_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_02"
     UTTERANCE_SEGMENTS_CSV = RQ_2_OUTPUT_DIR / "utterance_segments.csv"
-    
-    
+    WORD_SUMMARY_CSV = RQ_2_OUTPUT_DIR / "word_summary.csv"
+
     RQ_3_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_03"
     
     
