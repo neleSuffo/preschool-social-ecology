@@ -76,7 +76,7 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     segments_df = pd.read_csv(segments_csv_path)
     
     # Load age data
-    age_df = pd.read_csv("/home/nele_pauline_suffo/ProcessedData/age_group.csv")
+    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
 
     # Connect to the SQLite database and query KCHI vocalizations with video names
     conn = sqlite3.connect(db_path)
