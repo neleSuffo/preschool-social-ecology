@@ -219,24 +219,8 @@ class YoloConfig:
     
 class Research_QuestionConfig:
     """Configuration for research questions."""
-    OUTPUT_BASE_DIR = Path("/home/nele_pauline_suffo/projects/naturalistic-social-analysis/src/results")
     SAMPLE_RATE = 10 # every n-th frame is processed
-    RQ1_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_01"
     RQ1_PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
     RQ1_MIN_SEGMENT_DURATION_SEC = 5
     RQ1_MIN_CHANGE_DURATION_SEC = 3
-    TURN_TAKING_WINDOW_SEC = 3
-    FRAME_LEVEL_INTERACTIONS_CSV = RQ1_OUTPUT_DIR / "frame_level_social_interactions.csv"
-    INTERACTION_SEGMENTS_CSV = RQ1_OUTPUT_DIR / "interaction_segments.csv"
-    CHILD_ID_CSV = RQ1_OUTPUT_DIR / "child_id_age_mapping.csv"
-
-    RQ_2_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_02"
-    
-    
-    RQ_3_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_03"
-    
-    
-    RQ_4_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_04" 
-    
-    
-    RQ5_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_05"
+    TURN_TAKING_WINDOW_SEC = 10
