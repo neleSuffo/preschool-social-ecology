@@ -38,6 +38,34 @@ def create_interaction_segments():
     Returns:
         pd.DataFrame: A DataFrame of the extracted, buffered segments.
     """
+    
+    def validate_interaction_segment(category, duration, video_df, start_frame, end_frame, video_name):
+        """
+        Validate "Interacting" segments for sufficient visual evidence of people.
+        
+        Returns the final category (may downgrade "Interacting" to "Alone")
+        """
+        if category == "Interacting" and duration > 10.0:
+            # Get frames within this segment
+            segment_frames = video_df[
+                (video_df['frame_number'] >= start_frame) & 
+                (video_df['frame_number'] <= end_frame)
+            ]
+            
+            # Check if at least 5% of frames have adult or child present
+            if len(segment_frames) > 0:
+                frames_with_people = segment_frames[
+                    (segment_frames.get('child_present', 0) == 1) | 
+                    (segment_frames.get('adult_present', 0) == 1)
+                ]
+                
+                people_presence_ratio = len(frames_with_people) / len(segment_frames)
+                
+                if people_presence_ratio < 0.05:  # Less than 5%
+                    return "Alone"
+        
+        return category
+    
     print("Creating segments...")
     frame_data = pd.read_csv(ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV)
 
@@ -88,10 +116,17 @@ def create_interaction_segments():
                 # Only keep segments longer than minimum duration
                 segment_duration = (segment_end_frame - segment_start_frame) / FPS
                 if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
+                    
+                    # Validate "Interacting" segments for visual evidence
+                    final_category = validate_interaction_segment(
+                        current_state, segment_duration, video_df, 
+                        segment_start_frame, segment_end_frame, video_name
+                    )
+                    
                     all_segments.append({
                         'video_id': video_id,
                         'video_name': video_name,
-                        'category': current_state,
+                        'category': final_category,
                         'segment_start': segment_start_frame,
                         'segment_end': segment_end_frame,
                         'start_time_sec': segment_start_frame / FPS,
@@ -106,10 +141,17 @@ def create_interaction_segments():
         segment_end_frame = frame_numbers[-1]
         segment_duration = (segment_end_frame - segment_start_frame) / FPS
         if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
+            
+            # Validate "Interacting" segments for visual evidence
+            final_category = validate_interaction_segment(
+                current_state, segment_duration, video_df, 
+                segment_start_frame, segment_end_frame, video_name
+            )
+            
             all_segments.append({
                 'video_id': video_id,
                 'video_name': video_name,
-                'category': current_state,
+                'category': final_category,
                 'segment_start': segment_start_frame,
                 'segment_end': segment_end_frame,
                 'start_time_sec': segment_start_frame / FPS,
