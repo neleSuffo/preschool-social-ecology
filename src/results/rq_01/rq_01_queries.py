@@ -9,12 +9,17 @@
 # when children are alone vs. in various types of social interactions.
 
 import sqlite3
+import re
 import pandas as pd
 from constants import DataPaths, ResearchQuestions
 from config import DataConfig, Research_QuestionConfig
 
 # Constants
 FPS = DataConfig.FPS # frames per second
+
+def extract_child_id(video_name):
+    match = re.search(r'id(\d{6})', video_name)
+    return match.group(1) if match else None
 
 def extract_segments_with_buffering(results_df):
     """
@@ -111,6 +116,46 @@ def extract_segments_with_buffering(results_df):
         segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'category',
                                           'segment_start', 'segment_end', 
                                           'start_time_sec', 'end_time_sec', 'duration_sec'])
+        
+    # Add child_id to segments_df using extract_child_id
+    segments_df['child_id'] = segments_df['video_name'].apply(extract_child_id)
+    
+    # Load subjects CSV to get age information
+    try:
+        subjects_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+        print(f"📋 Loaded subjects data with {len(subjects_df)} records for age mapping")
+        
+        # Merge age information based on video_name
+        segments_df = segments_df.merge(
+            subjects_df[['video_name', 'age_at_recording']], 
+            on='video_name', 
+            how='left'
+        )
+        
+        # Check merge success
+        missing_age_count = segments_df['age_at_recording'].isna().sum()
+        if missing_age_count > 0:
+            print(f"⚠️ Warning: {missing_age_count} segments missing age data ({missing_age_count/len(segments_df)*100:.1f}%)")
+            
+            # Show some examples of unmatched video names
+            unmatched_videos = segments_df[segments_df['age_at_recording'].isna()]['video_name'].unique()[:5]
+            print(f"Examples of unmatched video names: {list(unmatched_videos)}")
+        else:
+            print("✅ All segments successfully matched with age data")
+            
+    except FileNotFoundError:
+        print(f"⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
+        print("Proceeding without age information")
+        segments_df['age_at_recording'] = None
+    except Exception as e:
+        print(f"⚠️ Warning: Error loading subjects data: {e}")
+        print("Proceeding without age information")
+        segments_df['age_at_recording'] = None
+
+    # Reorder columns so that child_id and age_at_recording come after video_name
+    cols = ['video_name', 'child_id', 'age_at_recording'] + [col for col in segments_df.columns if col not in ['video_name', 'child_id', 'age_at_recording']]
+    segments_df = segments_df.loc[:, cols]
+
     print(f"Created {len(segments_df)} segments after buffering.")
     return segments_df
 
@@ -599,16 +644,47 @@ def run_analysis():
         
         # ====================================================================
         # STEP 7: DATA EXPORT AND PERSISTENCE
+        # ====================================================================   
+        # ====================================================================
+        # STEP 7: DATA EXPORT AND PERSISTENCE
         # ====================================================================        
+        # Load subjects CSV to get age information
+        try:
+            subjects_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+            print(f"📋 Loaded subjects data with {len(subjects_df)} records")
+            
+            # Merge age information based on video_name
+            all_data = all_data.merge(
+                subjects_df[['video_name', 'age_at_recording']], 
+                on='video_name', 
+                how='left'
+            )
+            
+            # Check merge success
+            missing_age_count = all_data['age_at_recording'].isna().sum()
+            if missing_age_count > 0:
+                print(f"⚠️ Warning: {missing_age_count} frames missing age data ({missing_age_count/len(all_data)*100:.1f}%)")
+                
+                # Show some examples of unmatched video names
+                unmatched_videos = all_data[all_data['age_at_recording'].isna()]['video_name'].unique()[:5]
+                print(f"Examples of unmatched video names: {list(unmatched_videos)}")
+            
+            # Reorder columns to put age near the beginning
+            cols = all_data.columns.tolist()
+            new_order = ['frame_number', 'video_id', 'video_name', 'age_at_recording'] + [col for col in cols if col not in ['frame_number', 'video_id', 'video_name', 'age_at_recording']]
+            all_data = all_data[new_order]
+            
+        except FileNotFoundError:
+            print(f"⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
+            print("Proceeding without age information")
+        except Exception as e:
+            print(f"⚠️ Warning: Error loading subjects data: {e}")
+            print("Proceeding without age information")
+        
         # Complete frame-level dataset (for temporal analysis)
         ResearchQuestions.RQ1_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         all_data.to_csv(ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV, index=False)
-        print(f"✅ Saved detailed frame-level analysis to {ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV}")
-
-    print("🎯 Multimodal social interaction analysis completed successfully.")
-    print(f"📈 Dataset ready for longitudinal analysis, developmental patterns, and social context modeling.")
-    return summaries
-
+    print(f"✅ Saved detailed frame-level analysis to {ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV}")
 
 if __name__ == "__main__":
     run_analysis()
