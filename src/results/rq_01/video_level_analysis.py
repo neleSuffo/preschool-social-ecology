@@ -23,18 +23,7 @@ def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
 
-def create_interaction_segments():
-    """
-    Creates mutually exclusive segments, buffering small state changes.
-
-    Args:
-        results_df (pd.DataFrame): DataFrame with 'video_id', 'frame_number', 'interaction_category'.
-
-    Returns:
-        pd.DataFrame: A DataFrame of the extracted, buffered segments.
-    """
-    
-    def validate_interaction_segment(category, duration, video_df, start_frame, end_frame, video_name):
+def validate_interaction_segment(category, duration, video_df, start_frame, end_frame, video_name):
         """
         Validate "Interacting" segments for sufficient visual evidence of people.
         
@@ -61,8 +50,19 @@ def create_interaction_segments():
         
         return category
     
+def create_interaction_segments(output_dir: Path, frame_data_path: Path):
+    """
+    Creates mutually exclusive segments, buffering small state changes and stores them.
+
+    Parameters
+    ----------
+    output_dir : Path
+        Directory to save the output segments.
+    frame_data_path : Path
+        Path to the CSV file containing frame-level interaction data.
+    """    
     print("Creating segments...")
-    frame_data = pd.read_csv(ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV)
+    frame_data = pd.read_csv(frame_data_path)
 
     all_segments = []
 
@@ -259,8 +259,10 @@ def create_interaction_segments():
             print(f"   Co-present Silent: {copresent_segments} ({copresent_segments/total_segments*100:.1f}%)")
 
     print(f"Created {len(segments_df)} segments after buffering and merging.")
-    segments_df.to_csv(ResearchQuestions.INTERACTION_SEGMENTS_CSV, index=False)
+    file_name = ResearchQuestions.INTERACTION_SEGMENTS_CSV.name
+    segments_df.to_csv(output_dir / file_name, index=False)
+    print(f"Saved interaction segments to {output_dir / file_name}")
 
 if __name__ == "__main__":
     # Just extract segments from existing frame data
-    create_interaction_segments()
+    create_interaction_segments(output_dir=ResearchQuestions.RQ1_OUTPUT_DIR, frame_data_path=ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV)
