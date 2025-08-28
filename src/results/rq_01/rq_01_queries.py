@@ -10,8 +10,6 @@
 
 import sqlite3
 import pandas as pd
-import numpy as np
-from pathlib import Path
 from constants import DataPaths, ResearchQuestions
 from config import DataConfig, Research_QuestionConfig
 
@@ -203,13 +201,10 @@ def get_all_analysis_data(conn):
     #         - Consistent with PersonClassifications frame numbering
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS VocalizationFrames AS
-    SELECT DISTINCT 
+    SELECT 
         video_id,
         frame_number,
-        CASE 
-            WHEN COUNT(CASE WHEN speaker = 'KCHI' THEN 1 END) > 0 THEN 'KCHI'
-            ELSE MAX(speaker)
-        END as speaker
+        REPLACE(GROUP_CONCAT(DISTINCT speaker), ',', ';') AS speaker
     FROM (
         SELECT 
             v.video_id,
@@ -311,9 +306,9 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
     extended_window_frames = extended_window_sec * fps
     print(f"🎤 Adaptive turn-taking: base {base_window_sec}s, extended {extended_window_sec}s")
 
-    df_copy = df.copy()
-    df_copy['has_kchi'] = (df_copy['speaker'] == 'KCHI').astype(int)
-    df_copy['has_other'] = ((~df_copy['speaker'].isna()) & (df_copy['speaker'] != 'KCHI')).astype(int)
+    df_copy = df.copy()   
+    df_copy['has_kchi'] = df_copy['speaker'].str.contains('KCHI', na=False).astype(int)
+    df_copy['has_other'] = df_copy['speaker'].str.contains('FEM_MAL', na=False).astype(int)
 
     all_results = []
 
@@ -397,6 +392,7 @@ def run_analysis():
        - "Interacting": Active social engagement detected
          * High proximity faces (>= 0.5) indicating close social contact
          * OR other person speaking (active communication)
+         * OR person detected with recent speech
        
        - "Co-present Silent": Passive social presence 
          * People detected but no active interaction indicators
@@ -451,9 +447,9 @@ def run_analysis():
         # STEP 3: SPEECH MODALITY FEATURE EXTRACTION
         # ====================================================================
         # Binary flags for speech presence by speaker type
-        all_data['kchi_speech_present'] = (all_data['speaker'] == 'KCHI').astype(int)
-        all_data['other_speech_present'] = ((~all_data['speaker'].isna()) & (all_data['speaker'] != 'KCHI')).astype(int)
-        
+        all_data['kchi_speech_present'] = all_data['speaker'].str.contains('KCHI', na=False).astype(int)
+        all_data['other_speech_present'] = all_data['speaker'].str.contains('FEM_MAL', na=False).astype(int)
+
         speech_stats = {
             'kchi_frames': all_data['kchi_speech_present'].sum(),
             'other_speech_frames': all_data['other_speech_present'].sum(),
@@ -613,8 +609,6 @@ def run_analysis():
     print(f"📈 Dataset ready for longitudinal analysis, developmental patterns, and social context modeling.")
     return summaries
 
-def main():
-    return run_analysis()
 
 if __name__ == "__main__":
     run_analysis()
