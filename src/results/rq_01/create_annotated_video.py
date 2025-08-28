@@ -1,20 +1,13 @@
 # Research Question 1. How much time do children spend alone?
 #
-# This script analyzes multimodal social interaction patterns by combining:
-# - Visual person detection (child/adult bodies)
-# - Visual face detection (child/adult faces with proximity measures)  
-# - Audio vocalization detection (child/other speaker identification)
-#
-# The analysis produces frame-level classifications of social contexts to understand
-# when children are alone vs. in various types of social interactions.
+# This script creates an annotated video by overlaying interaction segments on the original video.
 
-import sqlite3
 import cv2
-import re
 import sys
 import pandas as pd
 import subprocess
 import shutil
+import fire
 from pathlib import Path
 
 # Get the src directory (2 levels up from current notebook location)
@@ -263,7 +256,6 @@ def create_annotated_video_from_csv(video_path):
     ]
     try:
         subprocess.run(cmd_video, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"✅ Video stream created successfully: {final_output_dir / video_from_frames_name}")
     except FileNotFoundError:
         print("❌ Error: FFMPEG not found. Please install it and ensure it's in your system's PATH.")
         shutil.rmtree(temp_frames_dir)
@@ -294,7 +286,32 @@ def create_annotated_video_from_csv(video_path):
         shutil.rmtree(temp_frames_dir)
         return
 
+def main(video_path):
+    """
+    Create annotated video from existing segments and frame-level data.
+    
+    Args:
+        video_path (str): Path to the input video file to annotate
+    
+    Example:
+        python create_annotated_video.py /path/to/video.mp4
+        python create_annotated_video.py "/Users/nelesuffo/Promotion/ProcessedData/videos_example/quantex_at_home_id255706_2022_04_12_01.MP4"
+    """
+    if not video_path:
+        print("❌ Error: Please provide a video path")
+        print("Usage: python create_annotated_video.py <video_path>")
+        return
+    
+    video_path = Path(video_path)
+    if not video_path.exists():
+        print(f"❌ Error: Video file not found at {video_path}")
+        return
+    
+    if not video_path.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
+        print(f"⚠️ Warning: Unusual video file extension: {video_path.suffix}")
+    
+    print(f"🎬 Creating annotated video for: {video_path.name}")
+    create_annotated_video_from_csv(video_path)
+
 if __name__ == "__main__":
-    # Create annotated video from existing CSV
-    VIDEO_PATH = "/Users/nelesuffo/Promotion/ProcessedData/videos_example/quantex_at_home_id255944_2022_03_08_01.MP4"
-    create_annotated_video_from_csv(VIDEO_PATH)
+    fire.Fire(main)
