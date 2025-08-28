@@ -258,12 +258,10 @@ def create_annotated_video_from_csv(video_path):
         subprocess.run(cmd_video, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except FileNotFoundError:
         print("❌ Error: FFMPEG not found. Please install it and ensure it's in your system's PATH.")
-        shutil.rmtree(temp_frames_dir)
         return
     except subprocess.CalledProcessError as e:
         print(f"❌ Error during FFMPEG video creation: {e}")
         print(f"Stderr: {e.stderr.decode()}")
-        shutil.rmtree(temp_frames_dir)
         return
     
     # Step 2: Merge video with original audio
@@ -283,8 +281,14 @@ def create_annotated_video_from_csv(video_path):
         print(f"✅ Final video with audio saved to: {final_output_dir / final_output_name}")
     except Exception as e:
         print(f"❌ Error during audio merging: {e}")
-        shutil.rmtree(temp_frames_dir)
         return
+    finally:
+        # Step 3: Cleanup temporary files
+        print("\n🧹 Cleaning up temporary files...")
+        if video_from_frames_name.exists():
+            video_from_frames_name.unlink()
+            shutil.rmtree(temp_frames_dir, ignore_errors=True)
+            print(f"✅ Deleted temporary frames directory: {temp_frames_dir} and video: {video_from_frames_name}")
 
 def main(video_path):
     """
