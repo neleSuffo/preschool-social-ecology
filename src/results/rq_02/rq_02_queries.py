@@ -1,4 +1,4 @@
-# Research Question: How much language does the key child produce (utterances and words)?
+# Research Question: 2. How much language does the key child produce (utterances and words)?
 
 import sqlite3
 import pandas as pd

@@ -1,4 +1,4 @@
-# Research Question 1: 1. How much time do children spend alone?
+# Research Question 1. How much time do children spend alone?
 #
 # This script analyzes multimodal social interaction patterns by combining:
 # - Visual person detection (child/adult bodies)
