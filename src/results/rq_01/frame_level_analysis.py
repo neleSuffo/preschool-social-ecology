@@ -1,12 +1,8 @@
 # Research Question 1. How much time do children spend alone?
 #
-# This script analyzes multimodal social interaction patterns by combining:
-# - Visual person detection (child/adult bodies)
-# - Visual face detection (child/adult faces with proximity measures)  
-# - Audio vocalization detection (child/other speaker identification)
-#
-# The analysis produces frame-level classifications of social contexts to understand
-# when children are alone vs. in various types of social interactions.
+# This script analyzes frame-level data to determine the amount of time children spend alone.
+# It uses a SQLite database to query the relevant data.
+# The analysis focuses on identifying frames where children are not in the presence of adults.
 
 import sqlite3
 import re
