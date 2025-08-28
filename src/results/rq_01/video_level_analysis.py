@@ -1,12 +1,7 @@
 # Research Question 1. How much time do children spend alone?
 #
-# This script analyzes multimodal social interaction patterns by combining:
-# - Visual person detection (child/adult bodies)
-# - Visual face detection (child/adult faces with proximity measures)  
-# - Audio vocalization detection (child/other speaker identification)
-#
-# The analysis produces frame-level classifications of social contexts to understand
-# when children are alone vs. in various types of social interactions.
+# This script generates video-level segments to analyze the amount of time children spend alone.
+# It applies post-processing to the frame-level data to create these segments.
 
 import sqlite3
 import re
@@ -45,7 +40,7 @@ def create_interaction_segments():
         
         Returns the final category (may downgrade "Interacting" to "Alone")
         """
-        if category == "Interacting" and duration > 10.0:
+        if category == "Interacting" and duration > Research_QuestionConfig.VALIDATION_SEGMENT_DURATION_SEC:
             # Get frames within this segment
             segment_frames = video_df[
                 (video_df['frame_number'] >= start_frame) & 
@@ -60,8 +55,8 @@ def create_interaction_segments():
                 ]
                 
                 people_presence_ratio = len(frames_with_people) / len(segment_frames)
-                
-                if people_presence_ratio < 0.05:  # Less than 5%
+
+                if people_presence_ratio < Research_QuestionConfig.PERSON_PRESENT_THRESHOLD:  # Less than 5%
                     return "Alone"
         
         return category
@@ -162,6 +157,49 @@ def create_interaction_segments():
     if all_segments:
         segments_df = pd.DataFrame(all_segments)
         segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)
+        
+        # Post-processing: Merge segments of the same category with small gaps
+        print("Post-processing: Merging segments with small gaps...")
+        merged_segments = []
+        
+        for video_id, video_segments in segments_df.groupby('video_id'):
+            video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=True)
+            
+            if len(video_segments) == 0:
+                continue
+            
+            current_segment = video_segments.iloc[0].copy()
+            merge_count = 0
+            
+            for i in range(1, len(video_segments)):
+                next_segment = video_segments.iloc[i]
+                
+                # Calculate gap between current segment end and next segment start
+                gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
+                
+                # If same category and gap is less than 3 seconds, merge
+                if (current_segment['category'] == next_segment['category'] and 
+                    gap_duration < 5.0):
+                    
+                    # Extend current segment to include the next one
+                    current_segment['segment_end'] = next_segment['segment_end']
+                    current_segment['end_time_sec'] = next_segment['end_time_sec']
+                    current_segment['duration_sec'] = (
+                        current_segment['end_time_sec'] - current_segment['start_time_sec']
+                    )
+                    merge_count += 1
+                    
+                else:
+                    # Save current segment and start a new one
+                    merged_segments.append(current_segment.to_dict())
+                    current_segment = next_segment.copy()
+            
+            # Don't forget the last segment
+            merged_segments.append(current_segment.to_dict())
+        
+        if merged_segments:
+            segments_df = pd.DataFrame(merged_segments)
+            segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)        
     else:
         segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'category',
                                         'segment_start', 'segment_end', 
@@ -206,7 +244,21 @@ def create_interaction_segments():
     cols = ['video_name', 'child_id', 'age_at_recording'] + [col for col in segments_df.columns if col not in ['video_name', 'child_id', 'age_at_recording']]
     segments_df = segments_df.loc[:, cols]
 
-    print(f"Created {len(segments_df)} segments after buffering.")
+    # Final summary statistics
+    if len(segments_df) > 0:
+        total_segments = len(segments_df)
+        interacting_segments = len(segments_df[segments_df['category'] == 'Interacting'])
+        alone_segments = len(segments_df[segments_df['category'] == 'Alone'])
+        copresent_segments = len(segments_df[segments_df['category'] == 'Co-present Silent'])
+        
+        print(f"\n📊 Final segment summary:")
+        print(f"   Total segments: {total_segments}")
+        print(f"   Interacting: {interacting_segments} ({interacting_segments/total_segments*100:.1f}%)")
+        print(f"   Alone: {alone_segments} ({alone_segments/total_segments*100:.1f}%)")
+        if copresent_segments > 0:
+            print(f"   Co-present Silent: {copresent_segments} ({copresent_segments/total_segments*100:.1f}%)")
+
+    print(f"Created {len(segments_df)} segments after buffering and merging.")
     segments_df.to_csv(ResearchQuestions.INTERACTION_SEGMENTS_CSV, index=False)
 
 if __name__ == "__main__":
