@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Optional, Tuple
 
 VALID_TARGETS = {"person_face", "all", "person_cls", "face_cls", "gaze_cls", "face_det", "gaze_cls_vit"}
 
@@ -84,7 +83,6 @@ class ResearchQuestions:
     RQ1_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_01"
     FRAME_LEVEL_INTERACTIONS_CSV = RQ1_OUTPUT_DIR / "frame_level_social_interactions.csv"
     INTERACTION_SEGMENTS_CSV = RQ1_OUTPUT_DIR / "interaction_segments.csv"
-    CHILD_ID_CSV = RQ1_OUTPUT_DIR / "child_id_age_mapping.csv"
     
     RQ_2_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_02"
     UTTERANCE_SEGMENTS_CSV = RQ_2_OUTPUT_DIR / "utterance_segments.csv"
@@ -95,5 +93,5 @@ class ResearchQuestions:
     
     RQ_4_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_04" 
     PRESENCE_COUNTS_CSV = RQ_4_OUTPUT_DIR / "presence_counts.csv"
-    
+
     RQ5_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_05"
