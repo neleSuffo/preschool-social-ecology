@@ -14,13 +14,13 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import DataPaths, ResearchQuestions
-from config import DataConfig, Research_QuestionConfig
+from constants import ResearchQuestions
+from config import DataConfig
 
 # Constants
 FPS = DataConfig.FPS # frames per second
 
-def create_annotated_video_from_csv(video_path):
+def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
     """
     Annotate a video and create a final video file by combining
     annotated frames with the original audio using FFMPEG.
@@ -28,7 +28,9 @@ def create_annotated_video_from_csv(video_path):
     Parameters
     ----------
     video_path (str/Path): 
-        Path to the input video file
+        Path to the input video file or directory containing video files.
+    output_dir (str/Path): 
+        Path to the output directory where the annotated video will be saved.
     """
     print("=" * 60)
     print("CREATING ANNOTATED VIDEO WITH FFMPEG")
@@ -40,7 +42,6 @@ def create_annotated_video_from_csv(video_path):
     
     # Define temporary and final output directories
     temp_frames_dir = Path("temp_annotated_frames")
-    final_output_dir = Path(ResearchQuestions.OUTPUT_BASE_DIR)
     
     # Create necessary directories
     shutil.rmtree(temp_frames_dir, ignore_errors=True) # Clean up old temp directory
@@ -300,7 +301,7 @@ def create_annotated_video_from_csv(video_path):
         shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
 
-def main(input_path):
+def main(input_path, final_output_dir):
     """
     Create annotated video(s) from existing segments and frame-level data.
     
@@ -319,6 +320,12 @@ def main(input_path):
         # Specific example
         python create_annotated_video.py "/Users/nelesuffo/Promotion/ProcessedData/videos_example/"
     """
+    if not final_output_dir:
+        print("❌ Error: Please provide a final output directory")
+        return
+
+    final_output_dir = Path(final_output_dir)
+    
     if not input_path:
         print("❌ Error: Please provide an input path")
         print("Usage: python create_annotated_video.py <video_path_or_folder>")
@@ -337,7 +344,7 @@ def main(input_path):
             return
         
         print(f"🎬 Processing single video: {input_path.name}")
-        result = create_annotated_video_from_csv(input_path)
+        result = create_annotated_video_from_csv(input_path, final_output_dir)
         
         if result is not None:
             print(f"✅ Successfully processed: {input_path.name}")
@@ -367,7 +374,7 @@ def main(input_path):
             print(f"{'='*60}")
             
             try:
-                result = create_annotated_video_from_csv(video_file)
+                result = create_annotated_video_from_csv(video_file, final_output_dir)
                 if result is not None:
                     successful += 1
                     print(f"✅ Successfully processed: {video_file.name}")
