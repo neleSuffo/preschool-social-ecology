@@ -224,3 +224,6 @@ class Research_QuestionConfig:
     RQ1_MIN_SEGMENT_DURATION_SEC = 5
     RQ1_MIN_CHANGE_DURATION_SEC = 3
     TURN_TAKING_WINDOW_SEC = 10
+    GAP_MERGE_DURATION_SEC = 5
+    VALIDATION_SEGMENT_DURATION_SEC = 10
+    PERSON_PRESENT_THRESHOLD = 0.05 # threshold for considering a person present in a window segment with only audio turn taking
