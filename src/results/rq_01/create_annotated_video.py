@@ -256,13 +256,16 @@ def create_annotated_video_from_csv(video_path):
     ]
     try:
         subprocess.run(cmd_video, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(f"✅ Video frames combined successfully")
     except FileNotFoundError:
         print("❌ Error: FFMPEG not found. Please install it and ensure it's in your system's PATH.")
-        return
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
+        return None
     except subprocess.CalledProcessError as e:
         print(f"❌ Error during FFMPEG video creation: {e}")
         print(f"Stderr: {e.stderr.decode()}")
-        return
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
+        return None
     
     # Step 2: Merge video with original audio
     cmd_audio = [
@@ -279,43 +282,115 @@ def create_annotated_video_from_csv(video_path):
     try:
         subprocess.run(cmd_audio, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         print(f"✅ Final video with audio saved to: {final_output_dir / final_output_name}")
+        
+        # Cleanup temporary files
+        print("\n🧹 Cleaning up temporary files...")
+        if (final_output_dir / video_from_frames_name).exists():
+            (final_output_dir / video_from_frames_name).unlink()
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
+        print(f"✅ Cleaned up temporary files")
+        
+        return str(final_output_dir / final_output_name)  # Return path to successful output
+        
     except Exception as e:
         print(f"❌ Error during audio merging: {e}")
-        return
-    finally:
-        # Step 3: Cleanup temporary files
-        print("\n🧹 Cleaning up temporary files...")
-        if video_from_frames_name.exists():
-            video_from_frames_name.unlink()
-            shutil.rmtree(temp_frames_dir, ignore_errors=True)
-            print(f"✅ Deleted temporary frames directory: {temp_frames_dir} and video: {video_from_frames_name}")
+        # Still cleanup on failure
+        if (final_output_dir / video_from_frames_name).exists():
+            (final_output_dir / video_from_frames_name).unlink()
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
+        return None
 
-def main(video_path):
+def main(input_path):
     """
-    Create annotated video from existing segments and frame-level data.
+    Create annotated video(s) from existing segments and frame-level data.
     
     Args:
-        video_path (str): Path to the input video file to annotate
+        input_path (str): Path to either:
+            - A single video file to annotate
+            - A folder containing multiple video files to process
     
     Example:
-        python create_annotated_video.py /path/to/video.mp4
-        python create_annotated_video.py "/Users/nelesuffo/Promotion/ProcessedData/videos_example/quantex_at_home_id255706_2022_04_12_01.MP4"
+        # Single video file
+        python create_annotated_video.py "/path/to/video.mp4"
+        
+        # Folder with multiple videos
+        python create_annotated_video.py "/path/to/videos_folder/"
+        
+        # Specific example
+        python create_annotated_video.py "/Users/nelesuffo/Promotion/ProcessedData/videos_example/"
     """
-    if not video_path:
-        print("❌ Error: Please provide a video path")
-        print("Usage: python create_annotated_video.py <video_path>")
+    if not input_path:
+        print("❌ Error: Please provide an input path")
+        print("Usage: python create_annotated_video.py <video_path_or_folder>")
         return
     
-    video_path = Path(video_path)
-    if not video_path.exists():
-        print(f"❌ Error: Video file not found at {video_path}")
+    input_path = Path(input_path)
+    if not input_path.exists():
+        print(f"❌ Error: Path not found at {input_path}")
         return
     
-    if not video_path.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
-        print(f"⚠️ Warning: Unusual video file extension: {video_path.suffix}")
-    
-    print(f"🎬 Creating annotated video for: {video_path.name}")
-    create_annotated_video_from_csv(video_path)
+    # Determine if input is a file or directory
+    if input_path.is_file():
+        # Single file processing
+        if not input_path.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.MP4']:
+            print(f"❌ Error: Unsupported video file extension: {input_path.suffix}")
+            return
+        
+        print(f"🎬 Processing single video: {input_path.name}")
+        result = create_annotated_video_from_csv(input_path)
+        
+        if result is not None:
+            print(f"✅ Successfully processed: {input_path.name}")
+        else:
+            print(f"❌ Failed to process: {input_path.name}")
+            
+    elif input_path.is_dir():
+        # Directory processing - find all video files
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.MP4', '.AVI', '.MOV', '.MKV'}
+        video_files = [f for f in input_path.iterdir() 
+                    if f.is_file() and f.suffix in video_extensions]
+        
+        if not video_files:
+            print(f"❌ Error: No video files found in {input_path}")
+            print(f"Looking for extensions: {', '.join(sorted(video_extensions))}")
+            return
+        
+        print(f"📁 Found {len(video_files)} video files in: {input_path}")
+        print(f"🎬 Processing multiple videos...")
+        
+        successful = 0
+        failed = 0
+        
+        for i, video_file in enumerate(sorted(video_files), 1):
+            print(f"\n{'='*60}")
+            print(f"Processing video {i}/{len(video_files)}: {video_file.name}")
+            print(f"{'='*60}")
+            
+            try:
+                result = create_annotated_video_from_csv(video_file)
+                if result is not None:
+                    successful += 1
+                    print(f"✅ Successfully processed: {video_file.name}")
+                else:
+                    failed += 1
+                    print(f"❌ Failed to process: {video_file.name}")
+            except Exception as e:
+                failed += 1
+                print(f"❌ Error processing {video_file.name}: {e}")
+        
+        # Summary
+        print(f"\n{'='*60}")
+        print(f"📊 BATCH PROCESSING SUMMARY")
+        print(f"{'='*60}")
+        print(f"Total videos: {len(video_files)}")
+        print(f"✅ Successful: {successful}")
+        print(f"❌ Failed: {failed}")
+        
+        if successful > 0:
+            print(f"🎉 Batch processing completed with {successful} successful annotations!")
+        
+    else:
+        print(f"❌ Error: {input_path} is neither a file nor a directory")
 
 if __name__ == "__main__":
     fire.Fire(main)
