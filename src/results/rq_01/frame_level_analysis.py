@@ -280,7 +280,7 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
 
     return df_with_interaction['is_audio_interaction']
 
-def run_frame_level_analysis():
+def run_frame_level_analysis(db_path: Path, output_dir: Path):
     """
     Main analysis function that orchestrates multimodal social interaction analysis.
     
@@ -333,10 +333,19 @@ def run_frame_level_analysis():
     - Social context differentiation: Distinguishes active interaction from mere presence
     - Comprehensive coverage: Analyzes entire video corpus systematically
     
-    Returns:
-        dict: Summary statistics including interaction and presence distributions
+    Parameters
+    ----------
+    db_path : Path
+        Path to the SQLite database containing analysis data.
+    output_dir : Path
+        Directory where output files will be saved.
+
+    Returns
+    -------
+    dict: 
+        Summary statistics including interaction and presence distributions
     """
-    with sqlite3.connect(DataPaths.INFERENCE_DB_PATH) as conn:
+    with sqlite3.connect(db_path) as conn:
         print("🔄 Running comprehensive multimodal social interaction analysis...")
         
         # ====================================================================
@@ -547,11 +556,12 @@ def run_frame_level_analysis():
             print("Proceeding without age information")
         
         # Complete frame-level dataset (for temporal analysis)
-        ResearchQuestions.RQ1_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        all_data.to_csv(ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV, index=False)
-    print(f"✅ Saved detailed frame-level analysis to {ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # use the last stem form this variable and append it with output_dir
+        file_name = ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV.name  # -> "frame_level_interactions.csv"
+        all_data.to_csv(output_dir / file_name, index=False)
+    print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
 
 if __name__ == "__main__":
     # Run the main analysis to create CSV files
-    run_frame_level_analysis()
-        
+    run_frame_level_analysis(db_path=DataPaths.INFERENCE_DB_PATH, output_dir=ResearchQuestions.RQ1_OUTPUT_DIR)
