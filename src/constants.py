@@ -94,6 +94,6 @@ class ResearchQuestions:
     
     
     RQ_4_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_04" 
-    
+    PRESENCE_COUNTS_CSV = RQ_4_OUTPUT_DIR / "presence_counts.csv"
     
     RQ5_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_05"
