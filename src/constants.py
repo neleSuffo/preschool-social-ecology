@@ -79,19 +79,9 @@ class Proximity:
     ADULT_FAR_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_0.jpg")
     
 class Inference:
-    OUTPUT_BASE_DIR = BasePaths.HOME_DIR / "src/results"
-    RQ1_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_01"
-    FRAME_LEVEL_INTERACTIONS_CSV = RQ1_OUTPUT_DIR / "frame_level_social_interactions.csv"
-    INTERACTION_SEGMENTS_CSV = RQ1_OUTPUT_DIR / "interaction_segments.csv"
-    
-    RQ_2_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_02"
-    UTTERANCE_SEGMENTS_CSV = RQ_2_OUTPUT_DIR / "utterance_segments.csv"
-    WORD_SUMMARY_CSV = RQ_2_OUTPUT_DIR / "word_summary.csv"
-
-    RQ_3_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_03"
-    
-    
-    RQ_4_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_04" 
-    PRESENCE_COUNTS_CSV = RQ_4_OUTPUT_DIR / "presence_counts.csv"
-
-    RQ5_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_05"
+    BASE_OUTPUT_DIR = BasePaths.HOME_DIR / "src/results"
+    FRAME_LEVEL_INTERACTIONS_CSV = BASE_OUTPUT_DIR / "frame_level_social_interactions.csv"
+    INTERACTION_SEGMENTS_CSV = BASE_OUTPUT_DIR / "interaction_segments.csv"
+    UTTERANCE_SEGMENTS_CSV = BASE_OUTPUT_DIR / "utterance_segments.csv"
+    WORD_SUMMARY_CSV = BASE_OUTPUT_DIR / "word_summary.csv"
+    PRESENCE_COUNTS_CSV = BASE_OUTPUT_DIR / "presence_counts.csv"
