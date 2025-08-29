@@ -1,14 +1,12 @@
 import argparse
 import logging
-import sqlite3
-from typing import Dict, List, Tuple
 import pandas as pd
 import numpy as np
-import run_person, run_face_proximity, run_speech_type
+import run_face_proximity
 from pathlib import Path
-from ultralytics import YOLO
 from setup_interaction_db import setup_interaction_db
 from constants import DataPaths
+from config import InferenceConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -55,36 +53,53 @@ def get_balanced_videos(videos_per_group: int) -> list:
     
     return selected_videos
 
-def main(frame_step: int = 10, num_videos_per_age: int = None):
+def main(video_path: Path, db_path: Path, frame_step: int = InferenceConfig.SAMPLE_RATE, num_videos_per_age: int = None):
     """
     This function runs the detection pipeline. It first sets up the detection database and then runs the detection pipeline.
     
     Parameters:
     ----------
+    video_path : Path
+        Path to the video file to process
+    db_path : Path
+        Path to the database where results will be stored
     frame_step : int
         The step size for processing frames in the videos, default is 10
     num_videos_per_age : int
         The number of videos to process per age group. If not specified, processes all videos.
         If specified, it will select a balanced number of videos from each age group.
+        
+    Returns:
+    -------
+    bool
+        True if the inference completed successfully, False otherwise
     """
-    # Setup the detection database which will hold the detection results (if it doesnt already exist)
-    setup_interaction_db()
-    
-    # Select videos to process
-    if num_videos_per_age is None:
-        # Process all videos from CSV
-        age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
-        selected_videos = age_df['video_name'].tolist()
-        logging.info(f"Processing all {len(selected_videos)} videos from CSV")
-    else:
-        # Process balanced selection from each age group
-        selected_videos = get_balanced_videos(num_videos_per_age)
-        logging.info(f"Processing {len(selected_videos)} selected videos ({num_videos_per_age} per age group)")
+    try:
+        # Setup the detection database which will hold the detection results (if it doesnt already exist)
+        setup_interaction_db(db_path = db_path)
+        
+        # Select videos to process
+        if num_videos_per_age is None:
+            # Process all videos from CSV
+            age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+            selected_videos = age_df['video_name'].tolist()
+            logging.info(f"Processing all {len(selected_videos)} videos from CSV")
+        else:
+            # Process balanced selection from each age group
+            selected_videos = get_balanced_videos(num_videos_per_age)
+            logging.info(f"Processing {len(selected_videos)} selected videos ({num_videos_per_age} per age group)")
 
-    # Run the detection pipeline
-    #run_person.main(selected_videos)
-    run_face_proximity.main(selected_videos, frame_step)
-    #run_audio_classification.main(selected_videos)
+        # Run the detection pipeline
+        #run_person.main(selected_videos)
+        run_face_proximity.main(selected_videos, frame_step)
+        #run_audio_classification.main(selected_videos)
+        
+        logging.info("Inference pipeline completed successfully")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error during inference pipeline: {e}")
+        return False
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the detection pipeline')
