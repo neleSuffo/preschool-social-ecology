@@ -13,8 +13,8 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import DataPaths, ResearchQuestions
-from config import DataConfig, Research_QuestionConfig
+from constants import DataPaths, Inference
+from config import DataConfig, InferenceConfig
 
 # Constants
 FPS = DataConfig.FPS # frames per second
@@ -24,198 +24,242 @@ def extract_child_id(video_name):
     return match.group(1) if match else None
 
 def validate_interaction_segment(category, duration, video_df, start_frame, end_frame, video_name):
-        """
-        Validate "Interacting" segments for sufficient visual evidence of people.
+    """
+    Validate "Interacting" segments for sufficient visual evidence of people.
+    
+    Returns the final category (may downgrade "Interacting" to "Alone")
+    """
+    if category == "Interacting" and duration > Research_QuestionConfig.VALIDATION_SEGMENT_DURATION_SEC:
+        # Get frames within this segment
+        segment_frames = video_df[
+            (video_df['frame_number'] >= start_frame) & 
+            (video_df['frame_number'] <= end_frame)
+        ]
         
-        Returns the final category (may downgrade "Interacting" to "Alone")
-        """
-        if category == "Interacting" and duration > Research_QuestionConfig.VALIDATION_SEGMENT_DURATION_SEC:
-            # Get frames within this segment
-            segment_frames = video_df[
-                (video_df['frame_number'] >= start_frame) & 
-                (video_df['frame_number'] <= end_frame)
+        # Check if at least 5% of frames have adult or child present
+        if len(segment_frames) > 0:
+            frames_with_people = segment_frames[
+                (segment_frames.get('child_present', 0) == 1) | 
+                (segment_frames.get('adult_present', 0) == 1)
             ]
             
-            # Check if at least 5% of frames have adult or child present
-            if len(segment_frames) > 0:
-                frames_with_people = segment_frames[
-                    (segment_frames.get('child_present', 0) == 1) | 
-                    (segment_frames.get('adult_present', 0) == 1)
-                ]
-                
-                people_presence_ratio = len(frames_with_people) / len(segment_frames)
+            people_presence_ratio = len(frames_with_people) / len(segment_frames)
 
-                if people_presence_ratio < Research_QuestionConfig.PERSON_PRESENT_THRESHOLD:  # Less than 5%
-                    return "Alone"
-        
-        return category
+            if people_presence_ratio < Research_QuestionConfig.PERSON_PRESENT_THRESHOLD:  # Less than 5%
+                return "Alone"
     
-def create_interaction_segments(output_dir: Path, frame_data_path: Path):
-    """
-    Creates mutually exclusive segments, buffering small state changes and stores them.
+    return category
 
+def buffer_short_state_changes(states, frame_numbers):
+    """
+    Buffer short state changes to avoid rapid transitions.
+    
     Parameters
     ----------
-    output_dir : Path
-        Directory to save the output segments.
-    frame_data_path : Path
-        Path to the CSV file containing frame-level interaction data.
-    """    
-    print("Creating segments...")
-    frame_data = pd.read_csv(frame_data_path)
-
-    all_segments = []
-
-    for video_id, video_df in frame_data.groupby('video_id'):
-        video_df = video_df.sort_values('frame_number').reset_index(drop=True)
+    states : np.array
+        Array of interaction states
+    frame_numbers : np.array
+        Array of frame numbers
         
-        if len(video_df) == 0:
-            continue
-                    
-        # Get interaction states and frame numbers
-        states = video_df['interaction_category'].values
-        frame_numbers = video_df['frame_number'].values
-        video_name = video_df['video_name'].iloc[0]
+    Returns
+    -------
+    np.array
+        Buffered states with short changes smoothed out
+    """
+    buffered_states = states.copy()
+    i = 0
+    while i < len(buffered_states) - 1:
+        current_state = buffered_states[i]
+        j = i + 1
+        # Find the end of the current run of states
+        while j < len(buffered_states) and buffered_states[j] == current_state:
+            j += 1
         
-        # Buffer short state changes
-        buffered_states = states.copy()
-        i = 0
-        while i < len(buffered_states) - 1:
-            current_state = buffered_states[i]
-            j = i + 1
-            # Find the end of the current run of states
-            while j < len(buffered_states) and buffered_states[j] == current_state:
-                j += 1
-            
-            # The length of the current run of states
-            run_length = j - i
-            run_duration = (frame_numbers[j-1] - frame_numbers[i]) / FPS
-            
-            # If the run is short and not at the beginning/end, merge it
-            if run_duration < Research_QuestionConfig.RQ1_MIN_CHANGE_DURATION_SEC and i > 0 and j < len(buffered_states):
-                # Replace the short run with the previous state
-                buffered_states[i:j] = buffered_states[i-1]
-                # Reset i to re-evaluate from the previous point
-                i = 0
-            else:
-                i = j
+        # The length of the current run of states
+        run_duration = (frame_numbers[j-1] - frame_numbers[i]) / FPS
         
-        # Now, find state changes in the buffered states
-        current_state = buffered_states[0]
-        segment_start_frame = frame_numbers[0]
-        
-        for i in range(1, len(buffered_states)):
-            if buffered_states[i] != current_state:
-                segment_end_frame = frame_numbers[i-1]
-                
-                # Only keep segments longer than minimum duration
-                segment_duration = (segment_end_frame - segment_start_frame) / FPS
-                if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
-                    
-                    # Validate "Interacting" segments for visual evidence
-                    final_category = validate_interaction_segment(
-                        current_state, segment_duration, video_df, 
-                        segment_start_frame, segment_end_frame, video_name
-                    )
-                    
-                    all_segments.append({
-                        'video_id': video_id,
-                        'video_name': video_name,
-                        'category': final_category,
-                        'segment_start': segment_start_frame,
-                        'segment_end': segment_end_frame,
-                        'start_time_sec': segment_start_frame / FPS,
-                        'end_time_sec': segment_end_frame / FPS,
-                        'duration_sec': segment_duration
-                    })
-                
-                current_state = buffered_states[i]
-                segment_start_frame = frame_numbers[i]
-        
-        # Handle the final segment
-        segment_end_frame = frame_numbers[-1]
-        segment_duration = (segment_end_frame - segment_start_frame) / FPS
-        if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
-            
-            # Validate "Interacting" segments for visual evidence
-            final_category = validate_interaction_segment(
-                current_state, segment_duration, video_df, 
-                segment_start_frame, segment_end_frame, video_name
-            )
-            
-            all_segments.append({
-                'video_id': video_id,
-                'video_name': video_name,
-                'category': final_category,
-                'segment_start': segment_start_frame,
-                'segment_end': segment_end_frame,
-                'start_time_sec': segment_start_frame / FPS,
-                'end_time_sec': segment_end_frame / FPS,
-                'duration_sec': segment_duration
-            })
+        # If the run is short and not at the beginning/end, merge it
+        if run_duration < Research_QuestionConfig.RQ1_MIN_CHANGE_DURATION_SEC and i > 0 and j < len(buffered_states):
+            # Replace the short run with the previous state
+            buffered_states[i:j] = buffered_states[i-1]
+            # Reset i to re-evaluate from the previous point
+            i = 0
+        else:
+            i = j
     
-    if all_segments:
-        segments_df = pd.DataFrame(all_segments)
-        segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)
+    return buffered_states
+
+def create_segments_for_video(video_id, video_df):
+    """
+    Create segments for a single video.
+    
+    Parameters
+    ----------
+    video_id : int
+        Video identifier
+    video_df : pd.DataFrame
+        Frame-level data for this video
         
-        # Post-processing: Merge segments of the same category with small gaps
-        print("Post-processing: Merging segments with small gaps...")
-        merged_segments = []
-        
-        for video_id, video_segments in segments_df.groupby('video_id'):
-            video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=True)
-            
-            if len(video_segments) == 0:
-                continue
-            
-            current_segment = video_segments.iloc[0].copy()
-            merge_count = 0
-            
-            for i in range(1, len(video_segments)):
-                next_segment = video_segments.iloc[i]
+    Returns
+    -------
+    list
+        List of segment dictionaries
+    """
+    video_df = video_df.sort_values('frame_number').reset_index(drop=True)
+    
+    if len(video_df) == 0:
+        return []
                 
-                # Calculate gap between current segment end and next segment start
-                gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
-                
-                # If same category and gap is less than 3 seconds, merge
-                if (current_segment['category'] == next_segment['category'] and 
-                    gap_duration < 5.0):
-                    
-                    # Extend current segment to include the next one
-                    current_segment['segment_end'] = next_segment['segment_end']
-                    current_segment['end_time_sec'] = next_segment['end_time_sec']
-                    current_segment['duration_sec'] = (
-                        current_segment['end_time_sec'] - current_segment['start_time_sec']
-                    )
-                    merge_count += 1
-                    
-                else:
-                    # Save current segment and start a new one
-                    merged_segments.append(current_segment.to_dict())
-                    current_segment = next_segment.copy()
+    # Get interaction states and frame numbers
+    states = video_df['interaction_category'].values
+    frame_numbers = video_df['frame_number'].values
+    video_name = video_df['video_name'].iloc[0]
+    
+    # Buffer short state changes
+    buffered_states = buffer_short_state_changes(states, frame_numbers)
+    
+    segments = []
+    current_state = buffered_states[0]
+    segment_start_frame = frame_numbers[0]
+    
+    # Process state changes
+    for i in range(1, len(buffered_states)):
+        if buffered_states[i] != current_state:
+            segment_end_frame = frame_numbers[i-1]
             
-            # Don't forget the last segment
-            merged_segments.append(current_segment.to_dict())
+            # Only keep segments longer than minimum duration
+            segment_duration = (segment_end_frame - segment_start_frame) / FPS
+            if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
+                
+                # Validate "Interacting" segments for visual evidence
+                final_category = validate_interaction_segment(
+                    current_state, segment_duration, video_df, 
+                    segment_start_frame, segment_end_frame, video_name
+                )
+                
+                segments.append({
+                    'video_id': video_id,
+                    'video_name': video_name,
+                    'category': final_category,
+                    'segment_start': segment_start_frame,
+                    'segment_end': segment_end_frame,
+                    'start_time_sec': segment_start_frame / FPS,
+                    'end_time_sec': segment_end_frame / FPS,
+                    'duration_sec': segment_duration
+                })
+            
+            current_state = buffered_states[i]
+            segment_start_frame = frame_numbers[i]
+    
+    # Handle the final segment
+    segment_end_frame = frame_numbers[-1]
+    segment_duration = (segment_end_frame - segment_start_frame) / FPS
+    if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
         
-        if merged_segments:
-            segments_df = pd.DataFrame(merged_segments)
-            segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)        
+        # Validate "Interacting" segments for visual evidence
+        final_category = validate_interaction_segment(
+            current_state, segment_duration, video_df, 
+            segment_start_frame, segment_end_frame, video_name
+        )
+        
+        segments.append({
+            'video_id': video_id,
+            'video_name': video_name,
+            'category': final_category,
+            'segment_start': segment_start_frame,
+            'segment_end': segment_end_frame,
+            'start_time_sec': segment_start_frame / FPS,
+            'end_time_sec': segment_end_frame / FPS,
+            'duration_sec': segment_duration
+        })
+    
+    return segments
+
+def merge_segments_with_small_gaps(segments_df):
+    """
+    Merge segments of the same category that have small gaps between them.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with segments
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with merged segments
+    """
+    merged_segments = []
+    merge_count = 0
+    
+    for video_id, video_segments in segments_df.groupby('video_id'):
+        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=True)
+        
+        if len(video_segments) == 0:
+            continue
+        
+        current_segment = video_segments.iloc[0].copy()
+        
+        for i in range(1, len(video_segments)):
+            next_segment = video_segments.iloc[i]
+            
+            # Calculate gap between current segment end and next segment start
+            gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
+            
+            # If same category and gap is less than the configured duration, merge
+            if (current_segment['category'] == next_segment['category'] and 
+                gap_duration < InferenceConfig.GAP_MERGE_DURATION_SEC):
+                
+                # Extend current segment to include the next one
+                current_segment['segment_end'] = next_segment['segment_end']
+                current_segment['end_time_sec'] = next_segment['end_time_sec']
+                current_segment['duration_sec'] = (
+                    current_segment['end_time_sec'] - current_segment['start_time_sec']
+                )
+                merge_count += 1
+                
+            else:
+                # Save current segment and start a new one
+                merged_segments.append(current_segment.to_dict())
+                current_segment = next_segment.copy()
+        
+        # Don't forget the last segment
+        merged_segments.append(current_segment.to_dict())
+    
+    if merged_segments:
+        result_df = pd.DataFrame(merged_segments)
+        result_df = result_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)
+        return result_df
     else:
-        segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'category',
-                                        'segment_start', 'segment_end', 
-                                        'start_time_sec', 'end_time_sec', 'duration_sec'])
+        return segments_df
+
+def add_metadata_to_segments(segments_df, frame_data):
+    """
+    Add child_id and age information to segments.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with segments
+    frame_data : pd.DataFrame
+        Frame-level data containing age information
         
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with added metadata
+    """    
     # Add child_id to segments_df using extract_child_id
     segments_df['child_id'] = segments_df['video_name'].apply(extract_child_id)
     
-    # Load subjects CSV to get age information
+    # Extract age information from frame_data (get unique video_name to age_at_recording mapping)
     try:
-        subjects_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
-        print(f"📋 Loaded subjects data with {len(subjects_df)} records for age mapping")
+        # Get unique video_name to age_at_recording mapping from frame_data
+        age_mapping = frame_data[['video_name', 'age_at_recording']].drop_duplicates()
         
         # Merge age information based on video_name
         segments_df = segments_df.merge(
-            subjects_df[['video_name', 'age_at_recording']], 
+            age_mapping, 
             on='video_name', 
             how='left'
         )
@@ -228,23 +272,31 @@ def create_interaction_segments(output_dir: Path, frame_data_path: Path):
             # Show some examples of unmatched video names
             unmatched_videos = segments_df[segments_df['age_at_recording'].isna()]['video_name'].unique()[:5]
             print(f"Examples of unmatched video names: {list(unmatched_videos)}")
-        else:
-            print("✅ All segments successfully matched with age data")
             
-    except FileNotFoundError:
-        print(f"⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
+    except KeyError:
+        print(f"⚠️ Warning: 'age_at_recording' column not found in frame data")
         print("Proceeding without age information")
         segments_df['age_at_recording'] = None
     except Exception as e:
-        print(f"⚠️ Warning: Error loading subjects data: {e}")
+        print(f"⚠️ Warning: Error extracting age data from frame data: {e}")
         print("Proceeding without age information")
         segments_df['age_at_recording'] = None
 
     # Reorder columns so that child_id and age_at_recording come after video_name
     cols = ['video_name', 'child_id', 'age_at_recording'] + [col for col in segments_df.columns if col not in ['video_name', 'child_id', 'age_at_recording']]
     segments_df = segments_df.loc[:, cols]
+    
+    return segments_df
 
-    # Final summary statistics with duration information
+def print_segment_summary(segments_df):
+    """
+    Print summary statistics for the created segments.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with segments
+    """
     if len(segments_df) > 0:
         total_segments = len(segments_df)
         interacting_segments = len(segments_df[segments_df['category'] == 'Interacting'])
@@ -263,12 +315,61 @@ def create_interaction_segments(output_dir: Path, frame_data_path: Path):
         print(f"   Alone: {alone_segments} ({alone_duration} minutes - {alone_duration/total_duration*100:.1f}%)")
         if copresent_segments > 0:
             print(f"   Co-present Silent: {copresent_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
+    else:
+        print("\n📊 No segments created")
 
-    print(f"Created {len(segments_df)} segments after buffering and merging.")
-    file_name = ResearchQuestions.INTERACTION_SEGMENTS_CSV.name
+def main(output_dir: Path, frame_data_path: Path):
+    """
+    Main entry point for video-level segment analysis.
+    Creates mutually exclusive interaction segments from frame-level data.
+    
+    This function processes frame-level interaction data through several steps:
+    1. Load and process frame-level data
+    2. Create initial segments for each video
+    3. Merge segments with small gaps
+    4. Add metadata (child_id, age)
+    5. Generate summary statistics
+    6. Save results to CSV
+    
+    Parameters
+    ----------
+    output_dir : Path
+        Directory to save the output segments.
+    frame_data_path : Path
+        Path to the CSV file containing frame-level interaction data.
+    """        
+    # Step 1: Load frame-level data
+    frame_data = pd.read_csv(frame_data_path)
+
+    # Step 2: Create segments for each video
+    all_segments = []
+    for video_id, video_df in frame_data.groupby('video_id'):
+        video_segments = create_segments_for_video(video_id, video_df)
+        all_segments.extend(video_segments)
+    
+    # Step 3: Convert to DataFrame and merge segments with small gaps
+    if all_segments:
+        segments_df = pd.DataFrame(all_segments)
+        segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)
+        
+        segments_df = merge_segments_with_small_gaps(segments_df)
+        
+    else:
+        segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'category',
+                                        'segment_start', 'segment_end', 
+                                        'start_time_sec', 'end_time_sec', 'duration_sec'])
+        
+    # Step 4: Add metadata
+    segments_df = add_metadata_to_segments(segments_df, frame_data)
+    
+    # Step 5: Generate and print summary
+    print_segment_summary(segments_df)
+    
+    # Step 6: Save results
+    file_name = Inference.INTERACTION_SEGMENTS_CSV.name
     segments_df.to_csv(output_dir / file_name, index=False)
-    print(f"Saved interaction segments to {output_dir / file_name}")
+    print(f"✅ Saved {len(segments_df)} interaction segments to {output_dir / file_name}")
 
 if __name__ == "__main__":
     # Just extract segments from existing frame data
-    create_interaction_segments(output_dir=ResearchQuestions.RQ1_OUTPUT_DIR, frame_data_path=ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV)
+    main(output_dir=Inference.RQ1_OUTPUT_DIR, frame_data_path=Inference.FRAME_LEVEL_INTERACTIONS_CSV)
