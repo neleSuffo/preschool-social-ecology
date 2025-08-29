@@ -7,28 +7,27 @@ import sys
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import ResearchQuestions
+from constants import Inference
 
 def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
 
-def extract_presence_counts(csv_file: Path=ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV):
+def main(csv_file: Path=Inference.FRAME_LEVEL_INTERACTIONS_CSV):
     print("=" * 60)
     print("RQ 04: EXTRACTING PRESENCE COUNTS")
     print("=" * 60)
     
     # Load data
-    print(f"📁 Loading data from: {csv_file}")
     try:
         df = pd.read_csv(csv_file)
     except FileNotFoundError:
         print(f"❌ Error: File not found at {csv_file}")
-        return None
+        return
     except Exception as e:
         print(f"❌ Error loading file: {e}")
-        return None
-    
+        return
+
     # Extract child_id from video_name and add as new column
     df['child_id'] = df['video_name'].apply(extract_child_id)
     
@@ -38,12 +37,11 @@ def extract_presence_counts(csv_file: Path=ResearchQuestions.FRAME_LEVEL_INTERAC
     
     if valid_child_ids == 0:
         print("❌ Warning: No child IDs could be extracted. Check video name format.")
-        return None
+        return
     
     unique_children = df['child_id'].nunique()
     
     # Group by child (video_id or video_name) and age_at_recording
-    print("📊 Grouping data by child and age...")
     grouped = (
         df.groupby(['child_id', 'age_at_recording'])
         .agg(
@@ -82,24 +80,15 @@ def extract_presence_counts(csv_file: Path=ResearchQuestions.FRAME_LEVEL_INTERAC
     
     # Convert to DataFrame
     results = pd.DataFrame(pivot_data)
-    print(f"✅ Created pivoted dataset with {len(results)} rows")
-    
+        
     # Save results
-    output_file = ResearchQuestions.PRESENCE_COUNTS_CSV 
+    output_file = Inference.PRESENCE_COUNTS_CSV 
     try:
         results.to_csv(output_file, index=False)
         print(f"💾 Successfully saved results to: {output_file}")        
     except Exception as e:
         print(f"❌ Error saving results: {e}")
-        return None
-    
-    return results
+        return
 
 if __name__ == "__main__":
-    # Run the analysis when script is executed directly
-    results = extract_presence_counts()
-    
-    if results is not None:
-        print(f"\n🎉 Analysis completed!")
-    else:
-        print("\n❌ Analysis failed. Check error messages above.")
+    main()
