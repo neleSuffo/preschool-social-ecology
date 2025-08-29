@@ -5,8 +5,8 @@ from pathlib import Path
 from constants import DataPaths
 
 logging.basicConfig(level=logging.INFO)
-    
-def store_video_data(age_group_df: pd.DataFrame, conn):
+
+def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection, video_path: Path):
     """
     Stores video information from age_group.csv directly in the Videos table.
     Logs video information in a tabular format.
@@ -17,6 +17,8 @@ def store_video_data(age_group_df: pd.DataFrame, conn):
         DataFrame containing video information from age_group.csv
     conn : sqlite3.Connection
         SQLite connection object
+    video_path : Path
+        Path to the video file or directory
     """
     cursor = conn.cursor()
     video_data = []
@@ -33,9 +35,6 @@ def store_video_data(age_group_df: pd.DataFrame, conn):
             # Parse recording date (format: dd.mm.yyyy)
             recording_date = pd.to_datetime(recording_date_str, format="%d.%m.%Y")
             
-            # Construct video path
-            video_path = str(DataPaths.VIDEOS_INPUT_DIR / f"{video_name}.MP4")
-
             # Add data to video_data list for logging
             video_data.append({
                 'video_name': video_name,
@@ -47,15 +46,14 @@ def store_video_data(age_group_df: pd.DataFrame, conn):
 
             # Insert or update video data
             cursor.execute('''
-                INSERT INTO Videos (video_name, video_path, child_id, recording_date, age_at_recording, age_group)
+                INSERT INTO Videos (video_name, child_id, recording_date, age_at_recording, age_group)
                     VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(video_name) DO UPDATE SET
-                    video_path=excluded.video_path,
                     child_id=excluded.child_id,
                     recording_date=excluded.recording_date,
                     age_at_recording=excluded.age_at_recording,
                     age_group=excluded.age_group
-                ''', (video_name, video_path, child_id, recording_date.strftime('%Y-%m-%d'), 
+                ''', (video_name, child_id, recording_date.strftime('%Y-%m-%d'), 
                     age_at_recording, age_group))
 
         except Exception as e:
@@ -70,8 +68,8 @@ def store_video_data(age_group_df: pd.DataFrame, conn):
         logging.info("\nVideo Information:\n" + df.to_string())
     
     logging.info(f"Stored {len(video_data)} videos in the database.")
-    
-def setup_interaction_db(db_path: Path = DataPaths.INFERENCE_DB_PATH):
+
+def setup_interaction_db(db_path: Path, video_path: Path):
     """
     This function sets up the SQLite database for storing detection results.
     If the database already exists, it skips creation.
@@ -80,6 +78,8 @@ def setup_interaction_db(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     ----------
     db_path : Path
         Path to the SQLite database file, defaults to DetectionPaths.detection_db_path
+    video_path : Path
+        Path to the video file or directory
     """
     # Check if database already exists
     if db_path.exists():
@@ -98,7 +98,6 @@ def setup_interaction_db(db_path: Path = DataPaths.INFERENCE_DB_PATH):
         CREATE TABLE IF NOT EXISTS Videos (
             video_id INTEGER PRIMARY KEY AUTOINCREMENT,
             video_name TEXT UNIQUE,
-            video_path TEXT,
             child_id INTEGER,
             recording_date DATE,
             age_at_recording FLOAT,
@@ -190,8 +189,8 @@ def setup_interaction_db(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     )
     
     # Store video data directly in Videos table
-    store_video_data(age_group_df, conn)
-    
+    store_video_data(age_group_df, conn, video_path)
+
     conn.commit()
     conn.close()
     logging.info(f"Detection database created at {db_path}")
