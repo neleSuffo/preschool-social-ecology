@@ -301,7 +301,7 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
 
-def main(input_path, final_output_dir):
+def main(input_path, final_output_dir: Path = ResearchQuestions.OUTPUT_BASE_DIR):
     """
     Create annotated video(s) from existing segments and frame-level data.
     
