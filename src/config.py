@@ -34,20 +34,6 @@ class DataConfig:
         'quantex_at_home_id258704_2022_05_15_01.mp4',
         'quantex_at_home_id262565_2022_05_26_03.mp4',
     ]   
-
-class PipelineConfig:
-    """Configuration for the overall detection pipeline."""
-    VIDEOS_TO_NOT_PROCESS = [
-        "quantex_at_home_id260694_2022_06_29_01.MP4",
-        "quantex_at_home_id260694_2022_06_29_02.MP4",
-        "quantex_at_home_id260694_2022_06_29_03.MP4",
-        "quantex_at_home_id260694_2022_05_21_01.MP4",
-        "quantex_at_home_id260694_2022_05_21_02.MP4",
-        "quantex_at_home_id254922_2022_06_29_01.MP4",
-        "quantex_at_home_id254922_2022_06_29_02.MP4",
-        "quantex_at_home_id254922_2022_06_29_03.MP4",
-    ]
-
 class LabelMapping:
     """Mappings for labels, IDs, and supercategories."""
     LABEL_TO_ID_MAPPING = defaultdict(
@@ -217,13 +203,16 @@ class YoloConfig:
         (7, 'No'): 8, (8, 'No'): 10, (12, 'No'): 9,
     }
     
-class Research_QuestionConfig:
-    """Configuration for research questions."""
+class InferenceConfig:
+    """Configuration for inference settings."""
     SAMPLE_RATE = 10 # every n-th frame is processed
-    RQ1_PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
-    RQ1_MIN_SEGMENT_DURATION_SEC = 5
-    RQ1_MIN_CHANGE_DURATION_SEC = 3
-    TURN_TAKING_WINDOW_SEC = 10
-    GAP_MERGE_DURATION_SEC = 5
-    VALIDATION_SEGMENT_DURATION_SEC = 10
+    PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
+    MIN_SEGMENT_DURATION_SEC = 5 # minimum duration for a segment to be considered
+    MIN_CHANGE_DURATION_SEC = 3 # minimum duration for a change to be considered
+    SPEECH_CLASSES = ['KCHI', 'FEM_MAL']
+    TURN_TAKING_BASE_WINDOW_SEC = 10 # base window duration for turn-taking analysis
+    TURN_TAKING_EXT_WINDOW_SEC = 15 # extended window duration for turn-taking analysis
+    GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps in interaction segments
+    VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
     PERSON_PRESENT_THRESHOLD = 0.05 # threshold for considering a person present in a window segment with only audio turn taking
+    
