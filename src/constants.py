@@ -78,8 +78,8 @@ class Proximity:
     ADULT_CLOSE_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_1.jpg")
     ADULT_FAR_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_0.jpg")
     
-class ResearchQuestions:
-    OUTPUT_BASE_DIR = Path("/home/nele_pauline_suffo/projects/naturalistic-social-analysis/src/results")
+class Inference:
+    OUTPUT_BASE_DIR = BasePaths.HOME_DIR / "src/results"
     RQ1_OUTPUT_DIR = OUTPUT_BASE_DIR / "rq_01"
     FRAME_LEVEL_INTERACTIONS_CSV = RQ1_OUTPUT_DIR / "frame_level_social_interactions.csv"
     INTERACTION_SEGMENTS_CSV = RQ1_OUTPUT_DIR / "interaction_segments.csv"
