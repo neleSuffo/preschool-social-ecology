@@ -20,10 +20,6 @@ from config import DataConfig, InferenceConfig
 # Constants
 FPS = DataConfig.FPS # frames per second
 
-def extract_child_id(video_name):
-    match = re.search(r'id(\d{6})', video_name)
-    return match.group(1) if match else None
-
 def get_all_analysis_data(conn):
     """
     Comprehensive multimodal data integration query.
