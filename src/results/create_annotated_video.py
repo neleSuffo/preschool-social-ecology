@@ -99,9 +99,7 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         width -= 1
     if height % 2 != 0:
         height -= 1
-    
-    print(f"🎥 Video properties: {width}x{height}, {fps:.1f} FPS, {total_frames} frames")
-    
+        
     frame_number = 0
     
     # Create a lookup for segments by frame
@@ -236,9 +234,6 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
     # Cleanup
     cap.release()
     
-    print(f"✅ All annotated frames saved to: {temp_frames_dir}")
-    print(f"📊 Processed {frame_number} frames with {len(video_segments)} segments")
-
     # --- FFMPEG Call to combine video and audio ---
     print("\n🚀 Combining frames and original audio with FFMPEG...")
     
@@ -257,7 +252,6 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
     ]
     try:
         subprocess.run(cmd_video, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"✅ Video frames combined successfully")
     except FileNotFoundError:
         print("❌ Error: FFMPEG not found. Please install it and ensure it's in your system's PATH.")
         shutil.rmtree(temp_frames_dir, ignore_errors=True)
@@ -285,12 +279,10 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         print(f"✅ Final video with audio saved to: {final_output_dir / final_output_name}")
         
         # Cleanup temporary files
-        print("\n🧹 Cleaning up temporary files...")
         if (final_output_dir / video_from_frames_name).exists():
             (final_output_dir / video_from_frames_name).unlink()
         shutil.rmtree(temp_frames_dir, ignore_errors=True)
-        print(f"✅ Cleaned up temporary files")
-        
+                
         return str(final_output_dir / final_output_name)  # Return path to successful output
         
     except Exception as e:
@@ -343,12 +335,9 @@ def main(input_path, final_output_dir: Path = ResearchQuestions.OUTPUT_BASE_DIR)
             print(f"❌ Error: Unsupported video file extension: {input_path.suffix}")
             return
         
-        print(f"🎬 Processing single video: {input_path.name}")
         result = create_annotated_video_from_csv(input_path, final_output_dir)
-        
-        if result is not None:
-            print(f"✅ Successfully processed: {input_path.name}")
-        else:
+
+        if result is None:
             print(f"❌ Failed to process: {input_path.name}")
             
     elif input_path.is_dir():
