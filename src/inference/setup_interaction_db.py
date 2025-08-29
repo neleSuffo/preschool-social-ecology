@@ -1,7 +1,6 @@
 import sqlite3
 import logging
 import pandas as pd
-from dateutil.relativedelta import relativedelta
 from pathlib import Path
 from constants import DataPaths
 
@@ -176,11 +175,11 @@ def setup_interaction_db(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     cursor.execute('''
         INSERT OR IGNORE INTO Models (model_name, description, output_variables) VALUES 
         ('yolo_face_detection', 'YOLO model for face detection with age classification', 
-         '{"age_class": {"0": "child_face", "1": "adult_face"}, "proximity": "continuous_value"}'),
+        '{"age_class": {"0": "child_face", "1": "adult_face"}, "proximity": "continuous_value"}'),
         ('cnn_rnn_person_classification', 'CNN+RNN model for person presence classification',
-         '{"has_adult_person": {"0": "no", "1": "yes"}, "has_child_person": {"0": "no", "1": "yes"}}'),
+        '{"has_adult_person": {"0": "no", "1": "yes"}, "has_child_person": {"0": "no", "1": "yes"}}'),
         ('audio_voice_classification', 'Audio model for voice type classification',
-         '{"has_kchi": {"0": "no", "1": "yes"}, "has_cds": {"0": "no", "1": "yes"}, "has_ohs": {"0": "no", "1": "yes"}}'),
+        '{"has_kchi": {"0": "no", "1": "yes"}, "has_cds": {"0": "no", "1": "yes"}, "has_ohs": {"0": "no", "1": "yes"}}'),
         ('kchi_vocalization', 'ALICE for KCHI vocalization analysis','{"phonemes": "float", "syllables": "float", "words": "float"}'),
     ''')
     
