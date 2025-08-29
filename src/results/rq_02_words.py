@@ -147,14 +147,22 @@ def main(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = 
     if len(mapped_vocalizations) > 0:
         aggregated_data = mapped_vocalizations.groupby(['child_id', 'age_at_recording', 'interaction_type']).agg({
             'words': 'sum',           # Total words
+            'seconds': 'sum',         # Total duration in seconds
         }).reset_index()
+        
+        # Calculate words per minute for each segment
+        aggregated_data['minutes'] = (aggregated_data['seconds'] / 60).round(2)
+        aggregated_data['words_per_minute'] = aggregated_data['words'] / (aggregated_data['minutes']).replace([float('inf'), -float('inf')], 0).round(2)
+
+        aggregated_data = aggregated_data.drop(columns=['seconds'])
+        # Round numerical values for cleaner output
+        aggregated_data['words'] = aggregated_data['words'].round(1)
     else:
         print("   ⚠️ No vocalizations found to aggregate")
         # Create empty DataFrame with expected columns
         aggregated_data = pd.DataFrame(columns=[
             'child_id', 'age_at_recording', 'interaction_type', 
-            'utterances', 'words', 'seconds', 'minutes', 
-            'words_per_utterance', 'words_per_minute'
+            'words', 'seconds', 'minutes', 'words_per_minute'
         ])
     
     # Step 3: Save aggregated results
