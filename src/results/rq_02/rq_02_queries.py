@@ -4,7 +4,7 @@ import sqlite3
 import pandas as pd
 import re
 from pathlib import Path
-from constants import DataPaths, ResearchQuestions
+from constants import DataPaths, Inference
 
 def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
@@ -54,7 +54,7 @@ def row_wise_mapping(voc_row, video_segments_df):
         })
     return results
 
-def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = ResearchQuestions.INTERACTION_SEGMENTS_CSV):
+def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV):
     """
     Retrieve KCHI vocalizations from the SQLite database and map them to interaction segments.
     
@@ -94,16 +94,11 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     
     # Merge with age data to get age at recording
     kchi_vocs = kchi_vocs.merge(age_df[['video_name', 'age_at_recording']], on='video_name', how='left')
-
-    print(f"Found {len(kchi_vocs)} KCHI vocalizations across {kchi_vocs['video_id'].nunique()} videos")
-    print(f"Found {len(segments_df)} interaction segments across {segments_df['video_id'].nunique()} videos")
     
     # Check video alignment
     voc_videos = set(kchi_vocs['video_id'].unique())
     seg_videos = set(segments_df['video_id'].unique())
-    common_videos = voc_videos & seg_videos
-    print(f"Common videos between vocalizations and segments: {len(common_videos)}")
-    
+    common_videos = voc_videos & seg_videos    
     mapped_rows = []
     
     # Process each video separately
@@ -112,9 +107,66 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
         video_vocalizations = kchi_vocs[kchi_vocs['video_id'] == video_id]
         video_segments = segments_df[segments_df['video_id'] == video_id]
                 
-        print(f"  Video {video_id}: {len(video_vocalizations)} vocalizations, {len(video_segments)} segments")
         # Map each vocalization in this video to segments in this video
         for _, voc_row in video_vocalizations.iterrows():
             mapped_rows.extend(row_wise_mapping(voc_row, video_segments))
     
     return pd.DataFrame(mapped_rows)
+
+def main(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV):
+    """
+    Main function to analyze child language production by interaction context.
+    
+    Research Question 2: How much language does the key child produce (utterances and words)?
+    
+    This script:
+    1. Extracts KCHI (key child) vocalizations from the database
+    2. Maps them to interaction segments (Alone, Co-present Silent, Interacting)
+    3. Aggregates by child_id, age_at_recording, and interaction_type
+    4. Calculates word counts and durations by interaction type
+    5. Saves aggregated results to CSV
+    
+    Parameters
+    ----------
+    db_path : Path, optional
+        Path to the SQLite database. Defaults to DataPaths.INFERENCE_DB_PATH
+    segments_csv_path : Path, optional
+        Path to interaction segments CSV. Defaults to Inference.INTERACTION_SEGMENTS_CSV
+    """   
+    print("🗣️ RESEARCH QUESTION 2: CHILD LANGUAGE PRODUCTION ANALYSIS")
+    print("=" * 70)
+    print("Analyzing key child vocalizations by interaction context...")
+    
+    # Step 1: Map vocalizations to interaction segments
+    print("\n🔄 Step 1: Mapping vocalizations to interaction segments...")
+    mapped_vocalizations = map_vocalizations_to_segments(db_path, segments_csv_path)
+        
+    # Step 2: Aggregate by child_id, age_at_recording, and interaction_type
+    print("\n📋 Step 2: Aggregating by child, age, and interaction type...")
+    
+    if len(mapped_vocalizations) > 0:
+        aggregated_data = mapped_vocalizations.groupby(['child_id', 'age_at_recording', 'interaction_type']).agg({
+            'words': 'sum',           # Total words
+        }).reset_index()
+    else:
+        print("   ⚠️ No vocalizations found to aggregate")
+        # Create empty DataFrame with expected columns
+        aggregated_data = pd.DataFrame(columns=[
+            'child_id', 'age_at_recording', 'interaction_type', 
+            'utterances', 'words', 'seconds', 'minutes', 
+            'words_per_utterance', 'words_per_minute'
+        ])
+    
+    # Step 3: Save aggregated results
+    print(f"\n💾 Step 3: Saving aggregated results...")
+    aggregated_data.to_csv(Inference.WORD_SUMMARY_CSV, index=False)
+    
+    print(f"\n✅ ANALYSIS COMPLETED SUCCESSFULLY!")
+    print(f"📄 Aggregated results saved to: {Inference.WORD_SUMMARY_CSV}")
+    print("=" * 70)
+    
+    return aggregated_data
+
+if __name__ == "__main__":
+    # Run the analysis with default parameters
+    main()
