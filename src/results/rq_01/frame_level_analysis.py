@@ -14,8 +14,8 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import DataPaths, ResearchQuestions
-from config import DataConfig, Research_QuestionConfig
+from constants import DataPaths, Inference
+from config import DataConfig, InferenceConfig
 
 # Constants
 FPS = DataConfig.FPS # frames per second
@@ -195,7 +195,7 @@ def get_all_analysis_data(conn):
     """
     return pd.read_sql(query, conn)
 
-def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_window_sec=15):
+def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_window_sec):
     """
     Adaptive turn-taking detection:
     - Uses smaller window (base_window_sec) when child is alone
@@ -275,63 +275,152 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
     df_with_interaction = df.merge(result_df, on=['frame_number', 'video_id'], how='left')
     df_with_interaction['is_audio_interaction'] = df_with_interaction['is_audio_interaction'].fillna(False)
 
-    total_interactions = df_with_interaction['is_audio_interaction'].sum()
-    print(f"Found {total_interactions:,} frames with interactions ({total_interactions/len(df)*100:.1f}%)")
-
     return df_with_interaction['is_audio_interaction']
 
-def run_frame_level_analysis(db_path: Path, output_dir: Path):
+def classify_interaction_with_audio(row, results_df):
+    """
+    Hierarchical social interaction classifier with dynamic proximity and audio priority.
+    
+    CLASSIFICATION LOGIC:
+    1. INTERACTING: Active social engagement
+    - Turn-taking audio interaction detected (highest priority)
+    - OR Very close proximity (>= PROXIMITY_THRESHOLD)
+    - OR other person speaking
+    - OR an adult face (proximity doesn't matter) + recent speech
+    
+    2. CO-PRESENT SILENT: Passive social presence
+    - Person detected but no active interaction indicators
+    
+    3. ALONE: No social presence detected
+    
+    Parameters
+    ----------
+    row : pd.Series
+        DataFrame row with detection flags and proximity values
+    results_df : pd.DataFrame
+        The full DataFrame to enable window-based lookups
+        
+    Returns
+    -------
+    str
+        Interaction category ('Interacting', 'Co-present Silent', 'Alone')
+    """
+    # Calculate recent proximity once at the beginning
+    current_index = row.name
+    window_start = max(0, current_index - InferenceConfig.TURN_TAKING_WINDOW_SEC)
+    recent_speech_exists = (results_df.loc[window_start:current_index, 'other_speech_present'] == 1).any()
+
+    # Check if a person is present at all, using the combined flags
+    person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
+    
+    # Tier 1: INTERACTING (Active engagement)
+    is_active_interaction = (
+        row['is_audio_interaction'] or # turn taking
+        (row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) or # very close proximity
+        row['other_speech_present'] or # other person speaking
+        (row['has_adult_face'] == 1 and recent_speech_exists) # adult face + recent speech
+    )
+
+    if is_active_interaction:
+        return "Interacting"
+
+    # Tier 2: CO-PRESENT SILENT (Passive presence)
+    if person_is_present:
+        return "Co-present Silent"
+
+    # Tier 3: ALONE (No presence)
+    return "Alone"
+
+def classify_face_category(row):
+    """Categorize face detection patterns for attention analysis."""
+    if row['has_child_face'] and not row['has_adult_face']:
+        return 'only_child'
+    elif row['has_adult_face'] and not row['has_child_face']:
+        return 'only_adult'
+    elif row['has_child_face'] and row['has_adult_face']:
+        return 'both_faces'
+    else:
+        return 'no_faces'
+
+def classify_person_category(row):
+    """Categorize person detection patterns for presence analysis."""
+    if row['has_child_person'] and not row['has_adult_person']:
+        return 'only_child'
+    elif row['has_adult_person'] and not row['has_child_person']:
+        return 'only_adult'
+    elif row['has_child_person'] and row['has_adult_person']:
+        return 'both_persons'
+    else:
+        return 'no_persons'
+
+def merge_age_information(df):
+    """
+    Merge age information from subjects CSV into the DataFrame.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Frame-level data with video_name column
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with age information merged
+    """
+    print("👶 Merging age information...")
+    
+    try:
+        subjects_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+        print(f"Loaded subjects data with {len(subjects_df)} records")
+        
+        # Merge age information based on video_name
+        df_with_age = df.merge(
+            subjects_df[['video_name', 'age_at_recording']], 
+            on='video_name', 
+            how='left'
+        )
+        
+        # Check merge success
+        missing_age_count = df_with_age['age_at_recording'].isna().sum()
+        if missing_age_count > 0:
+            print(f"⚠️ Warning: {missing_age_count} frames missing age data ({missing_age_count/len(df_with_age)*100:.1f}%)")
+            
+            # Show some examples of unmatched video names
+            unmatched_videos = df_with_age[df_with_age['age_at_recording'].isna()]['video_name'].unique()[:5]
+            print(f"Examples of unmatched video names: {list(unmatched_videos)}")
+        else:
+            print("✅ All frames successfully matched with age data")
+
+        # Reorder columns to put age near the beginning
+        cols = df_with_age.columns.tolist()
+        new_order = ['frame_number', 'video_id', 'video_name', 'age_at_recording'] + [col for col in cols if col not in ['frame_number', 'video_id', 'video_name', 'age_at_recording']]
+        df_with_age = df_with_age[new_order]
+        
+        return df_with_age
+        
+    except FileNotFoundError:
+        print(f"   ⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
+        print("   Proceeding without age information")
+        return df
+    except Exception as e:
+        print(f"   ⚠️ Warning: Error loading subjects data: {e}")
+        print("   Proceeding without age information")
+        return df
+
+def main(db_path: Path, output_dir: Path):
     """
     Main analysis function that orchestrates multimodal social interaction analysis.
     
-    This function performs the following analytical steps:
+    This function performs comprehensive frame-level analysis by calling specialized
+    helper functions for each analytical step:
     
-    1. DATA INTEGRATION:
-    - Executes the comprehensive multimodal query via get_all_analysis_data()
-    - Combines visual (person/face) and auditory (speech) detection modalities
-    - Creates a unified frame-level dataset with temporal alignment
-    
-    2. FEATURE ENGINEERING:
-    - Speech flags: Separates child speech (KCHI) from other speech
-    - Interaction categories: Classifies social contexts (Alone, Co-present, Interacting)
-    - Frame categories: Categorizes presence patterns for faces and persons
-    
-    3. SOCIAL INTERACTION CLASSIFICATION:
-    
-        INTERACTION CATEGORIES:
-        - "Interacting": Active social engagement detected
-         * High proximity faces (>= 0.5) indicating close social contact
-         * OR other person speaking (active communication)
-         * OR person detected with recent speech
-    
-        - "Co-present Silent": Passive social presence 
-         * People detected but no active interaction indicators
-         * Physical presence without communication or close contact
-    
-        - "Alone": No social presence detected
-         * No people detected in any modality
-         * Child is physically and socially isolated
-    
-    4. TEMPORAL GRANULARITY ANALYSIS:
-    - Frame-level (1/3 second intervals) for precise temporal dynamics
-    - Enables fine-grained analysis of interaction transitions
-    - Supports identification of brief social moments and extended episodes
-    
-    5. MULTIMODAL VALIDATION:
-    - Cross-validates detection across visual and auditory channels
-    - Reduces false positives through multi-source confirmation
-    - Handles missing data gracefully with modality-specific fallbacks
-    
-    6. OUTPUT GENERATION:
-    - Summary statistics: Distribution of interaction categories and presence patterns
-    - Frame-level data: Complete temporal record for longitudinal analysis
-    - CSV exports: Both aggregate summaries and detailed frame-by-frame data
-    
-    ANALYTICAL ADVANTAGES:
-    - Temporal precision: 1/3 second granularity captures rapid social dynamics
-    - Multimodal robustness: Multiple detection channels reduce noise
-    - Social context differentiation: Distinguishes active interaction from mere presence
-    - Comprehensive coverage: Analyzes entire video corpus systematically
+    1. Data integration (multimodal query)
+    2. Audio turn-taking analysis
+    3. Speech feature extraction
+    4. Social interaction classification
+    5. Presence pattern categorization
+    6. Age information merging
+    7. Results export
     
     Parameters
     ----------
@@ -345,223 +434,47 @@ def run_frame_level_analysis(db_path: Path, output_dir: Path):
     dict: 
         Summary statistics including interaction and presence distributions
     """
+    print("🔄 Running comprehensive multimodal social interaction analysis...")
+    
     with sqlite3.connect(db_path) as conn:
-        print("🔄 Running comprehensive multimodal social interaction analysis...")
-        
-        # ====================================================================
-        # STEP 1: DATA INTEGRATION AND FEATURE ENGINEERING
-        # ====================================================================
+        # Step 1: Data integration
         all_data = get_all_analysis_data(conn)
-        print(f"📊 Integrated {len(all_data):,} frames across {all_data['video_id'].nunique()} videos")
         
-        # ====================================================================
-        # STEP 2: AUDIO TURN-TAKING ANALYSIS
-        # ====================================================================
-        # Add the audio interaction flag to the DataFrame
+        # Step 2: Audio turn-taking analysis
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
-            all_data, FPS, Research_QuestionConfig.TURN_TAKING_WINDOW_SEC, 
+            all_data, FPS, InferenceConfig.TURN_TAKING_BASE_WINDOW_SEC, InferenceConfig.TURN_TAKING_EXT_WINDOW_SEC
         )
         
-        # ====================================================================
-        # STEP 3: SPEECH MODALITY FEATURE EXTRACTION
-        # ====================================================================
-        # Binary flags for speech presence by speaker type
-        all_data['kchi_speech_present'] = all_data['speaker'].str.contains('KCHI', na=False).astype(int)
-        all_data['other_speech_present'] = all_data['speaker'].str.contains('FEM_MAL', na=False).astype(int)
-
-        speech_stats = {
-            'kchi_frames': all_data['kchi_speech_present'].sum(),
-            'other_speech_frames': all_data['other_speech_present'].sum(),
-            'silent_frames': len(all_data) - all_data['kchi_speech_present'].sum() - all_data['other_speech_present'].sum()
-        }
-        print(f"🎤 Speech analysis: {speech_stats['kchi_frames']:,} child speech frames, {speech_stats['other_speech_frames']:,} other speech frames")
+        # Step 3: Speech feature extraction        
+        for cls in InferenceConfig.SPEECH_CLASSES:
+            col_name = f"{cls.lower()}_speech_present"
+            all_data[col_name] = all_data['speaker'].str.contains(cls, na=False).astype(int)
         
-        # ====================================================================
-        # STEP 4: SOCIAL INTERACTION CLASSIFICATION (with audio priority)
-        # ====================================================================
-        # Three-tier classification system based on interaction intensity                
-        def classify_interaction_with_audio(row, results_df):
-            """
-            Hierarchical social interaction classifier with dynamic proximity and audio priority.
-            
-            CLASSIFICATION LOGIC:
-            1. INTERACTING: Active social engagement
-            - Turn-taking audio interaction detected (highest priority)
-            - OR Very close proximity (>= PROXIMITY_THRESHOLD)
-            - OR other person speaking
-            - OR an adult face (proximity doesn't matter) + recent speech (last 3 sec)
-            
-            2. CO-PRESENT SILENT: Passive social presence
-            - Person detected but no active interaction indicators
-            
-            3. ALONE: No social presence detected
-            
-            Args:
-                row: DataFrame row with detection flags and proximity values
-                results_df: The full DataFrame to enable window-based lookups
-                window_size_frames: The size of the sliding window in frames
-                PROXIMITY_THRESHOLD: The threshold for defining "close" proximity
-                
-            Returns:
-                str: Interaction category ('Interacting', 'Co-present Silent', 'Alone')
-            """
-    
-            # Calculate recent proximity once at the beginning
-            current_index = row.name
-            window_start = max(0, current_index - Research_QuestionConfig.TURN_TAKING_WINDOW_SEC)
-            recent_speech_exists = (results_df.loc[window_start:current_index, 'other_speech_present'] == 1).any()
-
-            # Check if a person is present at all, using the combined flags
-            person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
-            
-            # =======================================================================
-            # Tier 1: INTERACTING (Active engagement)
-            # This tier is evaluated first due to its high-confidence indicators.
-            # =======================================================================
-            is_active_interaction = (
-                row['is_audio_interaction'] or # turn taking
-                (row['proximity'] >= Research_QuestionConfig.RQ1_PROXIMITY_THRESHOLD) or # very close proximity
-                row['other_speech_present'] or # other person speaking
-                (row['has_adult_face'] == 1 and recent_speech_exists) # adult face + recent speech
-            )
-
-            if is_active_interaction:
-                return "Interacting"
-
-            # =======================================================================
-            # Tier 2: CO-PRESENT SILENT (Passive presence)
-            # This tier is evaluated if no active interaction is found.
-            # =======================================================================
-            if person_is_present:
-                return "Co-present Silent"
-
-            # =======================================================================
-            # Tier 3: ALONE (No presence)
-            # This is the default if no social presence is detected.
-            # =======================================================================
-            return "Alone"
-
-        # Use a lambda function to pass the DataFrame into the `apply` call
+        # Step 4: Social interaction classification
         all_data['interaction_category'] = all_data.apply(
             lambda row: classify_interaction_with_audio(row, all_data), axis=1
         )
-        
-        # ====================================================================
-        # STEP 5: PRESENCE PATTERN CATEGORIZATION
-        # ====================================================================
-        # Face-level categorization for social attention analysis
-        def classify_face_category(row):
-            """Categorize face detection patterns for attention analysis."""
-            if row['has_child_face'] and not row['has_adult_face']:
-                return 'only_child'
-            elif row['has_adult_face'] and not row['has_child_face']:
-                return 'only_adult'
-            elif row['has_child_face'] and row['has_adult_face']:
-                return 'both_faces'
-            else:
-                return 'no_faces'
-        
-        # Person-level categorization for physical presence analysis
-        def classify_person_category(row):
-            """Categorize person detection patterns for presence analysis."""
-            if row['has_child_person'] and not row['has_adult_person']:
-                return 'only_child'
-            elif row['has_adult_person'] and not row['has_child_person']:
-                return 'only_adult'
-            elif row['has_child_person'] and row['has_adult_person']:
-                return 'both_persons'
-            else:
-                return 'no_persons'
-        
+
+        # Step 5: Presence pattern categorization       
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
         all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
-        
-        # ====================================================================
-        # STEP 5: STATISTICAL SUMMARY GENERATION
-        # ====================================================================
-        summaries = {}
-        
-        # Interaction distribution analysis
-        interaction_dist = all_data['interaction_category'].value_counts()
-        summaries['interaction_distribution'] = interaction_dist.to_dict()
-        print(f"🤝 Interaction distribution: {dict(interaction_dist)}")
-        
-        # Face presence pattern analysis
-        face_dist = all_data['face_frame_category'].value_counts()
-        summaries['face_category_distribution'] = face_dist.to_dict()
-        print(f"👤 Face pattern distribution: {dict(face_dist)}")
-        
-        # Person presence pattern analysis  
-        person_dist = all_data['person_frame_category'].value_counts()
-        summaries['person_category_distribution'] = person_dist.to_dict()
-        print(f"🚶 Person pattern distribution: {dict(person_dist)}")
-        
-        # ====================================================================
-        # STEP 6: STATISTICAL SUMMARY GENERATION
-        # ====================================================================
-        summaries = {}
-        
-        # Interaction distribution analysis
-        interaction_dist = all_data['interaction_category'].value_counts()
-        summaries['interaction_distribution'] = interaction_dist.to_dict()
-        print(f"🤝 Interaction distribution: {dict(interaction_dist)}")
-        
-        # Face presence pattern analysis
-        face_dist = all_data['face_frame_category'].value_counts()
-        summaries['face_category_distribution'] = face_dist.to_dict()
-        print(f"👤 Face pattern distribution: {dict(face_dist)}")
-        
-        # Person presence pattern analysis  
-        person_dist = all_data['person_frame_category'].value_counts()
-        summaries['person_category_distribution'] = person_dist.to_dict()
-        print(f"🚶 Person pattern distribution: {dict(person_dist)}")
-        
-        # ====================================================================
-        # STEP 7: DATA EXPORT AND PERSISTENCE
-        # ====================================================================   
-        # ====================================================================
-        # STEP 7: DATA EXPORT AND PERSISTENCE
-        # ====================================================================        
-        # Load subjects CSV to get age information
-        try:
-            subjects_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
-            print(f"📋 Loaded subjects data with {len(subjects_df)} records")
-            
-            # Merge age information based on video_name
-            all_data = all_data.merge(
-                subjects_df[['video_name', 'age_at_recording']], 
-                on='video_name', 
-                how='left'
-            )
-            
-            # Check merge success
-            missing_age_count = all_data['age_at_recording'].isna().sum()
-            if missing_age_count > 0:
-                print(f"⚠️ Warning: {missing_age_count} frames missing age data ({missing_age_count/len(all_data)*100:.1f}%)")
+
+        print("Finish multimodal frame-wise analysis.")
+        # Step 7: Merge age information
+        print("Adding age information...")
+        all_data = merge_age_information(all_data)
                 
-                # Show some examples of unmatched video names
-                unmatched_videos = all_data[all_data['age_at_recording'].isna()]['video_name'].unique()[:5]
-                print(f"Examples of unmatched video names: {list(unmatched_videos)}")
-            
-            # Reorder columns to put age near the beginning
-            cols = all_data.columns.tolist()
-            new_order = ['frame_number', 'video_id', 'video_name', 'age_at_recording'] + [col for col in cols if col not in ['frame_number', 'video_id', 'video_name', 'age_at_recording']]
-            all_data = all_data[new_order]
-            
-        except FileNotFoundError:
-            print(f"⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
-            print("Proceeding without age information")
-        except Exception as e:
-            print(f"⚠️ Warning: Error loading subjects data: {e}")
-            print("Proceeding without age information")
-        
-        # Complete frame-level dataset (for temporal analysis)
+        # Create output directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
-        # use the last stem form this variable and append it with output_dir
-        file_name = ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV.name  # -> "frame_level_interactions.csv"
+        
+        # Step 8: Save results
+
+        file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.name
         all_data.to_csv(output_dir / file_name, index=False)
-    print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
+
+        print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
+        print(f"📄 File contains {len(all_data):,} records across {all_data['video_id'].nunique()} videos")
 
 if __name__ == "__main__":
     # Run the main analysis to create CSV files
-    run_frame_level_analysis(db_path=DataPaths.INFERENCE_DB_PATH, output_dir=ResearchQuestions.RQ1_OUTPUT_DIR)
+    main(db_path=DataPaths.INFERENCE_DB_PATH, output_dir=Inference.RQ1_OUTPUT_DIR)
