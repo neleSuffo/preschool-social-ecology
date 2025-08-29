@@ -27,10 +27,10 @@ src_path = Path(__file__).parent
 sys.path.append(str(src_path))
 
 from inference.main import main as run_model_inference
-from results.rq_01.frame_level_analysis import main as run_frame_level_analysis
-from results.rq_01.video_level_analysis import main as create_interaction_segments
-from results.rq_01.create_annotated_video import main as create_annotated_video
-from constants import DataPaths, Inference
+from results.frame_level_analysis import main as run_frame_level_analysis
+from results.video_level_analysis import main as create_interaction_segments
+from results.create_annotated_video import main as create_annotated_video
+from constants import Inference
 
 def run_inference(video_path, temp_db_path):
     """
@@ -47,12 +47,7 @@ def run_inference(video_path, temp_db_path):
     print("STEP 1: RUNNING INFERENCE PIPELINE")
     print("="*60)
     
-    try:
-        # Import and run the main inference script
-        # You'll need to create/adapt this based on your actual inference pipeline
-        print(f"🔍 Running inference on: {video_path.name}")
-        print(f"📊 Results will be stored in: {temp_db_path}")
-        
+    try:       
         success = run_model_inference(video_path=video_path, db_path=temp_db_path)
 
         if success:
@@ -90,7 +85,7 @@ def generate_frame_level_analysis(temp_db_path: Path, output_dir: Path):
         print(f"📊 Generating frame-level classifications...")
         run_frame_level_analysis(temp_db_path, output_dir)
 
-        if (output_dir / ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV.name).exists():
+        if (output_dir / Inference.FRAME_LEVEL_INTERACTIONS_CSV.name).exists():
             print("✅ Frame-level analysis completed successfully")
             return True
         else:
@@ -166,7 +161,6 @@ def process_single_video(video_path: Path):
     
     if success:
         print(f"✅ Successfully processed: {video_path.name}")
-        show_results_summary(output_dir)
     else:
         print(f"❌ Failed to process: {video_path.name}")
 
@@ -184,10 +178,7 @@ def process_multiple_videos(video_files, input_dir):
     
     # Create temporary database path for all videos
     temp_db_path = output_dir / "temp_inference.db"
-    
-    print(f"📁 Single output directory: {output_dir.absolute()}")
-    print(f"🎬 Processing {len(video_files)} videos with shared analysis...")
-    
+        
     try:
         # Step 1: Run inference for ALL videos (only once)
         print(f"\n{'='*60}")
@@ -197,7 +188,7 @@ def process_multiple_videos(video_files, input_dir):
         inference_success = True
         for i, video_file in enumerate(sorted(video_files), 1):
             print(f"🔍 Running inference {i}/{len(video_files)} on: {video_file.name}")
-            if not run_inference(video_file, temp_db_path):
+            if not run_inference(input_dir, temp_db_path):
                 print(f"❌ Inference failed for: {video_file.name}")
                 inference_success = False
                 break
@@ -206,142 +197,23 @@ def process_multiple_videos(video_files, input_dir):
             print("❌ Pipeline failed during inference step")
             return
         
-        # Step 2: Generate frame-level analysis for ALL videos (only once)
-        print(f"\n{'='*60}")
-        print("STEP 2: GENERATING FRAME-LEVEL ANALYSIS FOR ALL VIDEOS")
-        print(f"{'='*60}")
-        
+        # Step 2: Generate frame-level analysis for ALL videos (only once)        
         if not generate_frame_level_analysis(temp_db_path, output_dir):
             print("❌ Pipeline failed at frame-level analysis step")
             return
         
-        # Step 3: Generate segment analysis for ALL videos (only once)
-        print(f"\n{'='*60}")
-        print("STEP 3: GENERATING SEGMENT ANALYSIS FOR ALL VIDEOS")
-        print(f"{'='*60}")
-        
+        # Step 3: Generate segment analysis for ALL videos (only once)        
         if not generate_segment_analysis(output_dir):
             print("❌ Pipeline failed at segment analysis step")
             return
-        
-        # Step 4: Create annotated videos for each video individually
-        print(f"\n{'='*60}")
-        print("STEP 4: CREATING ANNOTATED VIDEOS")
-        print(f"{'='*60}")
-        
-        successful_videos = 0
-        failed_videos = 0
-        
-        for i, video_file in enumerate(sorted(video_files), 1):
-            print(f"\n🎬 Creating annotated video {i}/{len(video_files)}: {video_file.name}")
-            
-            try:
-                if create_annotated_video_for_shared_analysis(video_file, output_dir):
-                    successful_videos += 1
-                    print(f"✅ Successfully created annotated video: {video_file.name}")
-                else:
-                    failed_videos += 1
-                    print(f"❌ Failed to create annotated video: {video_file.name}")
-            except Exception as e:
-                failed_videos += 1
-                print(f"❌ Error creating annotated video for {video_file.name}: {e}")
-        
-        # Summary
-        print(f"\n{'='*60}")
-        print(f"📊 BATCH PROCESSING SUMMARY")
-        print(f"{'='*60}")
-        print(f"📁 Output directory: {output_dir.absolute()}")
-        print(f"Total videos: {len(video_files)}")
-        print(f"✅ Successful annotated videos: {successful_videos}")
-        print(f"❌ Failed annotated videos: {failed_videos}")
-        
-        if successful_videos > 0:
-            print(f"🎉 Batch processing completed!")
-            show_shared_results_summary(output_dir, successful_videos)
-    
+
+        # Step 4: Create annotated videos for each video in input directory   
+        if not create_annotated_video(input_dir, output_dir):
+            return
+
     finally:
         # Clean up temporary files
         cleanup_temp_files(temp_db_path)
-
-def create_annotated_video_for_shared_analysis(video_path, output_dir):
-    """
-    Create annotated video using shared CSV files from the output directory.
-    
-    Args:
-        video_path (Path): Path to the video file
-        output_dir (Path): Output directory containing shared CSV files
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        # Check if required CSV files exist
-        frame_csv = output_dir / "frame_level_social_interactions.csv"
-        segments_csv = output_dir / "interaction_segments.csv"
-        
-        if not frame_csv.exists():
-            print(f"❌ Frame-level CSV not found: {frame_csv}")
-            return False
-        
-        if not segments_csv.exists():
-            print(f"❌ Segments CSV not found: {segments_csv}")
-            return False
-        
-        # Create annotated video in the shared output directory
-        annotated_video_path = output_dir / f"{video_path.stem}_annotated.mp4"
-        
-        # Import the annotation function
-        from results.rq_01.create_annotated_video import create_annotated_video_with_custom_csvs
-        
-        print(f"🎬 Creating annotated video: {annotated_video_path.name}")
-        
-        success = create_annotated_video_with_custom_csvs(
-            video_path=str(video_path),
-            frame_csv_path=str(frame_csv),
-            segments_csv_path=str(segments_csv),
-            output_path=str(annotated_video_path)
-        )
-        
-        if success and annotated_video_path.exists():
-            print(f"✅ Annotated video created: {annotated_video_path.name}")
-            return True
-        else:
-            print(f"❌ Failed to create annotated video: {annotated_video_path.name}")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Error creating annotated video for {video_path.name}: {e}")
-        return False
-
-def show_shared_results_summary(output_dir, successful_videos):
-    """
-    Show a summary of the shared analysis results.
-    
-    Args:
-        output_dir (Path): Output directory containing results
-        successful_videos (int): Number of successfully processed videos
-    """
-    print(f"📁 All outputs saved to: {output_dir.absolute()}")
-    print(f"📊 Generated files:")
-    
-    # Show CSV files
-    frame_csv = output_dir / "frame_level_social_interactions.csv"
-    segments_csv = output_dir / "interaction_segments.csv"
-    
-    if frame_csv.exists():
-        size_mb = frame_csv.stat().st_size / (1024 * 1024)
-        print(f"   📋 {frame_csv.name} ({size_mb:.1f} MB) - Combined frame-level analysis")
-    
-    if segments_csv.exists():
-        size_mb = segments_csv.stat().st_size / (1024 * 1024)
-        print(f"   📋 {segments_csv.name} ({size_mb:.1f} MB) - Combined segment analysis")
-    
-    # Show annotated videos
-    annotated_videos = list(output_dir.glob("*_annotated.mp4"))
-    print(f"   🎬 {len(annotated_videos)} annotated videos:")
-    for video in sorted(annotated_videos):
-        size_mb = video.stat().st_size / (1024 * 1024)
-        print(f"      • {video.name} ({size_mb:.1f} MB)")
 
 def run_pipeline_for_video(video_path, output_dir, temp_db_path):
     """
@@ -383,25 +255,6 @@ def run_pipeline_for_video(video_path, output_dir, temp_db_path):
     finally:
         # Clean up temporary files
         cleanup_temp_files(temp_db_path)
-
-def show_results_summary(output_dir):
-    """
-    Show a summary of the generated results.
-    
-    Args:
-        output_dir (Path): Output directory containing results
-    """
-    print("\n" + "="*60)
-    print("🎉 PIPELINE COMPLETED SUCCESSFULLY!")
-    print("="*60)
-    print(f"📁 All outputs saved to: {output_dir.absolute()}")
-    print(f"📊 Generated files:")
-    
-    output_files = list(output_dir.glob("*"))
-    for file in sorted(output_files):
-        if file.name != "temp_inference.db":
-            size_mb = file.stat().st_size / (1024 * 1024)
-            print(f"   • {file.name} ({size_mb:.1f} MB)")
             
 def main(input_path: str):
     """
