@@ -244,19 +244,25 @@ def create_interaction_segments(output_dir: Path, frame_data_path: Path):
     cols = ['video_name', 'child_id', 'age_at_recording'] + [col for col in segments_df.columns if col not in ['video_name', 'child_id', 'age_at_recording']]
     segments_df = segments_df.loc[:, cols]
 
-    # Final summary statistics
+    # Final summary statistics with duration information
     if len(segments_df) > 0:
         total_segments = len(segments_df)
         interacting_segments = len(segments_df[segments_df['category'] == 'Interacting'])
         alone_segments = len(segments_df[segments_df['category'] == 'Alone'])
         copresent_segments = len(segments_df[segments_df['category'] == 'Co-present Silent'])
-        
+
+        # Calculate total duration for each segment category in minutes (with two decimals)
+        total_duration = round(segments_df['duration_sec'].sum() / 60, 2)
+        interacting_duration = round(segments_df[segments_df['category'] == 'Interacting']['duration_sec'].sum() / 60, 2)
+        alone_duration = round(segments_df[segments_df['category'] == 'Alone']['duration_sec'].sum() / 60, 2)
+        copresent_duration = round(segments_df[segments_df['category'] == 'Co-present Silent']['duration_sec'].sum() / 60, 2)
+
         print(f"\n📊 Final segment summary:")
-        print(f"   Total segments: {total_segments}")
-        print(f"   Interacting: {interacting_segments} ({interacting_segments/total_segments*100:.1f}%)")
-        print(f"   Alone: {alone_segments} ({alone_segments/total_segments*100:.1f}%)")
+        print(f"   Total segments: {total_segments} ({total_duration} minutes)")
+        print(f"   Interacting: {interacting_segments} ({interacting_duration} minutes - {interacting_duration/total_duration*100:.1f}%)")
+        print(f"   Alone: {alone_segments} ({alone_duration} minutes - {alone_duration/total_duration*100:.1f}%)")
         if copresent_segments > 0:
-            print(f"   Co-present Silent: {copresent_segments} ({copresent_segments/total_segments*100:.1f}%)")
+            print(f"   Co-present Silent: {copresent_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
 
     print(f"Created {len(segments_df)} segments after buffering and merging.")
     file_name = ResearchQuestions.INTERACTION_SEGMENTS_CSV.name
