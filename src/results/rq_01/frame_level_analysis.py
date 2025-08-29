@@ -214,7 +214,6 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
     """
     base_window_frames = base_window_sec * fps
     extended_window_frames = extended_window_sec * fps
-    print(f"🎤 Adaptive turn-taking: base {base_window_sec}s, extended {extended_window_sec}s")
 
     df_copy = df.copy()   
     df_copy['has_kchi'] = df_copy['speaker'].str.contains('KCHI', na=False).astype(int)
@@ -366,12 +365,9 @@ def merge_age_information(df):
     -------
     pd.DataFrame
         DataFrame with age information merged
-    """
-    print("👶 Merging age information...")
-    
+    """    
     try:
         subjects_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
-        print(f"Loaded subjects data with {len(subjects_df)} records")
         
         # Merge age information based on video_name
         df_with_age = df.merge(
@@ -388,8 +384,6 @@ def merge_age_information(df):
             # Show some examples of unmatched video names
             unmatched_videos = df_with_age[df_with_age['age_at_recording'].isna()]['video_name'].unique()[:5]
             print(f"Examples of unmatched video names: {list(unmatched_videos)}")
-        else:
-            print("✅ All frames successfully matched with age data")
 
         # Reorder columns to put age near the beginning
         cols = df_with_age.columns.tolist()
@@ -399,12 +393,12 @@ def merge_age_information(df):
         return df_with_age
         
     except FileNotFoundError:
-        print(f"   ⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
-        print("   Proceeding without age information")
+        print(f"⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
+        print("Proceeding without age information")
         return df
     except Exception as e:
-        print(f"   ⚠️ Warning: Error loading subjects data: {e}")
-        print("   Proceeding without age information")
+        print(f"⚠️ Warning: Error loading subjects data: {e}")
+        print("Proceeding without age information")
         return df
 
 def main(db_path: Path, output_dir: Path):
@@ -459,9 +453,7 @@ def main(db_path: Path, output_dir: Path):
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
         all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
 
-        print("Finish multimodal frame-wise analysis.")
         # Step 7: Merge age information
-        print("Adding age information...")
         all_data = merge_age_information(all_data)
                 
         # Create output directory if it doesn't exist
