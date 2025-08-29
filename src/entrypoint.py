@@ -28,9 +28,9 @@ sys.path.append(str(src_path))
 
 from inference.main import main as run_model_inference
 from results.rq_01.frame_level_analysis import main as run_frame_level_analysis
-from results.rq_01.video_level_analysis import create_interaction_segments
+from results.rq_01.video_level_analysis import main as create_interaction_segments
 from results.rq_01.create_annotated_video import main as create_annotated_video
-from constants import DataPaths, ResearchQuestions
+from constants import DataPaths, Inference
 
 def run_inference(video_path, temp_db_path):
     """
@@ -115,26 +115,11 @@ def generate_segment_analysis(output_dir):
     print("STEP 3: GENERATING SEGMENT ANALYSIS")
     print("="*60)
     
-    try:
-        # Import and run segment analysis
-        sys.path.append(str(src_path / "results" / "rq_01"))
-        from video_level_analysis import create_interaction_segments
-        
-        # Update paths to use our custom output directory
-        original_frame_csv = ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV
-        original_segments_csv = ResearchQuestions.INTERACTION_SEGMENTS_CSV
-        
-        ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV = output_dir / "frame_level_social_interactions.csv"
-        ResearchQuestions.INTERACTION_SEGMENTS_CSV = output_dir / "interaction_segments.csv"
-        
-        print(f"📊 Generating interaction segments...")
-        create_interaction_segments()
-        
-        # Restore original paths
-        ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV = original_frame_csv
-        ResearchQuestions.INTERACTION_SEGMENTS_CSV = original_segments_csv
-        
-        if (output_dir / "interaction_segments.csv").exists():
+    try:       
+        create_interaction_segments(output_dir)
+
+        file_name = Inference.INTERACTION_SEGMENTS_CSV.name
+        if (output_dir / file_name).exists():
             print("✅ Segment analysis completed successfully")
             return True
         else:
