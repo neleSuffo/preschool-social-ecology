@@ -35,13 +35,20 @@ def row_wise_mapping(voc_row, video_segments_df):
         (video_segments_df['end_time_sec'] >= voc_row['start_time_seconds'])
     ]
     results = []
-    # For each overlapping segment, calculate the overlap duration and proportion of words
+    
+    # Calculate words per second rate for this vocalization
+    total_seconds = voc_row['end_time_seconds'] - voc_row['start_time_seconds']
+    words_per_second = voc_row['words'] / total_seconds if total_seconds > 0 else 0
+    
+    # For each overlapping segment, calculate overlap duration and allocate words
     for _, seg in overlaps.iterrows():
         overlap_start = max(voc_row['start_time_seconds'], seg['start_time_sec'])
         overlap_end = min(voc_row['end_time_seconds'], seg['end_time_sec'])
-        overlap_seconds = overlap_end - overlap_start + 1
-        total_seconds = voc_row['end_time_seconds'] - voc_row['start_time_seconds'] + 1
-        prop = overlap_seconds / total_seconds
+        overlap_seconds = overlap_end - overlap_start
+        
+        # Allocate words based on overlap duration and words-per-second rate
+        allocated_words = words_per_second * overlap_seconds
+        
         results.append({
             'video_id': voc_row['video_id'],
             'child_id': voc_row['child_id'],
@@ -49,7 +56,7 @@ def row_wise_mapping(voc_row, video_segments_df):
             'start_time_seconds': voc_row['start_time_seconds'],
             'end_time_seconds': voc_row['end_time_seconds'],
             'seconds': overlap_seconds,
-            'words': voc_row['words'] * prop,
+            'words': allocated_words,
             'interaction_type': seg['category']
         })
     return results
@@ -106,14 +113,14 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
         # Filter data to this specific video
         video_vocalizations = kchi_vocs[kchi_vocs['video_id'] == video_id]
         video_segments = segments_df[segments_df['video_id'] == video_id]
-                
+
         # Map each vocalization in this video to segments in this video
         for _, voc_row in video_vocalizations.iterrows():
             mapped_rows.extend(row_wise_mapping(voc_row, video_segments))
     
     return pd.DataFrame(mapped_rows)
 
-def main(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV):
+def main():
     """
     Main function to analyze child language production by interaction context.
     
@@ -139,7 +146,7 @@ def main(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = 
     
     # Step 1: Map vocalizations to interaction segments
     print("\n🔄 Step 1: Mapping vocalizations to interaction segments...")
-    mapped_vocalizations = map_vocalizations_to_segments(db_path, segments_csv_path)
+    mapped_vocalizations = map_vocalizations_to_segments()
         
     # Step 2: Aggregate by child_id, age_at_recording, and interaction_type
     print("\n📋 Step 2: Aggregating by child, age, and interaction type...")
@@ -157,6 +164,13 @@ def main(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = 
         aggregated_data = aggregated_data.drop(columns=['seconds'])
         # Round numerical values for cleaner output
         aggregated_data['words'] = aggregated_data['words'].round(1)
+        
+        # Filter out rows with 0 minutes before exporting
+        initial_rows = len(aggregated_data)
+        aggregated_data = aggregated_data[aggregated_data['minutes'] > 0]
+        filtered_rows = len(aggregated_data)
+        if initial_rows > filtered_rows:
+            print(f"   ⚠️ Filtered out {initial_rows - filtered_rows} rows with 0 minutes")
     else:
         print("   ⚠️ No vocalizations found to aggregate")
         # Create empty DataFrame with expected columns
