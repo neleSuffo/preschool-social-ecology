@@ -75,9 +75,8 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
         
     Returns:
     -------
-    pd.DataFrame
-        DataFrame with mapped vocalizations including:
-        ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'words', 'interaction_type']
+    tuple
+        (mapped_vocalizations_df, segments_df) - DataFrame with mapped vocalizations and original segments
     """
     # Load segments DataFrame
     segments_df = pd.read_csv(segments_csv_path)
@@ -118,7 +117,7 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
         for _, voc_row in video_vocalizations.iterrows():
             mapped_rows.extend(row_wise_mapping(voc_row, video_segments))
     
-    return pd.DataFrame(mapped_rows)
+    return pd.DataFrame(mapped_rows), segments_df
 
 def main():
     """
@@ -146,7 +145,7 @@ def main():
     
     # Step 1: Map vocalizations to interaction segments
     print("\n🔄 Step 1: Mapping vocalizations to interaction segments...")
-    mapped_vocalizations = map_vocalizations_to_segments()
+    mapped_vocalizations, segments_df = map_vocalizations_to_segments()
         
     # Step 2: Aggregate by child_id, age_at_recording, and interaction_type
     print("\n📋 Step 2: Aggregating by child, age, and interaction type...")
@@ -156,28 +155,37 @@ def main():
             'words': 'sum',           # Total words
             'seconds': 'sum',         # Total duration in seconds
         }).reset_index()
-        
-        # Calculate words per minute for each segment
-        aggregated_data['minutes'] = (aggregated_data['seconds'] / 60).round(2)
-        aggregated_data['words_per_minute'] = aggregated_data['words'] / (aggregated_data['minutes']).replace([float('inf'), -float('inf')], 0).round(2)
-
-        aggregated_data = aggregated_data.drop(columns=['seconds'])
-        # Round numerical values for cleaner output
-        aggregated_data['words'] = aggregated_data['words'].round(1)
-        
-        # Filter out rows with 0 minutes before exporting
-        initial_rows = len(aggregated_data)
-        aggregated_data = aggregated_data[aggregated_data['minutes'] > 0]
-        filtered_rows = len(aggregated_data)
-        if initial_rows > filtered_rows:
-            print(f"   ⚠️ Filtered out {initial_rows - filtered_rows} rows with 0 minutes")
     else:
-        print("   ⚠️ No vocalizations found to aggregate")
-        # Create empty DataFrame with expected columns
-        aggregated_data = pd.DataFrame(columns=[
-            'child_id', 'age_at_recording', 'interaction_type', 
-            'words', 'seconds', 'minutes', 'words_per_minute'
-        ])
+        aggregated_data = pd.DataFrame(columns=['child_id', 'age_at_recording', 'interaction_type', 'words', 'seconds'])
+    
+    # Calculate total segment duration per child/age/interaction_type combination
+    # Add child_id to segments_df for merging
+    segments_df['child_id'] = segments_df['video_name'].apply(extract_child_id)
+    
+    # Calculate duration in minutes for each segment
+    segments_df['duration_minutes'] = segments_df['duration_sec'] / 60
+    
+    # Aggregate total segment duration by child/age/interaction_type
+    segment_durations = segments_df.groupby(['child_id', 'age_at_recording', 'category'])['duration_minutes'].sum().reset_index()
+    segment_durations = segment_durations.rename(columns={'category': 'interaction_type', 'duration_minutes': 'total_segment_minutes'})
+    
+    # Merge segment durations with aggregated data (LEFT JOIN to include ALL segments)
+    aggregated_data = segment_durations.merge(aggregated_data, on=['child_id', 'age_at_recording', 'interaction_type'], how='left')
+    
+    # Fill missing values for segments where KCHI didn't speak
+    aggregated_data['words'] = aggregated_data['words'].fillna(0)
+    aggregated_data['seconds'] = aggregated_data['seconds'].fillna(0)
+    
+    # Calculate KCHI speaking time in minutes and words per minute
+    aggregated_data['kchi_minutes'] = (aggregated_data['seconds'] / 60).round(2)
+    aggregated_data['words_per_minute'] = aggregated_data['words'] / (aggregated_data['kchi_minutes']).replace([float('inf'), -float('inf')], 0).round(2)
+
+    aggregated_data = aggregated_data.drop(columns=['seconds'])
+    # Round numerical values for cleaner output
+    aggregated_data['words'] = aggregated_data['words'].round(1)
+    aggregated_data['total_segment_minutes'] = aggregated_data['total_segment_minutes'].round(2)
+    
+    # No filtering needed - we want to keep all segments, even those with 0 KCHI minutes
     
     # Step 3: Save aggregated results
     print(f"\n💾 Step 3: Saving aggregated results...")
