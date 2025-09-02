@@ -205,6 +205,7 @@ class YoloConfig:
     
 class InferenceConfig:
     """Configuration for inference settings."""
+    INTERACTION_CLASSES = ['Interacting', 'Co-present', 'Alone']
     SAMPLE_RATE = 10 # every n-th frame is processed
     PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
     MIN_SEGMENT_DURATION_SEC = 5 # minimum duration for a segment to be considered
