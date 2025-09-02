@@ -27,7 +27,7 @@ def row_wise_mapping(voc_row, video_segments_df):
     -------
     list of dict
         List of dictionaries with mapped vocalizations including:
-        ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'words', 'interaction_type']
+        ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'words', 'interaction_type', 'segment_start_time', 'segment_end_time']
     """
     # Find overlapping segments (already filtered to same video)
     overlaps = video_segments_df[
@@ -63,18 +63,6 @@ def row_wise_mapping(voc_row, video_segments_df):
         overlap_end = min(voc_row['end_time_seconds'], extended_end)
         overlap_seconds = overlap_end - overlap_start
         
-        # Debugging: Print detailed example for first few cases
-        if len(results) < 2 and len(overlaps) > 1:  # Only for multi-segment cases
-            print(f"\n🔍 DEBUGGING EXAMPLE:")
-            print(f"   Vocalization: {voc_row['start_time_seconds']:.2f} - {voc_row['end_time_seconds']:.2f} sec ({voc_row['end_time_seconds'] - voc_row['start_time_seconds']:.2f} sec total)")
-            print(f"   Segment ({seg['category']}): {seg['start_time_sec']:.2f} - {seg['end_time_sec']:.2f} sec")
-            if i < len(overlaps) - 1:
-                gap_seconds = extended_end - seg['end_time_sec']
-                print(f"   Extended to next segment start: {extended_end:.2f} sec (gap-filling: +{gap_seconds:.2f} sec)")
-                print(f"   Total segment duration: {total_segment_duration:.2f} sec")
-            print(f"   Overlap: {overlap_start:.2f} - {overlap_end:.2f} sec = {overlap_seconds:.2f} sec")
-            print(f"   Proportion: {overlap_seconds:.2f}/{voc_row['end_time_seconds'] - voc_row['start_time_seconds']:.2f} = {overlap_seconds/(voc_row['end_time_seconds'] - voc_row['start_time_seconds']):.3f}")
-        
         # Allocate words based on overlap duration and words-per-second rate
         allocated_words = words_per_second * overlap_seconds
         
@@ -87,15 +75,10 @@ def row_wise_mapping(voc_row, video_segments_df):
             'seconds': overlap_seconds,
             'words': allocated_words,
             'interaction_type': seg['category'],
-            'total_segment_duration': total_segment_duration
+            'total_segment_duration': total_segment_duration,
+            'segment_start_time': seg['start_time_sec'],
+            'segment_end_time': seg['end_time_sec']
         })
-    # Print summary if this vocalization spanned multiple segments
-    if len(overlaps) > 1:
-        total_allocated = sum(r['seconds'] for r in results)
-        print(f"   ✅ Total allocated: {total_allocated:.2f} sec (should equal {voc_row['end_time_seconds'] - voc_row['start_time_seconds']:.2f} sec)")
-        segment_info = [f"{r['interaction_type']} ({r['seconds']:.2f}s)" for r in results]
-        print(f"   📊 Segments: {segment_info}")
-    
     return results
 
 def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV):
@@ -185,8 +168,6 @@ def main():
     print("\n🔄 Step 1: Mapping vocalizations to interaction segments...")
     mapped_vocalizations = map_vocalizations_to_segments()
 
-    print(mapped_vocalizations.head())
-
     # Step 2: Use mapped vocalizations directly
     print("\n📋 Step 2: Using mapped vocalizations data...")
     
@@ -196,34 +177,51 @@ def main():
     # Select final columns
     final_data = mapped_vocalizations[[
         'child_id', 'age_at_recording', 'interaction_type',
+        'segment_start_time', 'segment_end_time',
         'start_time_seconds', 'end_time_seconds', 'seconds', 'kchi_speech_minutes', 'total_segment_duration'
     ]].copy()
 
-    final_data["minutes"] = (final_data["total_segment_duration"] / 60)
-    final_data["speech_activity_percentage"] = (final_data["kchi_speech_minutes"] / final_data["minutes"]).fillna(0)
-    
+    final_data["segment_duration_minutes"] = (final_data["total_segment_duration"] / 60)
+    final_data["speech_activity_percent"] = (final_data["kchi_speech_minutes"] / final_data["segment_duration_minutes"]).fillna(0)
+
     # Sort by child, age, and start time
+    final_data = final_data.drop(columns=['seconds', 'total_segment_duration'])
     final_data = final_data.sort_values(['child_id', 'age_at_recording', 'start_time_seconds']).reset_index(drop=True)    
     # No filtering needed - we want to keep all segments, even those with 0 KCHI minutes
     
-    # Step 3: Save results
-    print(f"\n💾 Step 3: Saving vocalization mapping results...")
-    final_data.to_csv(Inference.WORD_SUMMARY_CSV, index=False)
+    # Step 2.5: Create segment-level aggregation
+    print("\n📊 Step 2.5: Aggregating KCHI speech by segment...")
+    segment_totals = final_data.groupby([
+        'child_id', 'age_at_recording', 'interaction_type', 
+        'segment_start_time', 'segment_end_time'
+    ]).agg({
+        'kchi_speech_minutes': 'sum',
+        'segment_duration_minutes': 'first',  # Same for all rows in a segment
+        'speech_activity_percent': 'first'    # Will be recalculated
+    }).reset_index()
     
-    # Step 4: Save unique child IDs list
-    print(f"\n📋 Step 4: Saving unique child IDs...")
-    unique_children = final_data[['child_id']].drop_duplicates().sort_values('child_id').reset_index(drop=True)
-    child_ids_path = Inference.WORD_SUMMARY_CSV.parent / "unique_child_ids.csv"
-    unique_children.to_csv(child_ids_path, index=False)
+    # Recalculate speech activity percentage for aggregated data
+    segment_totals['speech_activity_percent'] = (
+        segment_totals['kchi_speech_minutes'] / segment_totals['segment_duration_minutes']
+    ).fillna(0)
+    
+    # Sort segment totals
+    segment_totals = segment_totals.sort_values([
+        'child_id', 'age_at_recording', 'segment_start_time'
+    ]).reset_index(drop=True)
+    
+    # Step 3: Save results
+    print(f"\n💾 Step 3: Saving segment totals...")
+    
+    # Save aggregated segment totals only
+    segment_totals.to_csv(Inference.WORD_SUMMARY_CSV, index=False)
     
     print(f"\n✅ ANALYSIS COMPLETED SUCCESSFULLY!")
-    print(f"📄 Vocalization mapping results saved to: {Inference.WORD_SUMMARY_CSV}")
-    print(f"📄 Unique child IDs saved to: {child_ids_path}")
-    print(f"📊 Total unique children: {len(unique_children)}")
-    print(f"📊 Total mapped vocalizations: {len(final_data)}")
+    print(f"📄 Aggregated segment totals saved to: {Inference.WORD_SUMMARY_CSV}")
+    print(f"📊 Total unique segments: {len(segment_totals)}")
     print("=" * 70)
     
-    return final_data
+    return segment_totals
 
 if __name__ == "__main__":
     # Run the analysis with default parameters
