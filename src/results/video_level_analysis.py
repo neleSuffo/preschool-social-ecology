@@ -3,7 +3,6 @@
 # This script generates video-level segments to analyze the amount of time children spend alone.
 # It applies post-processing to the frame-level data to create these segments.
 
-import sqlite3
 import re
 import sys
 import pandas as pd
@@ -13,7 +12,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import DataPaths, Inference
+from constants import Inference
 from config import DataConfig, InferenceConfig
 
 # Constants
@@ -23,30 +22,61 @@ def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
 
-def validate_interaction_segment(category, duration, video_df, start_frame, end_frame, video_name):
+def validate_interaction_segment(category, duration, video_id, start_time_sec, end_time_sec, video_name):
     """
-    Validate "Interacting" segments for sufficient visual evidence of people.
+    Validate "Interacting" segments for sufficient turn-taking evidence.
+    
+    Checks if KCHI and other speakers alternate within 3-second windows 
+    at least 3 times in segments longer than 30 seconds.
     
     Returns the final category (may downgrade "Interacting" to "Alone")
     """
-    if category == "Interacting" and duration > Research_QuestionConfig.VALIDATION_SEGMENT_DURATION_SEC:
-        # Get frames within this segment
-        segment_frames = video_df[
-            (video_df['frame_number'] >= start_frame) & 
-            (video_df['frame_number'] <= end_frame)
-        ]
+    if category == "Interacting" and duration > InferenceConfig.VALIDATION_SEGMENT_DURATION_SEC:
+        # Import here to avoid circular imports
+        import sqlite3
+        from constants import DataPaths
         
-        # Check if at least 5% of frames have adult or child present
-        if len(segment_frames) > 0:
-            frames_with_people = segment_frames[
-                (segment_frames.get('child_present', 0) == 1) | 
-                (segment_frames.get('adult_present', 0) == 1)
-            ]
-            
-            people_presence_ratio = len(frames_with_people) / len(segment_frames)
+        # Connect to database and get vocalizations for this video and time window
+        conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
+        vocalizations_query = """
+        SELECT speaker, start_time_seconds, end_time_seconds
+        FROM Vocalizations v
+        JOIN Videos vid ON v.video_id = vid.video_id
+        WHERE vid.video_id = ? 
+        AND start_time_seconds < ? 
+        AND end_time_seconds > ?
+        ORDER BY start_time_seconds
+        """
+        
+        vocs_df = pd.read_sql_query(vocalizations_query, conn, 
+                                params=[video_id, end_time_sec, start_time_sec])
+        conn.close()
 
-            if people_presence_ratio < Research_QuestionConfig.PERSON_PRESENT_THRESHOLD:  # Less than 5%
-                return "Alone"
+        if len(vocs_df) < 1:  # Need at least 1 vocalization for turn-taking
+            return "Alone"
+
+        # Count turn-taking instances within 5-second windows
+        turn_taking_count = 0
+        
+        for i in range(len(vocs_df) - 1):
+            current_voc = vocs_df.iloc[i]
+            next_voc = vocs_df.iloc[i + 1]
+            
+            # Check if speakers are different
+            if current_voc['speaker'] != next_voc['speaker']:
+                # Check if one is KCHI and the other is not
+                speakers = {current_voc['speaker'], next_voc['speaker']}
+                if 'KCHI' in speakers and len(speakers) == 2:
+                    # Calculate time gap between vocalizations
+                    time_gap = next_voc['start_time_seconds'] - current_voc['end_time_seconds']
+
+                    # If within 5-second window, count as turn-taking
+                    if 0 <= time_gap <= 5.0:
+                        turn_taking_count += 1
+        
+        # Require at least 3 turn-taking instances for validation
+        if turn_taking_count < 2:
+            return "Alone"
     
     return category
 
@@ -79,7 +109,7 @@ def buffer_short_state_changes(states, frame_numbers):
         run_duration = (frame_numbers[j-1] - frame_numbers[i]) / FPS
         
         # If the run is short and not at the beginning/end, merge it
-        if run_duration < Research_QuestionConfig.RQ1_MIN_CHANGE_DURATION_SEC and i > 0 and j < len(buffered_states):
+        if run_duration < InferenceConfig.MIN_CHANGE_DURATION_SEC and i > 0 and j < len(buffered_states):
             # Replace the short run with the previous state
             buffered_states[i:j] = buffered_states[i-1]
             # Reset i to re-evaluate from the previous point
@@ -129,18 +159,19 @@ def create_segments_for_video(video_id, video_df):
             
             # Only keep segments longer than minimum duration
             segment_duration = (segment_end_frame - segment_start_frame) / FPS
-            if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
-                
-                # Validate "Interacting" segments for visual evidence
-                final_category = validate_interaction_segment(
-                    current_state, segment_duration, video_df, 
-                    segment_start_frame, segment_end_frame, video_name
-                )
+            if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
+
+                # Validate "Interacting" segments for turn-taking evidence
+                # final_category = validate_interaction_segment(
+                #     current_state, segment_duration, video_id, 
+                #     segment_start_frame / FPS, segment_end_frame / FPS, video_name
+                # )
                 
                 segments.append({
                     'video_id': video_id,
                     'video_name': video_name,
-                    'category': final_category,
+                    #'category': final_category,
+                    'category': current_state,
                     'segment_start': segment_start_frame,
                     'segment_end': segment_end_frame,
                     'start_time_sec': segment_start_frame / FPS,
@@ -154,18 +185,18 @@ def create_segments_for_video(video_id, video_df):
     # Handle the final segment
     segment_end_frame = frame_numbers[-1]
     segment_duration = (segment_end_frame - segment_start_frame) / FPS
-    if segment_duration >= Research_QuestionConfig.RQ1_MIN_SEGMENT_DURATION_SEC:
+    if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
         
-        # Validate "Interacting" segments for visual evidence
-        final_category = validate_interaction_segment(
-            current_state, segment_duration, video_df, 
-            segment_start_frame, segment_end_frame, video_name
-        )
+        # # Validate "Interacting" segments for turn-taking evidence
+        # final_category = validate_interaction_segment(
+        #     current_state, segment_duration, video_id, 
+        #     segment_start_frame / FPS, segment_end_frame / FPS, video_name
+        # )
         
         segments.append({
             'video_id': video_id,
             'video_name': video_name,
-            'category': final_category,
+            'category': current_state,
             'segment_start': segment_start_frame,
             'segment_end': segment_end_frame,
             'start_time_sec': segment_start_frame / FPS,
@@ -252,6 +283,8 @@ def add_metadata_to_segments(segments_df, frame_data):
     # Add child_id to segments_df using extract_child_id
     segments_df['child_id'] = segments_df['video_name'].apply(extract_child_id)
     
+    # change segment name "co-present silent" to "Co-present"
+    segments_df['category'] = segments_df['category'].replace("Co-present Silent", "Co-present")
     # Extract age information from frame_data (get unique video_name to age_at_recording mapping)
     try:
         # Get unique video_name to age_at_recording mapping from frame_data
@@ -301,20 +334,20 @@ def print_segment_summary(segments_df):
         total_segments = len(segments_df)
         interacting_segments = len(segments_df[segments_df['category'] == 'Interacting'])
         alone_segments = len(segments_df[segments_df['category'] == 'Alone'])
-        copresent_segments = len(segments_df[segments_df['category'] == 'Co-present Silent'])
+        copresent_segments = len(segments_df[segments_df['category'] == 'Co-present'])
 
         # Calculate total duration for each segment category in minutes (with two decimals)
         total_duration = round(segments_df['duration_sec'].sum() / 60, 2)
         interacting_duration = round(segments_df[segments_df['category'] == 'Interacting']['duration_sec'].sum() / 60, 2)
         alone_duration = round(segments_df[segments_df['category'] == 'Alone']['duration_sec'].sum() / 60, 2)
-        copresent_duration = round(segments_df[segments_df['category'] == 'Co-present Silent']['duration_sec'].sum() / 60, 2)
+        copresent_duration = round(segments_df[segments_df['category'] == 'Co-present']['duration_sec'].sum() / 60, 2)
 
         print(f"\n📊 Final segment summary:")
         print(f"   Total segments: {total_segments} ({total_duration} minutes)")
         print(f"   Interacting: {interacting_segments} ({interacting_duration} minutes - {interacting_duration/total_duration*100:.1f}%)")
         print(f"   Alone: {alone_segments} ({alone_duration} minutes - {alone_duration/total_duration*100:.1f}%)")
         if copresent_segments > 0:
-            print(f"   Co-present Silent: {copresent_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
+            print(f"   Co-present: {copresent_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
     else:
         print("\n📊 No segments created")
 
@@ -372,4 +405,4 @@ def main(output_dir: Path, frame_data_path: Path):
 
 if __name__ == "__main__":
     # Just extract segments from existing frame data
-    main(output_dir=Inference.RQ1_OUTPUT_DIR, frame_data_path=Inference.FRAME_LEVEL_INTERACTIONS_CSV)
+    main(output_dir=Inference.BASE_OUTPUT_DIR, frame_data_path=Inference.FRAME_LEVEL_INTERACTIONS_CSV)
