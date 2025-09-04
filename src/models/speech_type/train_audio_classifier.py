@@ -102,8 +102,8 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
 
     Returns:
         np.ndarray: Combined feature matrix of shape (n_mels + 13, fixed_time_steps)
-                   where 13 is the number of MFCC coefficients
-                   
+                where 13 is the number of MFCC coefficients
+
     Features extracted:
         - Mel-spectrogram: Perceptually-relevant frequency representation
         - MFCC: Compact spectral features for speech/audio
@@ -655,10 +655,10 @@ def create_model_and_setup(unique_labels):
     Returns:
     -------
     tuple: (model, mlb, num_classes, fixed_time_steps) where:
-           - model: Compiled Keras model
-           - mlb: Fitted MultiLabelBinarizer
-           - num_classes: Number of classes
-           - fixed_time_steps: Fixed time steps for model input
+        - model: Compiled Keras model
+        - mlb: Fitted MultiLabelBinarizer
+        - num_classes: Number of classes
+        - fixed_time_steps: Fixed time steps for model input
     """
     # Setup multi-label encoder
     mlb, num_classes = setup_multilabel_encoder(unique_labels)
