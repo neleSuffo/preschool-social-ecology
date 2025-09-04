@@ -302,7 +302,7 @@ def classify_interaction_with_audio(row, results_df):
     """
     # Calculate recent proximity once at the beginning
     current_index = row.name
-    window_start = max(0, current_index - InferenceConfig.TURN_TAKING_WINDOW_SEC)
+    window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
     recent_speech_exists = (results_df.loc[window_start:current_index, 'other_speech_present'] == 1).any()
 
     # Check if a person is present at all, using the combined flags
