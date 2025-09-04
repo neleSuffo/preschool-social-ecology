@@ -408,7 +408,7 @@ def main():
         # Step 1: Create participant-based splits
         print("👥 Creating participant-based train/dev/test splits...")
         splits = create_participant_splits()
-                      
+
         # Step 2: Create JSONL segments from annotations
         print("\n📊 Creating JSONL segments from annotations...")
         segment_files, segment_counts, unique_labels, label_counts_per_split = create_jsonl_segments_from_annotations(
