@@ -34,8 +34,8 @@ def count_turns_in_segments(vocalizations_df, segments_df, max_gap=5.0):
     """
     turn_results = []
 
-    for video_id in vocalizations_df['video_id'].unique():
-        video_vocs = vocalizations_df[vocalizations_df['video_id'] == video_id].copy()
+    for child_id in vocalizations_df['child_id'].unique():
+        video_vocs = vocalizations_df[vocalizations_df['child_id'] == child_id].copy()
         video_vocs = video_vocs.sort_values('start_time_seconds').reset_index(drop=True)
 
         # Iterate through consecutive utterances
@@ -56,13 +56,13 @@ def count_turns_in_segments(vocalizations_df, segments_df, max_gap=5.0):
 
                 # Assign this turn to overlapping segment(s)
                 overlapping_segments = segments_df[
-                    (segments_df['video_id'] == video_id) &
+                    (segments_df['child_id'] == child_id) &
                     (segments_df['segment_start_time'] <= turn_point) &
                     (segments_df['segment_end_time'] >= turn_point)
                 ]
                 for _, seg in overlapping_segments.iterrows():
                     turn_results.append({
-                        'video_id': video_id,
+                        'child_id': child_id,
                         'segment_start_time': seg['segment_start_time'],
                         'segment_end_time': seg['segment_end_time'],
                         'turn': 1
@@ -77,13 +77,13 @@ def count_turns_in_segments(vocalizations_df, segments_df, max_gap=5.0):
         return segs
 
     turn_counts = turn_df.groupby(
-        ['video_id', 'segment_start_time', 'segment_end_time']
+        ['child_id', 'segment_start_time', 'segment_end_time']
     )['turn'].sum().reset_index().rename(columns={'turn': 'turn_count'})
 
     # Merge with original segments
     segments_with_turns = segments_df.merge(
         turn_counts,
-        on=['video_id', 'segment_start_time', 'segment_end_time'],
+        on=['child_id', 'segment_start_time', 'segment_end_time'],
         how='left'
     ).fillna({'turn_count': 0})
 
@@ -168,9 +168,8 @@ def row_wise_mapping(voc_row, video_segments_df):
 def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV):
     """
     Retrieve OTHER (non-KCHI) vocalizations from the SQLite database and map them to interaction segments.
-    The mapped_vocalizations DataFrame contains the following columns:
-    ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'words', 'interaction_type']
-
+    Also returns ALL vocalizations for turn-taking analysis.
+    
     Parameters:
     ----------
     db_path : Path
@@ -182,7 +181,7 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     Returns:
     -------
     tuple
-        (mapped_vocalizations_df, segments_df) - DataFrame with mapped vocalizations and original segments
+        (mapped_vocalizations_df, all_vocalizations_df) - Mapped other vocalizations and all vocalizations for turn analysis
     """
     # Load segments DataFrame
     segments_df = pd.read_csv(segments_csv_path)
@@ -190,18 +189,26 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     # Load age data
     age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
 
-    # Connect to the SQLite database and query OTHER (non-KCHI) vocalizations with video names
+    # Connect to the SQLite database and query ALL vocalizations with video names
     conn = sqlite3.connect(db_path)
-    vocalizations_query = """
+    
+    # Get ALL vocalizations for turn-taking analysis
+    all_vocalizations_query = """
     SELECT v.vocalization_id, v.video_id, vid.video_name, v.start_time_seconds, v.end_time_seconds, v.words, v.speaker
     FROM Vocalizations v
     JOIN Videos vid ON v.video_id = vid.video_id
-    WHERE v.speaker != 'KCHI'
     """
-    other_vocs = pd.read_sql_query(vocalizations_query, conn)
+    all_vocs = pd.read_sql_query(all_vocalizations_query, conn)
+    
+    # Filter for OTHER (non-KCHI) vocalizations for speech exposure analysis
+    other_vocs = all_vocs[all_vocs['speaker'] != 'KCHI'].copy()
+    
     conn.close()
     
-    # Extract child_id from video_name
+    # Extract child_id from video_name for ALL vocalizations (needed for turn-taking analysis)
+    all_vocs['child_id'] = all_vocs['video_name'].apply(extract_child_id)
+    
+    # Extract child_id from video_name for other vocalizations
     other_vocs['child_id'] = other_vocs['video_name'].apply(extract_child_id)
     
     # Merge with age data to get age at recording
@@ -223,7 +230,7 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
         for _, voc_row in video_vocalizations.iterrows():
             mapped_rows.extend(row_wise_mapping(voc_row, video_segments))
     
-    return pd.DataFrame(mapped_rows)
+    return pd.DataFrame(mapped_rows), all_vocs
 
 def main():
     """
@@ -250,7 +257,7 @@ def main():
     
     # Step 1: Map vocalizations to interaction segments
     print("\n🔄 Step 1: Mapping other vocalizations to interaction segments...")
-    mapped_vocalizations = map_vocalizations_to_segments()
+    mapped_vocalizations, all_vocalizations = map_vocalizations_to_segments()
 
     # Step 2: Use mapped vocalizations directly
     print("\n📋 Step 2: Using mapped vocalizations data...")
@@ -272,9 +279,9 @@ def main():
     final_data = final_data.drop(columns=['seconds', 'total_segment_duration'])
     final_data = final_data.sort_values(['child_id', 'age_at_recording', 'start_time_seconds']).reset_index(drop=True)    
     # No filtering needed - we want to keep all segments, even those with 0 other speech minutes
-    
-    # Step 2.5: Create segment-level aggregation
-    print("\n📊 Step 2.5: Aggregating other speech by segment...")
+
+    # Step 3: Create segment-level aggregation
+    print("\n📊 Step 3: Aggregating other speech by segment...")
     segment_totals = final_data.groupby([
         'child_id', 'age_at_recording', 'interaction_type', 
         'segment_start_time', 'segment_end_time'
@@ -293,28 +300,14 @@ def main():
     segment_totals = segment_totals.sort_values([
         'child_id', 'age_at_recording', 'segment_start_time'
     ]).reset_index(drop=True)
-    
-    print("\n🔄 Step 2.6: Counting conversational turns...")
-    # Load all vocalizations (including KCHI!)
-    conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
-    all_vocs = pd.read_sql_query("""
-        SELECT v.video_id, v.start_time_seconds, v.end_time_seconds, v.speaker
-        FROM Vocalizations v
-    """, conn)
-    conn.close()
 
-    # Rename columns to align with segments
-    segs_for_turns = segment_totals.rename(
-        columns={'segment_start_time': 'segment_start_time', 'segment_end_time': 'segment_end_time'}
-    )
-    segs_for_turns['video_id'] = segs_for_turns['child_id']  # adjust if your segment file has video_id directly
+    print("\n🔄 Step 4: Counting conversational turns...")
+    # Add turn counts using the already-loaded vocalization data
+    segment_totals = count_turns_in_segments(all_vocalizations, segment_totals, max_gap=5.0)
 
-    # Add turn counts
-    segment_totals = count_turns_in_segments(all_vocs, segs_for_turns, max_gap=5.0)
-    
-    # Step 3: Save results
-    print(f"\n💾 Step 3: Saving segment totals...")
-    
+    # Step 5: Save results
+    print(f"\n💾 Step 5: Saving segment totals...")
+
     # Save aggregated segment totals only
     segment_totals.to_csv(Inference.CDS_SUMMARY_CSV, index=False)
     
