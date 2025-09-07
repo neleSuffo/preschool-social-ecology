@@ -61,10 +61,13 @@ def count_turns_in_segments(vocalizations_df, segments_df, max_gap=5.0):
             if speaker_pair not in [('KCHI', 'FEM_MAL'), ('FEM_MAL', 'KCHI')]:
                 continue
                 
-            # Check the gap between the end of the current utterance and the start of the next
+            # Check the gap between utterances - handle overlaps by considering them as valid turns
             gap = nxt['start_time_seconds'] - curr['end_time_seconds']
-
-            if 0 <= gap <= max_gap:
+            
+            # Count as a turn if:
+            # 1. There's no gap or a small gap (0 <= gap <= max_gap), OR
+            # 2. There's overlap (gap < 0) - overlapping speech indicates turn-taking
+            if gap <= max_gap:
                 turn_count += 1
         
         # Store the result for the current segment
@@ -201,7 +204,6 @@ def main():
 
     # Flatten column names and debug what we actually have
     speech_pivot.columns = [f"{col[1].lower()}_{col[0]}" if col[1] else col[0] for col in speech_pivot.columns]
-    print("Available columns after pivot:", speech_pivot.columns.tolist())
     
     # Create default columns for missing speaker types
     expected_cols = [
