@@ -83,5 +83,6 @@ class Inference:
     FRAME_LEVEL_INTERACTIONS_CSV = BASE_OUTPUT_DIR / "frame_level_social_interactions.csv"
     INTERACTION_SEGMENTS_CSV = BASE_OUTPUT_DIR / "interaction_segments.csv"
     UTTERANCE_SEGMENTS_CSV = BASE_OUTPUT_DIR / "utterance_segments.csv"
-    WORD_SUMMARY_CSV = BASE_OUTPUT_DIR / "word_summary.csv"
+    KCS_SUMMARY_CSV = BASE_OUTPUT_DIR / "kcs_summary.csv"
+    CDS_SUMMARY_CSV = BASE_OUTPUT_DIR / "cds_summary.csv"
     PRESENCE_COUNTS_CSV = BASE_OUTPUT_DIR / "presence_counts.csv"
