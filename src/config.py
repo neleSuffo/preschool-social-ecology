@@ -213,6 +213,7 @@ class InferenceConfig:
     SPEECH_CLASSES = ['KCHI', 'FEM_MAL']
     TURN_TAKING_BASE_WINDOW_SEC = 10 # base window duration for turn-taking analysis
     TURN_TAKING_EXT_WINDOW_SEC = 15 # extended window duration for turn-taking analysis
+    MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
     PERSON_AUDIO_WINDOW_SEC = 10 # window duration for person audio analysis
     GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps in interaction segments
     VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
