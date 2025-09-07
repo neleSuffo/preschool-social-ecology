@@ -199,22 +199,38 @@ def main():
         fill_value=0
     ).reset_index()
 
+    # Flatten column names and debug what we actually have
     speech_pivot.columns = [f"{col[1].lower()}_{col[0]}" if col[1] else col[0] for col in speech_pivot.columns]
+    print("Available columns after pivot:", speech_pivot.columns.tolist())
     
+    # Create default columns for missing speaker types
+    expected_cols = [
+        'kchi_total_speech_minutes', 'fem_mal_total_speech_minutes',
+        'kchi_total_words', 'fem_mal_total_words'
+    ]
+    
+    for col in expected_cols:
+        if col not in speech_pivot.columns:
+            speech_pivot[col] = 0
+    
+    # Calculate per-minute metrics using the actual column names
     speech_pivot['kchi_speech_per_minute'] = (speech_pivot['kchi_total_speech_minutes'] / speech_pivot['segment_duration_minutes']).fillna(0)
-    speech_pivot['other_speech_per_minute'] = (speech_pivot['other_total_speech_minutes'] / speech_pivot['segment_duration_minutes']).fillna(0)
+    speech_pivot['other_speech_per_minute'] = (speech_pivot['fem_mal_total_speech_minutes'] / speech_pivot['segment_duration_minutes']).fillna(0)
     
     speech_pivot['kchi_words_per_minute'] = (speech_pivot['kchi_total_words'] / speech_pivot['segment_duration_minutes']).fillna(0)
-    speech_pivot['other_words_per_minute'] = (speech_pivot['other_total_words'] / speech_pivot['segment_duration_minutes']).fillna(0)
+    speech_pivot['other_words_per_minute'] = (speech_pivot['fem_mal_total_words'] / speech_pivot['segment_duration_minutes']).fillna(0)
     
     # Step 3: Count turns for each segment using the detailed vocalization data
     print("\n🔄 Step 3: Counting conversational turns using sequential vocalization data...")
+    
+    # Prepare the segments DataFrame with all required columns for turn counting
+    segments_for_turns = speech_pivot[['child_id', 'segment_start_time', 'segment_end_time', 'segment_duration_minutes']].drop_duplicates()
     
     # The `count_turns_in_segments` function now correctly takes the detailed, mapped vocalizations
     # and the list of segments to process.
     segments_with_turns = count_turns_in_segments(
         mapped_vocalizations[['child_id', 'segment_start_time', 'segment_end_time', 'speaker', 'start_time_seconds', 'end_time_seconds']].drop_duplicates(), 
-        speech_pivot[['child_id', 'segment_start_time', 'segment_end_time', 'segment_duration_minutes']].drop_duplicates(), 
+        segments_for_turns, 
         max_gap=5.0
     )
     
