@@ -193,9 +193,10 @@ def get_all_analysis_data(conn):
 
 def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_window_sec):
     """
-    Adaptive turn-taking detection:
+    Adaptive turn-taking detection with temporal gap constraint:
     - Uses smaller window (base_window_sec) when child is alone
     - Expands window (extended_window_sec) if a person or face is visible
+    - Only considers it turn-taking if gap between KCHI and other speech is ≤ 5 seconds
 
     Parameters
     ----------
@@ -256,10 +257,29 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
                 (video_df['frame_number'] <= window_end)
             ]
 
-            # Check for interaction
+            # Check for interaction with gap constraint
             has_kchi_in_window = window_data['has_kchi'].sum() > 0
             has_other_in_window = window_data['has_other'].sum() > 0
-            is_interaction = has_kchi_in_window and has_other_in_window
+            
+            # Only consider it turn-taking if both speakers present AND gap <= 5 seconds
+            is_interaction = False
+            if has_kchi_in_window and has_other_in_window:
+                # Find frames with KCHI and other speech
+                kchi_frames = window_data[window_data['has_kchi'] == 1]['frame_number'].values
+                other_frames = window_data[window_data['has_other'] == 1]['frame_number'].values
+                
+                if len(kchi_frames) > 0 and len(other_frames) > 0:
+                    # Calculate minimum gap between any KCHI and other speech frames
+                    min_gap_frames = float('inf')
+                    for kchi_frame in kchi_frames:
+                        for other_frame in other_frames:
+                            gap_frames = abs(kchi_frame - other_frame)
+                            min_gap_frames = min(min_gap_frames, gap_frames)
+                    
+                    # Convert gap from frames to seconds (5 seconds = 5 * fps frames)
+                    max_gap_frames = InferenceConfig.MAX_TURN_TAKING_GAP_SEC * fps
+                    is_interaction = min_gap_frames <= max_gap_frames
+            
             interaction_flags.append(is_interaction)
 
         video_df['is_audio_interaction'] = interaction_flags
@@ -303,7 +323,7 @@ def classify_interaction_with_audio(row, results_df):
     # Calculate recent proximity once at the beginning
     current_index = row.name
     window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
-    recent_speech_exists = (results_df.loc[window_start:current_index, 'other_speech_present'] == 1).any()
+    recent_speech_exists = (results_df.loc[window_start:current_index, 'fem_mal_speech_present'] == 1).any()
 
     # Check if a person is present at all, using the combined flags
     person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
@@ -312,7 +332,7 @@ def classify_interaction_with_audio(row, results_df):
     is_active_interaction = (
         row['is_audio_interaction'] or # turn taking
         (row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) or # very close proximity
-        row['other_speech_present'] or # other person speaking
+        row['fem_mal_speech_present'] or # other person speaking
         (row['has_adult_face'] == 1 and recent_speech_exists) # adult face + recent speech
     )
 
@@ -465,4 +485,4 @@ def main(db_path: Path, output_dir: Path):
 
 if __name__ == "__main__":
     # Run the main analysis to create CSV files
-    main(db_path=DataPaths.INFERENCE_DB_PATH, output_dir=Inference.RQ1_OUTPUT_DIR)
+    main(db_path=DataPaths.INFERENCE_DB_PATH, output_dir=Inference.BASE_OUTPUT_DIR)
