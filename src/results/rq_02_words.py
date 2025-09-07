@@ -214,10 +214,10 @@ def main():
     print(f"\n💾 Step 3: Saving segment totals...")
     
     # Save aggregated segment totals only
-    segment_totals.to_csv(Inference.WORD_SUMMARY_CSV, index=False)
+    segment_totals.to_csv(Inference.KCS_SUMMARY_CSV, index=False)
     
     print(f"\n✅ ANALYSIS COMPLETED SUCCESSFULLY!")
-    print(f"📄 Aggregated segment totals saved to: {Inference.WORD_SUMMARY_CSV}")
+    print(f"📄 Aggregated segment totals saved to: {Inference.KCS_SUMMARY_CSV}")
     print(f"📊 Total unique segments: {len(segment_totals)}")
     print("=" * 70)
     
