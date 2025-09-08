@@ -175,7 +175,6 @@ def main():
         segments_csv_path=Inference.INTERACTION_SEGMENTS_CSV
     )
 
-    print(mapped_vocalizations.head(10))
     if mapped_vocalizations.empty:
         print("🛑 No vocalizations found. Analysis cannot proceed.")
         return
@@ -247,10 +246,10 @@ def main():
     # Step 4: Save the final results
     print(f"\n💾 Step 4: Saving comprehensive speech and turn-taking analysis...")
 
-    final_df.to_csv(Inference.CDS_SUMMARY_CSV, index=False)
+    final_df.to_csv(Inference.TURN_TAKING_CSV, index=False)
     
     print(f"\n✅ ANALYSIS COMPLETED SUCCESSFULLY!")
-    print(f"📄 Comprehensive speech analysis saved to: {Inference.CDS_SUMMARY_CSV}")
+    print(f"📄 Comprehensive speech analysis saved to: {Inference.TURN_TAKING_CSV}")
     print(f"📊 Total unique segments analyzed: {len(final_df)}")
     print("=" * 70)
     

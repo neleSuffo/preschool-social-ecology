@@ -18,7 +18,7 @@ def row_wise_mapping(voc_row, video_segments_df):
     ----------
     voc_row : pd.Series
         A row from the vocalizations DataFrame with columns:
-        ['vocalization_id', 'video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'words']
+        ['vocalization_id', 'video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds']
     video_segments_df : pd.DataFrame
         DataFrame containing interaction segments for one video_id with columns:
         ['start_time_sec', 'end_time_sec', 'category']  
@@ -27,7 +27,7 @@ def row_wise_mapping(voc_row, video_segments_df):
     -------
     list of dict
         List of dictionaries with mapped vocalizations including:
-        ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'words', 'interaction_type', 'segment_start_time', 'segment_end_time']
+        ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'interaction_type', 'segment_start_time', 'segment_end_time']
     """
     # Find overlapping segments (already filtered to same video)
     overlaps = video_segments_df[
@@ -36,35 +36,17 @@ def row_wise_mapping(voc_row, video_segments_df):
     ]
     results = []
     
-    # Calculate words per second rate for this vocalization
-    total_seconds = voc_row['end_time_seconds'] - voc_row['start_time_seconds']
-    words_per_second = voc_row['words'] / total_seconds if total_seconds > 0 else 0
-    
-    # Sort segments by start time to handle gaps properly
+    # Sort segments by start time
     overlaps = overlaps.sort_values('start_time_sec').reset_index(drop=True)
     
-    # For each overlapping segment, calculate overlap duration and allocate words
-    for i, (_, seg) in enumerate(overlaps.iterrows()):
+    # For each overlapping segment, calculate overlap duration
+    for _, seg in overlaps.iterrows():
         overlap_start = max(voc_row['start_time_seconds'], seg['start_time_sec'])
+        overlap_end = min(voc_row['end_time_seconds'], seg['end_time_sec'])
+        overlap_seconds = max(0, overlap_end - overlap_start)
         
-        # For overlap_end: use segment end, but extend to next segment start if there's a gap
-        if i < len(overlaps) - 1:  # Not the last segment
-            next_seg_start = overlaps.iloc[i + 1]['start_time_sec']
-            # Extend current segment to next segment start (fills gaps)
-            extended_end = next_seg_start
-            # Calculate the filled gap duration
-            gap_seconds = next_seg_start - seg['end_time_sec']
-            total_segment_duration = (seg['end_time_sec'] - seg['start_time_sec']) + gap_seconds
-        else:
-            # Last segment, use its actual end
-            extended_end = seg['end_time_sec']
-            total_segment_duration = seg['end_time_sec'] - seg['start_time_sec']
-        
-        overlap_end = min(voc_row['end_time_seconds'], extended_end)
-        overlap_seconds = overlap_end - overlap_start
-        
-        # Allocate words based on overlap duration and words-per-second rate
-        allocated_words = words_per_second * overlap_seconds
+        # Total segment duration should be the segment's own length
+        total_segment_duration = seg['end_time_sec'] - seg['start_time_sec']
         
         results.append({
             'video_id': voc_row['video_id'],
@@ -73,7 +55,6 @@ def row_wise_mapping(voc_row, video_segments_df):
             'start_time_seconds': voc_row['start_time_seconds'],
             'end_time_seconds': voc_row['end_time_seconds'],
             'seconds': overlap_seconds,
-            'words': allocated_words,
             'interaction_type': seg['category'],
             'total_segment_duration': total_segment_duration,
             'segment_start_time': seg['start_time_sec'],
