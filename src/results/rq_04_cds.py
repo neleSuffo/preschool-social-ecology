@@ -13,6 +13,45 @@ def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
 
+def merge_overlapping_intervals(intervals):
+    """
+    Merge overlapping time intervals to avoid double-counting speech time.
+    
+    Parameters:
+    ----------
+    intervals : list of tuple
+        List of (start_time, end_time) tuples representing speech intervals
+    
+    Returns:
+    -------
+    list of tuple
+        List of merged, non-overlapping intervals
+    float
+        Total duration of merged intervals
+    """
+    if not intervals:
+        return [], 0.0
+    
+    # Sort intervals by start time
+    intervals = sorted(intervals)
+    merged = [intervals[0]]
+    
+    for current_start, current_end in intervals[1:]:
+        last_start, last_end = merged[-1]
+        
+        # If current interval overlaps with the last merged interval
+        if current_start <= last_end:
+            # Merge by extending the end time
+            merged[-1] = (last_start, max(last_end, current_end))
+        else:
+            # No overlap, add as new interval
+            merged.append((current_start, current_end))
+    
+    # Calculate total duration
+    total_duration = sum(end - start for start, end in merged)
+    
+    return merged, total_duration
+
 def row_wise_mapping(voc_row, video_segments_df):
     """
     Map a single vocalization to overlapping interaction segment in a video file.
@@ -147,25 +186,62 @@ def main():
         print("\n⚠️ No vocalizations found. Exiting analysis.")
         return
         
-    # Step 2: Create segment-level aggregation
-    print("\n📊 Step 2: Aggregating speech time by segment...")
-    segment_totals = mapped_vocalizations.groupby([
+    # Step 2: Remove overlapping vocalizations and calculate true speech time per segment
+    print("\n📊 Step 2: Removing vocalization overlaps and aggregating speech time by segment...")
+    
+    segment_results = []
+    
+    # Process each unique segment separately to handle overlaps
+    for segment_key, segment_data in mapped_vocalizations.groupby([
         'child_id', 'age_at_recording', 'interaction_type', 
         'segment_start_time', 'segment_end_time'
-    ]).agg(
-        total_overlap_seconds=('seconds', 'sum'),
-        total_segment_duration=('total_segment_duration', 'max')
-    ).reset_index()
+    ]):
+        child_id, age_at_recording, interaction_type, seg_start, seg_end = segment_key
+        
+        # Get all vocalization intervals within this segment
+        intervals = []
+        for _, row in segment_data.iterrows():
+            # Use the actual vocalization times within the segment
+            voc_start = max(row['start_time_seconds'], row['segment_start_time'])
+            voc_end = min(row['end_time_seconds'], row['segment_end_time'])
+            if voc_end > voc_start:  # Valid interval
+                intervals.append((voc_start, voc_end))
+        
+        # Merge overlapping intervals to get true speech time
+        merged_intervals, total_speech_seconds = merge_overlapping_intervals(intervals)
+        
+        # Get segment duration (should be consistent for all rows in this segment)
+        segment_duration = segment_data['total_segment_duration'].iloc[0]
+        
+        segment_results.append({
+            'child_id': child_id,
+            'age_at_recording': age_at_recording,
+            'interaction_type': interaction_type,
+            'segment_start_time': seg_start,
+            'segment_end_time': seg_end,
+            'total_speech_seconds': total_speech_seconds,
+            'total_segment_duration': segment_duration,
+            'num_merged_intervals': len(merged_intervals)
+        })
     
-    # Step 3: Calculate the percentage
-    print("\n✅ Step 3: Calculating time-based exposure percentage...")
-    segment_totals['other_speech_minutes'] = segment_totals['total_overlap_seconds'] / 60
+    segment_totals = pd.DataFrame(segment_results)
+    
+    # Step 3: Calculate the percentage using overlap-corrected speech time
+    print("\n✅ Step 3: Calculating time-based exposure percentage (overlap-corrected)...")
+    segment_totals['other_speech_minutes'] = segment_totals['total_speech_seconds'] / 60
     segment_totals['segment_duration_minutes'] = segment_totals['total_segment_duration'] / 60
     
-    # The exposure percentage is now a true time-based ratio
+    # The exposure percentage is now a true time-based ratio without double-counting
     segment_totals['speech_exposure_percent'] = (
-        segment_totals['total_overlap_seconds'] / segment_totals['total_segment_duration']
+        segment_totals['total_speech_seconds'] / segment_totals['total_segment_duration']
     ).fillna(0)
+    
+    # Verify no percentages exceed 100%
+    max_percentage = segment_totals['speech_exposure_percent'].max()
+    if max_percentage > 1.0:
+        print(f"⚠️  Warning: Maximum percentage is {max_percentage:.1%}, which exceeds 100%")
+    else:
+        print(f"✅ Maximum speech exposure: {max_percentage:.1%} (within valid range)")
     
     # Sort and save
     segment_totals = segment_totals.sort_values([
