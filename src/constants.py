@@ -84,5 +84,6 @@ class Inference:
     INTERACTION_SEGMENTS_CSV = BASE_OUTPUT_DIR / "interaction_segments.csv"
     UTTERANCE_SEGMENTS_CSV = BASE_OUTPUT_DIR / "utterance_segments.csv"
     KCS_SUMMARY_CSV = BASE_OUTPUT_DIR / "kcs_summary.csv"
+    TURN_TAKING_CSV = BASE_OUTPUT_DIR / "turn_taking.csv"
     CDS_SUMMARY_CSV = BASE_OUTPUT_DIR / "cds_summary.csv"
     PRESENCE_COUNTS_CSV = BASE_OUTPUT_DIR / "presence_counts.csv"
