@@ -10,6 +10,45 @@ def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
 
+def merge_overlapping_intervals(intervals):
+    """
+    Merge overlapping time intervals to avoid double-counting speech time.
+    
+    Parameters:
+    ----------
+    intervals : list of tuple
+        List of (start_time, end_time) tuples representing speech intervals
+    
+    Returns:
+    -------
+    list of tuple
+        List of merged, non-overlapping intervals
+    float
+        Total duration of merged intervals
+    """
+    if not intervals:
+        return [], 0.0
+    
+    # Sort intervals by start time
+    intervals = sorted(intervals)
+    merged = [intervals[0]]
+    
+    for current_start, current_end in intervals[1:]:
+        last_start, last_end = merged[-1]
+        
+        # If current interval overlaps with the last merged interval
+        if current_start <= last_end:
+            # Merge by extending the end time
+            merged[-1] = (last_start, max(last_end, current_end))
+        else:
+            # No overlap, add as new interval
+            merged.append((current_start, current_end))
+    
+    # Calculate total duration
+    total_duration = sum(end - start for start, end in merged)
+    
+    return merged, total_duration
+
 def row_wise_mapping(voc_row, video_segments_df):
     """
     Map a single vocalization to overlapping interaction segment in a video file.
@@ -170,21 +209,61 @@ def main():
     final_data = final_data.sort_values(['child_id', 'age_at_recording', 'start_time_seconds']).reset_index(drop=True)    
     # No filtering needed - we want to keep all segments, even those with 0 KCHI minutes
     
-    # Step 2.5: Create segment-level aggregation
-    print("\n📊 Step 2.5: Aggregating KCHI speech by segment...")
-    segment_totals = final_data.groupby([
+    # Step 2.5: Remove overlapping vocalizations and calculate true speech time per segment
+    print("\n📊 Step 2.5: Removing vocalization overlaps and aggregating KCHI speech by segment...")
+    
+    segment_results = []
+    
+    # Process each unique segment separately to handle overlaps
+    for segment_key, segment_data in mapped_vocalizations.groupby([
         'child_id', 'age_at_recording', 'interaction_type', 
         'segment_start_time', 'segment_end_time'
-    ]).agg({
-        'kchi_speech_minutes': 'sum',
-        'segment_duration_minutes': 'first',  # Same for all rows in a segment
-        'speech_activity_percent': 'first'    # Will be recalculated
-    }).reset_index()
+    ]):
+        child_id, age_at_recording, interaction_type, seg_start, seg_end = segment_key
+        
+        # Get all vocalization intervals within this segment
+        intervals = []
+        for _, row in segment_data.iterrows():
+            # Use the actual vocalization times within the segment
+            voc_start = max(row['start_time_seconds'], row['segment_start_time'])
+            voc_end = min(row['end_time_seconds'], row['segment_end_time'])
+            if voc_end > voc_start:  # Valid interval
+                intervals.append((voc_start, voc_end))
+        
+        # Merge overlapping intervals to get true speech time
+        merged_intervals, total_speech_seconds = merge_overlapping_intervals(intervals)
+        
+        # Get segment duration (should be consistent for all rows in this segment)
+        segment_duration = segment_data['total_segment_duration'].iloc[0]
+        
+        segment_results.append({
+            'child_id': child_id,
+            'age_at_recording': age_at_recording,
+            'interaction_type': interaction_type,
+            'segment_start_time': seg_start,
+            'segment_end_time': seg_end,
+            'total_speech_seconds': total_speech_seconds,
+            'total_segment_duration': segment_duration,
+            'num_merged_intervals': len(merged_intervals)
+        })
     
-    # Recalculate speech activity percentage for aggregated data
+    segment_totals = pd.DataFrame(segment_results)
+    
+    # Calculate minutes and percentages using overlap-corrected speech time
+    segment_totals['kchi_speech_minutes'] = segment_totals['total_speech_seconds'] / 60
+    segment_totals['segment_duration_minutes'] = segment_totals['total_segment_duration'] / 60
+    
+    # Recalculate speech activity percentage for aggregated data (overlap-corrected)
     segment_totals['speech_activity_percent'] = (
-        segment_totals['kchi_speech_minutes'] / segment_totals['segment_duration_minutes']
+        segment_totals['total_speech_seconds'] / segment_totals['total_segment_duration']
     ).fillna(0)
+    
+    # Verify no percentages exceed 100%
+    max_percentage = segment_totals['speech_activity_percent'].max()
+    if max_percentage > 1.0:
+        print(f"⚠️  Warning: Maximum percentage is {max_percentage:.1%}, which exceeds 100%")
+    else:
+        print(f"✅ Maximum KCHI speech activity: {max_percentage:.1%} (within valid range)")
     
     # Sort segment totals
     segment_totals = segment_totals.sort_values([
@@ -194,8 +273,15 @@ def main():
     # Step 3: Save results
     print(f"\n💾 Step 3: Saving segment totals...")
     
+    # Select final columns for output
+    final_output = segment_totals[[
+        'child_id', 'age_at_recording', 'interaction_type', 
+        'segment_start_time', 'segment_end_time', 
+        'kchi_speech_minutes', 'segment_duration_minutes', 'speech_activity_percent'
+    ]].copy()
+    
     # Save aggregated segment totals only
-    segment_totals.to_csv(Inference.KCS_SUMMARY_CSV, index=False)
+    final_output.to_csv(Inference.KCS_SUMMARY_CSV, index=False)
     
     print(f"\n✅ ANALYSIS COMPLETED SUCCESSFULLY!")
     print(f"📄 Aggregated segment totals saved to: {Inference.KCS_SUMMARY_CSV}")
