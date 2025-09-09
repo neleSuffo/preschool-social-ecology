@@ -22,16 +22,16 @@ def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
 
-def validate_interaction_segment(category, duration, video_id, start_time_sec, end_time_sec, video_name):
+def validate_interaction_segment(interaction_type, duration, video_id, start_time_sec, end_time_sec, video_name):
     """
     Validate "Interacting" segments for sufficient turn-taking evidence.
     
     Checks if KCHI and other speakers alternate within 3-second windows 
     at least 3 times in segments longer than 30 seconds.
     
-    Returns the final category (may downgrade "Interacting" to "Alone")
+    Returns the final interaction_type (may downgrade "Interacting" to "Alone")
     """
-    if category == "Interacting" and duration > InferenceConfig.VALIDATION_SEGMENT_DURATION_SEC:
+    if interaction_type == "Interacting" and duration > InferenceConfig.VALIDATION_SEGMENT_DURATION_SEC:
         # Import here to avoid circular imports
         import sqlite3
         from constants import DataPaths
@@ -78,7 +78,7 @@ def validate_interaction_segment(category, duration, video_id, start_time_sec, e
         if turn_taking_count < 2:
             return "Alone"
     
-    return category
+    return interaction_type
 
 def buffer_short_state_changes(states, frame_numbers):
     """
@@ -162,7 +162,7 @@ def create_segments_for_video(video_id, video_df):
             if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
 
                 # Validate "Interacting" segments for turn-taking evidence
-                # final_category = validate_interaction_segment(
+                # final_interaction_type = validate_interaction_segment(
                 #     current_state, segment_duration, video_id, 
                 #     segment_start_frame / FPS, segment_end_frame / FPS, video_name
                 # )
@@ -170,8 +170,8 @@ def create_segments_for_video(video_id, video_df):
                 segments.append({
                     'video_id': video_id,
                     'video_name': video_name,
-                    #'category': final_category,
-                    'category': current_state,
+                    #'interaction_type': final_interaction_type,
+                    'interaction_type': current_state,
                     'segment_start': segment_start_frame,
                     'segment_end': segment_end_frame,
                     'start_time_sec': segment_start_frame / FPS,
@@ -188,7 +188,7 @@ def create_segments_for_video(video_id, video_df):
     if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
         
         # # Validate "Interacting" segments for turn-taking evidence
-        # final_category = validate_interaction_segment(
+        # final_interaction_type = validate_interaction_segment(
         #     current_state, segment_duration, video_id, 
         #     segment_start_frame / FPS, segment_end_frame / FPS, video_name
         # )
@@ -196,7 +196,7 @@ def create_segments_for_video(video_id, video_df):
         segments.append({
             'video_id': video_id,
             'video_name': video_name,
-            'category': current_state,
+            'interaction_type': current_state,
             'segment_start': segment_start_frame,
             'segment_end': segment_end_frame,
             'start_time_sec': segment_start_frame / FPS,
@@ -236,9 +236,8 @@ def merge_segments_with_small_gaps(segments_df):
             
             # Calculate gap between current segment end and next segment start
             gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
-            
-            # If same category and gap is less than the configured duration, merge
-            if (current_segment['category'] == next_segment['category'] and 
+            # If same interaction type and gap is less than the configured duration, merge
+            if (current_segment['interaction_type'] == next_segment['interaction_type'] and 
                 gap_duration < InferenceConfig.GAP_MERGE_DURATION_SEC):
                 
                 # Extend current segment to include the next one
@@ -284,7 +283,7 @@ def add_metadata_to_segments(segments_df, frame_data):
     segments_df['child_id'] = segments_df['video_name'].apply(extract_child_id)
     
     # change segment name "co-present silent" to "Co-present"
-    segments_df['category'] = segments_df['category'].replace("Co-present Silent", "Co-present")
+    segments_df['interaction_type'] = segments_df['interaction_type'].replace("Co-present Silent", "Co-present")
     # Extract age information from frame_data (get unique video_name to age_at_recording mapping)
     try:
         # Get unique video_name to age_at_recording mapping from frame_data
@@ -332,15 +331,15 @@ def print_segment_summary(segments_df):
     """
     if len(segments_df) > 0:
         total_segments = len(segments_df)
-        interacting_segments = len(segments_df[segments_df['category'] == 'Interacting'])
-        alone_segments = len(segments_df[segments_df['category'] == 'Alone'])
-        copresent_segments = len(segments_df[segments_df['category'] == 'Co-present'])
+        interacting_segments = len(segments_df[segments_df['interaction_type'] == 'Interacting'])
+        alone_segments = len(segments_df[segments_df['interaction_type'] == 'Alone'])
+        copresent_segments = len(segments_df[segments_df['interaction_type'] == 'Co-present'])
 
-        # Calculate total duration for each segment category in minutes (with two decimals)
+        # Calculate total duration for each segment interaction_type in minutes (with two decimals)
         total_duration = round(segments_df['duration_sec'].sum() / 60, 2)
-        interacting_duration = round(segments_df[segments_df['category'] == 'Interacting']['duration_sec'].sum() / 60, 2)
-        alone_duration = round(segments_df[segments_df['category'] == 'Alone']['duration_sec'].sum() / 60, 2)
-        copresent_duration = round(segments_df[segments_df['category'] == 'Co-present']['duration_sec'].sum() / 60, 2)
+        interacting_duration = round(segments_df[segments_df['interaction_type'] == 'Interacting']['duration_sec'].sum() / 60, 2)
+        alone_duration = round(segments_df[segments_df['interaction_type'] == 'Alone']['duration_sec'].sum() / 60, 2)
+        copresent_duration = round(segments_df[segments_df['interaction_type'] == 'Co-present']['duration_sec'].sum() / 60, 2)
 
         print(f"\n📊 Final segment summary:")
         print(f"   Total segments: {total_segments} ({total_duration} minutes)")
@@ -388,7 +387,7 @@ def main(output_dir: Path, frame_data_path: Path):
         segments_df = merge_segments_with_small_gaps(segments_df)
         
     else:
-        segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'category',
+        segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'interaction_type',
                                         'segment_start', 'segment_end', 
                                         'start_time_sec', 'end_time_sec', 'duration_sec'])
         
