@@ -23,6 +23,7 @@ def analyze_audio_turn_taking(segment_row, vocalizations_df):
     dict
         Dictionary with turn-taking metrics
     """
+    segment_duration = segment_row['end_time_sec'] - segment_row['start_time_sec']
     # Filter vocalizations to this segment - only check if vocalization starts within segment
     segment_vocs = vocalizations_df[
         (vocalizations_df['video_id'] == segment_row['video_id']) &
@@ -30,14 +31,36 @@ def analyze_audio_turn_taking(segment_row, vocalizations_df):
         (vocalizations_df['start_time_seconds'] <= segment_row['end_time_sec'])
     ].sort_values('start_time_seconds').reset_index(drop=True)
 
-    print(segment_vocs)
+    # Calculate durations, clipping to segment end
+    segment_vocs['clipped_end_time'] = segment_vocs['end_time_seconds'].clip(upper=segment_row['end_time_sec'])
+    segment_vocs['vocalization_duration'] = segment_vocs['clipped_end_time'] - segment_vocs['start_time_seconds']
+    
+    # Calculate total durations by speaker
+    kchi_vocs = segment_vocs[segment_vocs['speaker'] == 'KCHI']
+    other_vocs = segment_vocs[segment_vocs['speaker'] != 'KCHI']
+    
+    kchi_total_duration = kchi_vocs['vocalization_duration'].sum() if len(kchi_vocs) > 0 else 0.0
+    other_total_duration = other_vocs['vocalization_duration'].sum() if len(other_vocs) > 0 else 0.0
+    total_vocalization_duration = segment_vocs['vocalization_duration'].sum()
+    
+    # Add percentage of kchi, other and total vocalizations relative to segment duration
+    kchi_percentage = kchi_total_duration / segment_duration if segment_duration > 0 else 0.0
+    other_percentage = other_total_duration / segment_duration if segment_duration > 0 else 0.0
+    total_percentage = total_vocalization_duration / segment_duration if segment_duration > 0 else 0.0
+
     if len(segment_vocs) < 2:
         return {
             'has_turn_taking': False,
             'turn_count': 0,
-            'kchi_vocalizations': len(segment_vocs[segment_vocs['speaker'] == 'KCHI']),
-            'other_vocalizations': len(segment_vocs[segment_vocs['speaker'] != 'KCHI']),
-            'total_vocalizations': len(segment_vocs)
+            'kchi_vocalizations': len(kchi_vocs),
+            'other_vocalizations': len(other_vocs),
+            'total_vocalizations': len(segment_vocs),
+            'kchi_voc_duration_seconds': kchi_total_duration,
+            'other_voc_duration_seconds': other_total_duration,
+            'total_voc_duration_seconds': total_vocalization_duration,
+            'kchi_voc_percentage': kchi_percentage,
+            'other_voc_percentage': other_percentage,
+            'total_voc_percentage': total_percentage
         }
     
     # Count turns between KCHI and others
@@ -59,9 +82,15 @@ def analyze_audio_turn_taking(segment_row, vocalizations_df):
     return {
         'has_turn_taking': turn_count > 0,
         'turn_count': turn_count,
-        'kchi_vocalizations': len(segment_vocs[segment_vocs['speaker'] == 'KCHI']),
-        'other_vocalizations': len(segment_vocs[segment_vocs['speaker'] != 'KCHI']),
-        'total_vocalizations': len(segment_vocs)
+        'kchi_vocalizations': len(kchi_vocs),
+        'other_vocalizations': len(other_vocs),
+        'total_vocalizations': len(segment_vocs),
+        'kchi_voc_duration_seconds': kchi_total_duration,
+        'other_voc_duration_seconds': other_total_duration,
+        'total_voc_duration_seconds': total_vocalization_duration,
+        'kchi_voc_percentage': kchi_percentage,
+        'other_voc_percentage': other_percentage,
+        'total_voc_percentage': total_percentage
     }
 
 def analyze_proximity_frames(segment_row, frames_df):
