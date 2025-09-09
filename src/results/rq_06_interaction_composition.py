@@ -2,18 +2,10 @@
 
 import sqlite3
 import pandas as pd
-import re
 from pathlib import Path
 from constants import DataPaths, Inference
 from config import DataConfig, InferenceConfig
-
-def extract_child_id(video_name):
-    """
-    Extracts the 6-digit child ID from a video name string.
-    Example: 'id123456_video.mp4' -> '123456'
-    """
-    match = re.search(r'id(\d{6})', video_name)
-    return match.group(1) if match else None
+from utils import extract_child_id, merge_overlapping_vocalizations
 
 def analyze_audio_turn_taking(segment_row, vocalizations_df):
     """
@@ -31,13 +23,14 @@ def analyze_audio_turn_taking(segment_row, vocalizations_df):
     dict
         Dictionary with turn-taking metrics
     """
-    # Filter vocalizations to this segment
+    # Filter vocalizations to this segment - only check if vocalization starts within segment
     segment_vocs = vocalizations_df[
-        (vocalizations_df['child_id'] == segment_row['child_id']) &
-        (vocalizations_df['start_time_seconds'] >= segment_row['segment_start_time']) &
-        (vocalizations_df['end_time_seconds'] <= segment_row['segment_end_time'])
+        (vocalizations_df['video_id'] == segment_row['video_id']) &
+        (vocalizations_df['start_time_seconds'] >= segment_row['start_time_sec']) &
+        (vocalizations_df['start_time_seconds'] <= segment_row['end_time_sec'])
     ].sort_values('start_time_seconds').reset_index(drop=True)
-    
+
+    print(segment_vocs)
     if len(segment_vocs) < 2:
         return {
             'has_turn_taking': False,
@@ -60,7 +53,7 @@ def analyze_audio_turn_taking(segment_row, vocalizations_df):
         if curr_is_kchi != next_is_kchi:  # Speaker change
             # Check gap between vocalizations (≤5 seconds)
             gap = nxt['start_time_seconds'] - curr['end_time_seconds']
-            if gap <= 5.0:  # Valid turn
+            if gap <= InferenceConfig.GAP_MERGE_DURATION_SEC:  # Valid turn
                 turn_count += 1
     
     return {
@@ -88,9 +81,9 @@ def analyze_proximity_frames(segment_row, frames_df):
         Dictionary with proximity metrics
     """
     # Convert segment times to frame numbers
-    start_frame = int(segment_row['segment_start_time'] * DataConfig.FPS)
-    end_frame = int(segment_row['segment_end_time'] * DataConfig.FPS)
-    
+    start_frame = int(segment_row['start_time_sec'] * DataConfig.FPS)
+    end_frame = int(segment_row['end_time_sec'] * DataConfig.FPS)
+
     # Filter frames to this segment
     segment_frames = frames_df[
         (frames_df['child_id'] == segment_row['child_id']) &
@@ -138,9 +131,9 @@ def analyze_person_detection(segment_row, frames_df):
         Dictionary with person detection metrics
     """
     # Convert segment times to frame numbers (assuming 30 fps)
-    start_frame = int(segment_row['segment_start_time'] * 30)
-    end_frame = int(segment_row['segment_end_time'] * 30)
-    
+    start_frame = int(segment_row['start_time_sec'] * DataConfig.FPS)
+    end_frame = int(segment_row['end_time_sec'] * DataConfig.FPS)
+
     # Filter frames to this segment
     segment_frames = frames_df[
         (frames_df['child_id'] == segment_row['child_id']) &
@@ -178,7 +171,7 @@ def analyze_person_detection(segment_row, frames_df):
     }
 
 def load_vocalizations_data():
-    """Load all vocalizations from database."""
+    """Load all vocalizations from database and merge overlapping same-speaker vocalizations."""
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     vocalizations_query = """
     SELECT v.vocalization_id, v.video_id, vid.video_name, v.start_time_seconds, v.end_time_seconds, v.speaker
@@ -190,6 +183,10 @@ def load_vocalizations_data():
     
     # Add child_id
     vocs_df['child_id'] = vocs_df['video_name'].apply(extract_child_id)
+    
+    # Merge overlapping vocalizations from same speaker
+    vocs_df = merge_overlapping_vocalizations(vocs_df)
+    
     return vocs_df
 
 def main():
@@ -209,24 +206,16 @@ def main():
     print("Analyzing what characteristics contribute to interaction detection...")
     
     # Step 1: Load interaction segments and filter for "Interacting" only
-    print("\n📊 Step 1: Loading interaction segments and filtering for interactions...")
+    print("\n📊 Step 1: Loading interaction segments, frame-level data and vocalizations and filtering for interactions...")
     segments_df = pd.read_csv(Inference.INTERACTION_SEGMENTS_CSV)
-    # rename "category" to "interaction type"
+    frames_df = pd.read_csv(Inference.FRAME_LEVEL_INTERACTIONS_CSV)
+    vocalizations_df = load_vocalizations_data()
+
     # Filter for ONLY "Interacting" segments
     interaction_segments = segments_df[segments_df['interaction_type'] == 'Interacting'].copy()
-    
-    print(f"🎯 Interaction segments to analyze: {len(interaction_segments)}")
-    
-    # Step 2: Load supporting data
-    print("\n📊 Step 2: Loading vocalizations and frame-level data...")
-    vocalizations_df = load_vocalizations_data()
-    frames_df = pd.read_csv(Inference.FRAME_LEVEL_INTERACTIONS_CSV)
-    
-    # Add child_id to frames_df (convert video_id to str first)
-    frames_df['child_id'] = frames_df['video_id'].astype(str).apply(extract_child_id)
-    
-    # Step 3: Analyze each interaction segment individually
-    print("\n🔍 Step 3: Analyzing individual interaction segment composition...")
+
+    # Step 2: Analyze each interaction segment individually
+    print("\n🔍 Step 2: Analyzing individual interaction segment composition...")
     segment_analysis = []
 
     for _, segment in interaction_segments.iterrows():
@@ -242,12 +231,13 @@ def main():
         
         # Combine all metrics for this individual segment
         analysis_row = {
+            'video_name': segment['video_name'],
             'child_id': segment['child_id'],
             'age_at_recording': segment.get('age_at_recording', None), 
             'interaction_type': segment['interaction_type'],
-            'segment_start_time': segment['segment_start_time'],
-            'segment_end_time': segment['segment_end_time'],
-            'segment_duration': segment['segment_end_time'] - segment['segment_start_time'],
+            'segment_start_time': segment['start_time_sec'],
+            'segment_end_time': segment['end_time_sec'],
+            'segment_duration': segment['end_time_sec'] - segment['start_time_sec'],
             **audio_metrics,
             **proximity_metrics,
             **person_metrics
@@ -258,15 +248,14 @@ def main():
     analysis_df = pd.DataFrame(segment_analysis)
     
     # Sort by child and segment start time for easy review
-    analysis_df = analysis_df.sort_values(['child_id', 'segment_start_time']).reset_index(drop=True)
+    analysis_df = analysis_df.sort_values(['video_name', 'segment_start_time']).reset_index(drop=True)
 
-    # Step 4: Save detailed individual segment results
-    print(f"\n💾 Step 4: Saving individual segment analysis...")
+    # Step 3: Save detailed individual segment results
+    print(f"\n💾 Step 3: Saving individual segment analysis...")
     analysis_df.to_csv(Inference.INTERACTION_COMPOSITION_CSV, index=False)
     
     print(f"\n✅ ANALYSIS COMPLETED SUCCESSFULLY!")
     print(f"📄 Individual segment analysis saved to: {Inference.INTERACTION_COMPOSITION_CSV}")
-    print(f"📊 Each row represents one interaction segment with detailed characteristics")
     print("=" * 70)
     
     return analysis_df
