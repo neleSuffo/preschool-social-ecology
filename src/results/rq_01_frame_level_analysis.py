@@ -387,7 +387,7 @@ def merge_age_information(df):
         
         # Merge age information based on video_name
         df_with_age = df.merge(
-            subjects_df[['video_name', 'age_at_recording']], 
+            subjects_df[['video_name', 'age_at_recording', 'child_id']], 
             on='video_name', 
             how='left'
         )
@@ -403,7 +403,7 @@ def merge_age_information(df):
 
         # Reorder columns to put age near the beginning
         cols = df_with_age.columns.tolist()
-        new_order = ['frame_number', 'video_id', 'video_name', 'age_at_recording'] + [col for col in cols if col not in ['frame_number', 'video_id', 'video_name', 'age_at_recording']]
+        new_order = ['frame_number', 'video_id', 'video_name', 'child_id', 'age_at_recording'] + [col for col in cols if col not in ['frame_number', 'video_id', 'video_name', 'age_at_recording', 'child_id']]
         df_with_age = df_with_age[new_order]
         
         return df_with_age
