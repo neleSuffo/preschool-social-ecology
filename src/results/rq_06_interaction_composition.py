@@ -115,7 +115,7 @@ def analyze_proximity_frames(segment_row, frames_df):
 
     # Filter frames to this segment
     segment_frames = frames_df[
-        (frames_df['child_id'] == segment_row['child_id']) &
+        (frames_df['video_id'] == segment_row['video_id']) &
         (frames_df['frame_number'] >= start_frame) &
         (frames_df['frame_number'] <= end_frame)
     ]
@@ -127,11 +127,14 @@ def analyze_proximity_frames(segment_row, frames_df):
             'proximity_percentage': 0.0,
             'avg_proximity_score': 0.0
         }
-    
+        
     # Count close proximity frames (proximity >= 0.7, NaN when no face detected)
     if 'proximity' in segment_frames.columns:
         close_proximity_frames = segment_frames[segment_frames['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD]
-        avg_proximity = segment_frames['proximity'].mean()  # Will handle NaN automatically
+        # Handle NaN values - use nanmean and fallback to 0.0 if all are NaN
+        avg_proximity = segment_frames['proximity'].mean()
+        if pd.isna(avg_proximity):
+            avg_proximity = 0.0
     else:
         close_proximity_frames = pd.DataFrame()
         avg_proximity = 0.0
@@ -159,15 +162,11 @@ def analyze_person_detection(segment_row, frames_df):
     dict
         Dictionary with person detection metrics
     """
-    # Convert segment times to frame numbers (assuming 30 fps)
-    start_frame = int(segment_row['start_time_sec'] * DataConfig.FPS)
-    end_frame = int(segment_row['end_time_sec'] * DataConfig.FPS)
-
     # Filter frames to this segment
     segment_frames = frames_df[
-        (frames_df['child_id'] == segment_row['child_id']) &
-        (frames_df['frame_number'] >= start_frame) &
-        (frames_df['frame_number'] <= end_frame)
+        (frames_df['video_id'] == segment_row['video_id']) &
+        (frames_df['frame_number'] >= segment_row['segment_start']) &
+        (frames_df['frame_number'] <= segment_row['segment_end'])
     ]
     
     if len(segment_frames) == 0:
@@ -191,12 +190,12 @@ def analyze_person_detection(segment_row, frames_df):
 
     return {
         'total_frames': len(segment_frames),
-        'child_detected_frames': len(child_detected),
-        'adult_detected_frames': len(adult_detected),
-        'both_present_frames': len(both_present),
-        'child_detection_percentage': len(child_detected) / len(segment_frames) if len(segment_frames) > 0 else 0.0,
-        'adult_detection_percentage': len(adult_detected) / len(segment_frames) if len(segment_frames) > 0 else 0.0,
-        'both_presence_percentage': len(both_present) / len(segment_frames) if len(segment_frames) > 0 else 0.0
+        'child_det_frames': len(child_detected),
+        'adult_det_frames': len(adult_detected),
+        'both_det_frames': len(both_present),
+        'child_det_percentage': len(child_detected) / len(segment_frames) if len(segment_frames) > 0 else 0.0,
+        'adult_det_percentage': len(adult_detected) / len(segment_frames) if len(segment_frames) > 0 else 0.0,
+        'both_det_percentage': len(both_present) / len(segment_frames) if len(segment_frames) > 0 else 0.0
     }
 
 def load_vocalizations_data():
@@ -266,7 +265,7 @@ def main():
             'interaction_type': segment['interaction_type'],
             'segment_start_time': segment['start_time_sec'],
             'segment_end_time': segment['end_time_sec'],
-            'segment_duration': segment['end_time_sec'] - segment['start_time_sec'],
+            'segment_duration': segment['duration_sec'],
             **audio_metrics,
             **proximity_metrics,
             **person_metrics
