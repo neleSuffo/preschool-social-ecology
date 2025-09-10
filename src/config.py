@@ -218,4 +218,4 @@ class InferenceConfig:
     GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps in interaction segments
     VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
     PERSON_PRESENT_THRESHOLD = 0.05 # threshold for considering a person present in a window segment with only audio turn taking
-    
+    EVALUATION_IOU = 0.5 # IoU threshold for evaluation
