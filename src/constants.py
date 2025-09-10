@@ -90,3 +90,4 @@ class Inference:
     PRESENCE_COUNTS_CSV = BASE_OUTPUT_DIR / "05_presence_counts.csv"
     INTERACTION_COMPOSITION_CSV = BASE_OUTPUT_DIR / "06_interaction_composition.csv"
     INTERACTION_COMPOSITION_FRAMES_CSV = BASE_OUTPUT_DIR / "06_interaction_composition_frames.csv"
+    HYPERPARAMETER_OUTPUT_DIR = BASE_OUTPUT_DIR / "hyperparameter_tuning"
