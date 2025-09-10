@@ -219,3 +219,5 @@ class InferenceConfig:
     VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
     PERSON_PRESENT_THRESHOLD = 0.05 # threshold for considering a person present in a window segment with only audio turn taking
     EVALUATION_IOU = 0.5 # IoU threshold for evaluation
+    MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
+    RANDOM_SAMPLING = True # Whether to use random sampling for hyperparameter tuning
