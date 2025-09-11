@@ -5,7 +5,7 @@
 # The analysis focuses on identifying frames where children are not in the presence of adults.
 
 import sqlite3
-import re
+import argparse
 import sys
 import pandas as pd
 from pathlib import Path
@@ -483,6 +483,29 @@ def main(db_path: Path, output_dir: Path):
         print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
         print(f"📄 File contains {len(all_data):,} records across {all_data['video_id'].nunique()} videos")
 
-if __name__ == "__main__":
-    # Run the main analysis to create CSV files
-    main(db_path=DataPaths.INFERENCE_DB_PATH, output_dir=Inference.BASE_OUTPUT_DIR)
+if __name__ == "__main__":    
+    parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
+    parser.add_argument('--db_path', type=str, default=str(DataPaths.INFERENCE_DB_PATH),
+                    help='Path to the inference database')
+    parser.add_argument('--output', type=str, 
+                    help='Output CSV file path (if not specified, uses default output directory)')
+    
+    args = parser.parse_args()
+    
+    # Determine output path
+    if args.output:
+        output_path = Path(args.output)
+        output_dir = output_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Run analysis and save to specific file
+        main(db_path=Path(args.db_path), output_dir=output_dir)
+        
+        # If the generated file has a different name, rename it
+        default_output = output_dir / Inference.FRAME_LEVEL_INTERACTIONS_CSV.name
+        if default_output.exists() and default_output != output_path:
+            default_output.rename(output_path)
+            print(f"✅ Renamed output to {output_path}")
+    else:
+        # Use default behavior
+        main(db_path=Path(args.db_path), output_dir=Inference.BASE_OUTPUT_DIR)
