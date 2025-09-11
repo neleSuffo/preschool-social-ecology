@@ -4,6 +4,7 @@
 # It applies post-processing to the frame-level data to create these segments.
 
 import re
+import argparse
 import sys
 import pandas as pd
 from pathlib import Path
@@ -402,6 +403,29 @@ def main(output_dir: Path, frame_data_path: Path):
     segments_df.to_csv(output_dir / file_name, index=False)
     print(f"✅ Saved {len(segments_df)} interaction segments to {output_dir / file_name}")
 
-if __name__ == "__main__":
-    # Just extract segments from existing frame data
-    main(output_dir=Inference.BASE_OUTPUT_DIR, frame_data_path=Inference.FRAME_LEVEL_INTERACTIONS_CSV)
+if __name__ == "__main__":    
+    parser = argparse.ArgumentParser(description='Video-level social interaction segment analysis')
+    parser.add_argument('--input', type=str, default=str(Inference.FRAME_LEVEL_INTERACTIONS_CSV),
+                    help='Path to the frame-level interactions CSV file')
+    parser.add_argument('--output', type=str,
+                    help='Output CSV file path (if not specified, uses default output directory)')
+    
+    args = parser.parse_args()
+    
+    # Determine output path
+    if args.output:
+        output_path = Path(args.output)
+        output_dir = output_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Run analysis and save to specific file
+        main(output_dir=output_dir, frame_data_path=Path(args.input))
+        
+        # If the generated file has a different name, rename it
+        default_output = output_dir / Inference.INTERACTION_SEGMENTS_CSV.name
+        if default_output.exists() and default_output != output_path:
+            default_output.rename(output_path)
+            print(f"✅ Renamed output to {output_path}")
+    else:
+        # Use default behavior
+        main(output_dir=Inference.BASE_OUTPUT_DIR, frame_data_path=Path(args.input))
