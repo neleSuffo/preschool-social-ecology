@@ -1,7 +1,9 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 from constants import Inference
-from config import InferenceConfig
+from collections import defaultdict
 
 def create_second_level_labels(segments_df, video_duration_seconds):
     """
@@ -26,7 +28,7 @@ def create_second_level_labels(segments_df, video_duration_seconds):
     for _, segment in segments_df.iterrows():
         start_sec = int(segment['start_time_sec'])
         end_sec = int(segment['end_time_sec'])
-        interaction_type = str(segment['interaction_type']).lower()  # Convert to lowercase
+        interaction_type = str(segment['interaction_type'])
         
         # Ensure we don't go beyond video duration
         end_sec = min(end_sec, video_duration_seconds - 1)
@@ -68,6 +70,9 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
     
     category_stats = {category: {'total': 0, 'correct': 0} for category in interaction_types}
     
+    # Initialize confusion matrix
+    confusion_matrix = defaultdict(lambda: defaultdict(int))
+    
     video_results = []
     
     for video in videos_to_evaluate:
@@ -82,6 +87,9 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
         # Normalize interaction types to lowercase for case-insensitive comparison
         pred_video['interaction_type'] = pred_video['interaction_type'].astype(str).str.lower()
         gt_video['interaction_type'] = gt_video['interaction_type'].astype(str).str.lower()
+
+        # Normalize label variations
+        pred_video['interaction_type'] = pred_video['interaction_type'].replace('co-present', 'available')
 
         # Ensure time columns are numeric (convert strings to float if needed)
         pred_video['start_time_sec'] = pd.to_numeric(pred_video['start_time_sec'], errors='coerce')
@@ -121,8 +129,6 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
         pred_labels = create_second_level_labels(pred_video, video_duration)
         gt_labels = create_second_level_labels(gt_video, video_duration)
 
-        print("Pred:", pred_labels)
-        print("GT:", gt_labels)
         # Compare predictions with ground truth second by second
         video_total_seconds = 0
         video_correct_seconds = 0
@@ -138,6 +144,10 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
                 
                 # Update category-specific counters
                 category_stats[gt_label]['total'] += 1
+                
+                # Update confusion matrix
+                pred_label_for_matrix = pred_label if pred_label is not None else 'unclassified'
+                confusion_matrix[gt_label][pred_label_for_matrix] += 1
                 
                 # Check if prediction matches ground truth
                 if pred_label == gt_label:
@@ -172,8 +182,128 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
         'total_seconds': total_seconds_all,
         'correct_seconds': correct_seconds_all,
         'category_accuracies': category_accuracies,
-        'video_results': video_results
+        'video_results': video_results,
+        'confusion_matrix': confusion_matrix,
+        'interaction_types': interaction_types
     }
+
+
+def generate_confusion_matrix_plots(results):
+    """
+    Generate and save confusion matrix plots.
+    """
+    confusion_matrix = results['confusion_matrix']
+    interaction_types = results['interaction_types']
+    
+    # Define consistent order for labels (interacting, available, alone, unclassified)
+    preferred_order = ['interacting', 'available', 'alone']
+    
+    # Get ground truth labels in preferred order
+    sorted_gt_labels = []
+    for label in preferred_order:
+        if label in interaction_types:
+            sorted_gt_labels.append(label)
+    # Add any remaining GT labels not in preferred order
+    for label in sorted(interaction_types):
+        if label not in sorted_gt_labels:
+            sorted_gt_labels.append(label)
+    
+    # Get all predicted labels and sort them in preferred order
+    all_pred_labels = set()
+    for gt_label in confusion_matrix:
+        for pred_label in confusion_matrix[gt_label]:
+            all_pred_labels.add(pred_label)
+    
+    sorted_pred_labels = []
+    for label in preferred_order:
+        if label in all_pred_labels:
+            sorted_pred_labels.append(label)
+    # Add any remaining predicted labels (like 'unclassified')
+    for label in sorted(all_pred_labels):
+        if label not in sorted_pred_labels:
+            sorted_pred_labels.append(label)
+    
+    # Reverse the ground truth order to align diagonal properly
+    sorted_gt_labels = sorted_gt_labels[::-1]
+    
+    # Create confusion matrix as numpy array
+    matrix_data = []
+    for gt_label in sorted_gt_labels:
+        row = []
+        for pred_label in sorted_pred_labels:
+            row.append(confusion_matrix[gt_label][pred_label])
+        matrix_data.append(row)
+    
+    matrix_array = np.array(matrix_data)
+    
+    # Create absolute count heatmap
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(matrix_array, 
+                annot=True, 
+                fmt='d',
+                cmap='Blues',
+                xticklabels=[label.capitalize() for label in sorted_pred_labels],
+                yticklabels=[label.capitalize() for label in sorted_gt_labels],
+                cbar_kws={'label': 'Number of Seconds'})
+    
+    plt.title('Confusion Matrix - Second-by-Second Classification (Counts)', fontsize=16, fontweight='bold')
+    plt.xlabel('Predicted Labels', fontsize=12, fontweight='bold')
+    plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
+    plt.tight_layout()
+    
+    # Save count matrix
+    plt.savefig(Inference.CONF_MATRIX_COUNTS, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Create percentage matrix (row-normalized)
+    matrix_percentages = np.zeros_like(matrix_array, dtype=float)
+    for i, row in enumerate(matrix_array):
+        row_total = row.sum()
+        if row_total > 0:
+            matrix_percentages[i] = (row / row_total) * 100
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(matrix_percentages, 
+                annot=True, 
+                fmt='.1f',
+                cmap='Blues',
+                xticklabels=[label.capitalize() for label in sorted_pred_labels],
+                yticklabels=[label.capitalize() for label in sorted_gt_labels],
+                cbar_kws={'label': 'Percentage (%)'})
+    
+    plt.title('Confusion Matrix - Second-by-Second Classification (Percentages)', fontsize=16, fontweight='bold')
+    plt.xlabel('Predicted Labels', fontsize=12, fontweight='bold')
+    plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
+    plt.tight_layout()
+    
+    # Save percentage matrix
+    plt.savefig(Inference.CONF_MATRIX_PERCENTAGES, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"✅ Confusion matrix saved: {Inference.CONF_MATRIX_PERCENTAGES}")
+
+def save_performance_results(results, total_seconds, total_hours, filename=Inference.PERFORMANCE_RESULTS_TXT):
+    """
+    Save category-specific performance results to a text file.
+    """
+    with open(filename, 'w') as f:
+        # Write analysis summary
+        f.write("ANALYSIS SUMMARY\n")
+        f.write("=" * 60 + "\n")
+        f.write(f"Total seconds analyzed: {total_seconds:,}\n")
+        f.write(f"Total time analyzed: {total_hours:.2f} hours ({int(total_hours)}h {int((total_seconds % 3600) / 60)}m)\n")
+        f.write(f"Overall accuracy: {results['overall_accuracy']:.4f} ({results['overall_accuracy']*100:.2f}%)\n\n")
+        
+        # Write category-specific performance
+        f.write("CATEGORY-SPECIFIC PERFORMANCE\n")
+        f.write("=" * 60 + "\n\n")
+        
+        for category, stats in results['category_accuracies'].items():
+            f.write(f"{category.upper()}:\n")
+            f.write(f"  Total seconds: {stats['total_seconds']:,}\n")
+            f.write(f"  Correctly classified: {stats['correct_seconds']:,}\n")
+            f.write(f"  Accuracy: {stats['accuracy']:.4f} ({stats['accuracy']*100:.2f}%)\n\n")
+    
+    print(f"✅ Performance results saved: {filename}")
 
 
 def main(predictions_df, ground_truth_df):
@@ -186,71 +316,20 @@ def main(predictions_df, ground_truth_df):
     gt_videos = set(ground_truth_df['video_name'].unique())
     videos_to_evaluate = pred_videos.intersection(gt_videos)
         
-    print(f"Videos in predictions: {len(pred_videos)}")
-    print(f"Videos in ground truth: {len(gt_videos)}")
     print(f"Videos being evaluated (have both GT and predictions): {len(videos_to_evaluate)}")
-    
-    # Show videos with predictions but no ground truth (won't be evaluated)
-    pred_only_videos = pred_videos - gt_videos
-    if pred_only_videos:
-        print(f"Videos with predictions but no ground truth (excluded): {len(pred_only_videos)}")
-        
-    # Show videos with ground truth but no predictions (won't be evaluated)
-    gt_only_videos = gt_videos - pred_videos
-    if gt_only_videos:
-        print(f"Videos with ground truth but no predictions (excluded): {len(gt_only_videos)}")
-        for video in sorted(gt_only_videos):
-            print(f"  - {video}")
     
     # Evaluate performance
     results = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
     
-    # Print overall results
-    print(f"\n{'='*60}")
-    print("OVERALL PERFORMANCE")
-    print(f"{'='*60}")
-    print(f"Total seconds evaluated: {results['total_seconds']:,}")
-    print(f"Correctly classified seconds: {results['correct_seconds']:,}")
-    print(f"Overall accuracy: {results['overall_accuracy']:.4f} ({results['overall_accuracy']*100:.2f}%)")
+    # Calculate total frames and hours analyzed
+    total_seconds = results['total_seconds']
+    total_hours = total_seconds / 3600
     
-    # Print category-specific results
-    print(f"\n{'='*60}")
-    print("CATEGORY-SPECIFIC PERFORMANCE")
-    print(f"{'='*60}")
+    # Generate confusion matrix plots
+    generate_confusion_matrix_plots(results)
     
-    for category, stats in results['category_accuracies'].items():
-        print(f"\n{category.upper()}:")
-        print(f"  Total seconds: {stats['total_seconds']:,}")
-        print(f"  Correctly classified: {stats['correct_seconds']:,}")
-        print(f"  Accuracy: {stats['accuracy']:.4f} ({stats['accuracy']*100:.2f}%)")
-    
-    # Print video-level results
-    print(f"\n{'='*60}")
-    print("VIDEO-LEVEL PERFORMANCE")
-    print(f"{'='*60}")
-    
-    video_results_df = pd.DataFrame(results['video_results'])
-    if len(video_results_df) > 0:
-        video_results_df = video_results_df.sort_values('accuracy', ascending=False)
-        
-        print(f"\nTop 5 best performing videos:")
-        for _, row in video_results_df.head().iterrows():
-            print(f"  {row['video_name']}: {row['accuracy']:.4f} ({row['accuracy']*100:.2f}%) "
-                f"[{row['correct_seconds']}/{row['total_seconds']} seconds]")
-        
-        if len(video_results_df) > 5:
-            print(f"\nBottom 5 worst performing videos:")
-            for _, row in video_results_df.tail().iterrows():
-                print(f"  {row['video_name']}: {row['accuracy']:.4f} ({row['accuracy']*100:.2f}%) "
-                    f"[{row['correct_seconds']}/{row['total_seconds']} seconds]")
-        
-        # Summary statistics
-        print(f"\nVideo-level accuracy statistics:")
-        print(f"  Mean: {video_results_df['accuracy'].mean():.4f}")
-        print(f"  Median: {video_results_df['accuracy'].median():.4f}")
-        print(f"  Std: {video_results_df['accuracy'].std():.4f}")
-        print(f"  Min: {video_results_df['accuracy'].min():.4f}")
-        print(f"  Max: {video_results_df['accuracy'].max():.4f}")
+    # Save performance results to text file
+    save_performance_results(results, total_seconds, total_hours)
     
     return results
 
