@@ -1,150 +1,262 @@
 import pandas as pd
+import numpy as np
 from constants import Inference
 from config import InferenceConfig
 
-def calculate_iou(pred_start, pred_end, gt_start, gt_end):
+def create_second_level_labels(segments_df, video_duration_seconds):
     """
-    Calculates the Intersection over Union (IoU) for two time intervals.
-    """
-    # Find the start and end of the intersection
-    intersection_start = max(pred_start, gt_start)
-    intersection_end = min(pred_end, gt_end)
-    
-    # Calculate the duration of the intersection
-    intersection_duration = max(0, intersection_end - intersection_start)
-    
-    # Calculate the duration of the union
-    union_duration = (pred_end - pred_start) + (gt_end - gt_start) - intersection_duration
-    
-    if union_duration == 0:
-        return 0
-    return intersection_duration / union_duration
-
-def evaluate_performance(predictions, ground_truth, iou_threshold):
-    """
-    Evaluates model performance using IoU and F1-score for each class.
+    Create a second-by-second label array for a video based on segments.
     
     Parameters
     ----------
-    predictions (pd.DataFrame)
+    segments_df : pd.DataFrame
+        DataFrame with segments for a single video, containing 'start_time_sec', 'end_time_sec', 'interaction_type'
+    video_duration_seconds : int
+        Total duration of the video in seconds
+        
+    Returns
+    -------
+    np.array
+        Array where each index represents a second and contains the interaction type label
+    """
+    # Initialize all seconds as None (unclassified)
+    labels = np.full(video_duration_seconds, None, dtype=object)
+    
+    # Fill in the labels based on segments
+    for _, segment in segments_df.iterrows():
+        start_sec = int(segment['start_time_sec'])
+        end_sec = int(segment['end_time_sec'])
+        interaction_type = str(segment['interaction_type']).lower()  # Convert to lowercase
+        
+        # Ensure we don't go beyond video duration
+        end_sec = min(end_sec, video_duration_seconds - 1)
+        
+        # Label each second in this segment
+        labels[start_sec:end_sec + 1] = interaction_type
+    
+    return labels
+
+def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
+    """
+    Evaluates model performance by comparing second-by-second classifications.
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
         DataFrame with 'video_name', 'start_time_sec', 'end_time_sec', and 'interaction_type' columns.
-    ground_truth (pd.DataFrame)
+    ground_truth_df : pd.DataFrame
         DataFrame with 'video_name', 'start_time_sec', 'end_time_sec', and 'interaction_type' columns.
-    iou_threshold (float)
-        The minimum IoU required to consider a prediction correct.
 
     Returns
     -------
-        dict
-            A dictionary with precision, recall, and F1-score for each class.
+    dict
+        A dictionary with overall accuracy and per-category accuracy metrics.
     """
-    classes = ground_truth['interaction_type'].unique()
-    videos = ground_truth['video_name'].unique()  # Only evaluate videos with ground truth
-    results = {}
+    # Get all videos that have ground truth and predictions
+    videos_with_gt = set(ground_truth_df['video_name'].unique())
+    videos_with_pred = set(predictions_df['video_name'].unique())
     
-    for cls in classes:
-        tp_total = 0
-        fp_total = 0
-        fn_total = 0
+    # Only evaluate videos that have BOTH ground truth AND predictions
+    videos_to_evaluate = videos_with_gt.intersection(videos_with_pred)
+    
+    # Get all interaction types from ground truth (normalize to lowercase)
+    interaction_types = [str(t).lower() for t in ground_truth_df['interaction_type'].unique()]
+    
+    # Initialize counters for overall and per-category accuracy
+    total_seconds_all = 0
+    correct_seconds_all = 0
+    
+    category_stats = {category: {'total': 0, 'correct': 0} for category in interaction_types}
+    
+    video_results = []
+    
+    for video in videos_to_evaluate:
+        # Get predictions and ground truth for this video
+        pred_video = predictions_df[predictions_df['video_name'] == video].copy()
+        gt_video = ground_truth_df[ground_truth_df['video_name'] == video].copy()
+
+        # Since we're only processing videos with both GT and predictions, this should never happen
+        if len(gt_video) == 0 or len(pred_video) == 0:
+            continue
+
+        # Normalize interaction types to lowercase for case-insensitive comparison
+        pred_video['interaction_type'] = pred_video['interaction_type'].astype(str).str.lower()
+        gt_video['interaction_type'] = gt_video['interaction_type'].astype(str).str.lower()
+
+        # Ensure time columns are numeric (convert strings to float if needed)
+        pred_video['start_time_sec'] = pd.to_numeric(pred_video['start_time_sec'], errors='coerce')
+        pred_video['end_time_sec'] = pd.to_numeric(pred_video['end_time_sec'], errors='coerce')
         
-        # Loop through each video
-        for video in videos:
-            # Filter predictions and ground truth for the current class and video
-            pred_cls_video = predictions[
-                (predictions['interaction_type'] == cls) & 
-                (predictions['video_name'] == video)
-            ].copy()
-            gt_cls_video = ground_truth[
-                (ground_truth['interaction_type'] == cls) & 
-                (ground_truth['video_name'] == video)
-            ].copy()
-            
-            if len(gt_cls_video) == 0 and len(pred_cls_video) == 0:
-                continue  # Skip videos with no segments for this class
-                
-            # Mark ground truth segments as 'matched' to avoid double-counting
-            gt_cls_video['matched'] = False
-            
-            # Loop through each prediction for the current class and video
-            for _, pred_row in pred_cls_video.iterrows():
-                # Find the best IoU match with ground truth segments in the same video
-                best_iou = 0
-                best_gt_idx = -1
-                
-                for gt_idx, gt_row in gt_cls_video.iterrows():
-                    # Skip already matched ground truth segments
-                    if gt_row['matched']:
-                        continue
-
-                    iou = calculate_iou(pred_row['start_time_sec'], pred_row['end_time_sec'], 
-                                        gt_row['start_time_sec'], gt_row['end_time_sec'])
-
-                    if iou > best_iou:
-                        best_iou = iou
-                        best_gt_idx = gt_idx
-                
-                # Check if the best match meets the IoU threshold
-                if best_iou >= iou_threshold:
-                    tp_total += 1
-                    gt_cls_video.loc[best_gt_idx, 'matched'] = True
+        # Convert HH:MM:SS format to seconds for ground truth
+        def time_to_seconds(time_str):
+            """Convert HH:MM:SS format to seconds"""
+            try:
+                parts = str(time_str).split(':')
+                if len(parts) == 3:
+                    hours, minutes, seconds = map(float, parts)
+                    return hours * 3600 + minutes * 60 + seconds
                 else:
-                    fp_total += 1
+                    # If it's already in seconds format, just convert to float
+                    return float(time_str)
+            except:
+                return None
+        
+        gt_video['start_time_sec'] = gt_video['start_time_sec'].apply(time_to_seconds)
+        gt_video['end_time_sec'] = gt_video['end_time_sec'].apply(time_to_seconds)
+        
+        # Drop any rows with NaN time values
+        pred_video = pred_video.dropna(subset=['start_time_sec', 'end_time_sec'])
+        gt_video = gt_video.dropna(subset=['start_time_sec', 'end_time_sec'])
+        
+        # Check again after cleaning
+        if len(gt_video) == 0 or len(pred_video) == 0:
+            print("Warning: GT or PRED video is empty after cleaning")
+            continue
             
-            # Count false negatives (unmatched ground truth segments) for this video
-            fn_total += (~gt_cls_video['matched']).sum()
+        # Determine video duration from ground truth only
+        max_end_gt = gt_video['end_time_sec'].max()
+        video_duration = int(max_end_gt) + 1
         
-        # Calculate precision, recall, and F1-score for the class across all videos
-        precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0
-        recall = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0
-        f1_score = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        # Create second-by-second labels
+        pred_labels = create_second_level_labels(pred_video, video_duration)
+        gt_labels = create_second_level_labels(gt_video, video_duration)
+
+        print("Pred:", pred_labels)
+        print("GT:", gt_labels)
+        # Compare predictions with ground truth second by second
+        video_total_seconds = 0
+        video_correct_seconds = 0
         
-        results[cls] = {
-            'precision': precision, 
-            'recall': recall, 
-            'f1_score': f1_score,
-            'tp': tp_total,
-            'fp': fp_total,
-            'fn': fn_total
+        for second in range(video_duration):
+            gt_label = gt_labels[second]
+            pred_label = pred_labels[second]
+            
+            # Only count seconds that have ground truth labels
+            if gt_label is not None:
+                video_total_seconds += 1
+                total_seconds_all += 1
+                
+                # Update category-specific counters
+                category_stats[gt_label]['total'] += 1
+                
+                # Check if prediction matches ground truth
+                if pred_label == gt_label:
+                    video_correct_seconds += 1
+                    correct_seconds_all += 1
+                    category_stats[gt_label]['correct'] += 1
+        
+        # Store video-level results
+        video_accuracy = video_correct_seconds / video_total_seconds if video_total_seconds > 0 else 0
+        video_results.append({
+            'video_name': video,
+            'total_seconds': video_total_seconds,
+            'correct_seconds': video_correct_seconds,
+            'accuracy': video_accuracy
+        })
+    
+    # Calculate overall accuracy
+    overall_accuracy = correct_seconds_all / total_seconds_all if total_seconds_all > 0 else 0
+    
+    # Calculate category-specific accuracies
+    category_accuracies = {}
+    for category, stats in category_stats.items():
+        accuracy = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
+        category_accuracies[category] = {
+            'accuracy': accuracy,
+            'total_seconds': stats['total'],
+            'correct_seconds': stats['correct']
         }
-        
-    return results
+    
+    return {
+        'overall_accuracy': overall_accuracy,
+        'total_seconds': total_seconds_all,
+        'correct_seconds': correct_seconds_all,
+        'category_accuracies': category_accuracies,
+        'video_results': video_results
+    }
 
 
-def main(predictions_df, ground_truth_df, iou):
-    print(f"Evaluating performance with IoU threshold: {iou}")
+def main(predictions_df, ground_truth_df):
+    """
+    Main function to evaluate performance using second-by-second accuracy.
+    """
+    print("Evaluating performance using second-by-second accuracy...")
+    
     pred_videos = set(predictions_df['video_name'].unique())
     gt_videos = set(ground_truth_df['video_name'].unique())
-    
+    videos_to_evaluate = pred_videos.intersection(gt_videos)
+        
     print(f"Videos in predictions: {len(pred_videos)}")
     print(f"Videos in ground truth: {len(gt_videos)}")
-    print(f"Videos being evaluated (have ground truth): {len(gt_videos)}")
+    print(f"Videos being evaluated (have both GT and predictions): {len(videos_to_evaluate)}")
     
     # Show videos with predictions but no ground truth (won't be evaluated)
     pred_only_videos = pred_videos - gt_videos
     if pred_only_videos:
-        print(f"Videos with predictions but no ground truth (skipped): {len(pred_only_videos)}")
+        print(f"Videos with predictions but no ground truth (excluded): {len(pred_only_videos)}")
         
-    # Show videos with ground truth but no predictions (will contribute to FN)
+    # Show videos with ground truth but no predictions (won't be evaluated)
     gt_only_videos = gt_videos - pred_videos
     if gt_only_videos:
-        print(f"Videos with ground truth but no predictions: {len(gt_only_videos)}")
+        print(f"Videos with ground truth but no predictions (excluded): {len(gt_only_videos)}")
+        for video in sorted(gt_only_videos):
+            print(f"  - {video}")
     
-    evaluation_results = evaluate_performance(predictions_df, ground_truth_df, iou)
-
-    # Print the results
-    print("\nEvaluation Results:")
-    for cls, metrics in evaluation_results.items():
-        print(f"\nClass: {cls}")
-        print(f"  True Positives (TP): {metrics['tp']}")
-        print(f"  False Positives (FP): {metrics['fp']}")
-        print(f"  False Negatives (FN): {metrics['fn']}")
-        print(f"  Precision: {metrics['precision']:.4f}")
-        print(f"  Recall: {metrics['recall']:.4f}")
-        print(f"  F1-Score: {metrics['f1_score']:.4f}")
+    # Evaluate performance
+    results = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
+    
+    # Print overall results
+    print(f"\n{'='*60}")
+    print("OVERALL PERFORMANCE")
+    print(f"{'='*60}")
+    print(f"Total seconds evaluated: {results['total_seconds']:,}")
+    print(f"Correctly classified seconds: {results['correct_seconds']:,}")
+    print(f"Overall accuracy: {results['overall_accuracy']:.4f} ({results['overall_accuracy']*100:.2f}%)")
+    
+    # Print category-specific results
+    print(f"\n{'='*60}")
+    print("CATEGORY-SPECIFIC PERFORMANCE")
+    print(f"{'='*60}")
+    
+    for category, stats in results['category_accuracies'].items():
+        print(f"\n{category.upper()}:")
+        print(f"  Total seconds: {stats['total_seconds']:,}")
+        print(f"  Correctly classified: {stats['correct_seconds']:,}")
+        print(f"  Accuracy: {stats['accuracy']:.4f} ({stats['accuracy']*100:.2f}%)")
+    
+    # Print video-level results
+    print(f"\n{'='*60}")
+    print("VIDEO-LEVEL PERFORMANCE")
+    print(f"{'='*60}")
+    
+    video_results_df = pd.DataFrame(results['video_results'])
+    if len(video_results_df) > 0:
+        video_results_df = video_results_df.sort_values('accuracy', ascending=False)
+        
+        print(f"\nTop 5 best performing videos:")
+        for _, row in video_results_df.head().iterrows():
+            print(f"  {row['video_name']}: {row['accuracy']:.4f} ({row['accuracy']*100:.2f}%) "
+                f"[{row['correct_seconds']}/{row['total_seconds']} seconds]")
+        
+        if len(video_results_df) > 5:
+            print(f"\nBottom 5 worst performing videos:")
+            for _, row in video_results_df.tail().iterrows():
+                print(f"  {row['video_name']}: {row['accuracy']:.4f} ({row['accuracy']*100:.2f}%) "
+                    f"[{row['correct_seconds']}/{row['total_seconds']} seconds]")
+        
+        # Summary statistics
+        print(f"\nVideo-level accuracy statistics:")
+        print(f"  Mean: {video_results_df['accuracy'].mean():.4f}")
+        print(f"  Median: {video_results_df['accuracy'].median():.4f}")
+        print(f"  Std: {video_results_df['accuracy'].std():.4f}")
+        print(f"  Min: {video_results_df['accuracy'].min():.4f}")
+        print(f"  Max: {video_results_df['accuracy'].max():.4f}")
+    
+    return results
 
 if __name__ == "__main__":
     # load data
     predictions_df = pd.read_csv(Inference.INTERACTION_SEGMENTS_CSV)
     ground_truth_df = pd.read_csv(Inference.GROUND_TRUTH_SEGMENTS_CSV, delimiter=';')
 
-    main(predictions_df, ground_truth_df, InferenceConfig.EVALUATION_IOU)
+    results = main(predictions_df, ground_truth_df)
