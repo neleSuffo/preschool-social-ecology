@@ -91,3 +91,6 @@ class Inference:
     INTERACTION_COMPOSITION_CSV = BASE_OUTPUT_DIR / "06_interaction_composition.csv"
     INTERACTION_COMPOSITION_FRAMES_CSV = BASE_OUTPUT_DIR / "06_interaction_composition_frames.csv"
     HYPERPARAMETER_OUTPUT_DIR = BASE_OUTPUT_DIR / "hyperparameter_tuning"
+    CONF_MATRIX_COUNTS = BASE_OUTPUT_DIR / "confusion_matrix_counts.png"
+    CONF_MATRIX_PERCENTAGES = BASE_OUTPUT_DIR / "confusion_matrix_percentages.png"
+    PERFORMANCE_RESULTS_TXT = BASE_OUTPUT_DIR / "performance_results.txt"
