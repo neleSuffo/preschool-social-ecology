@@ -346,6 +346,50 @@ def classify_interaction_with_audio(row, results_df):
     # Tier 3: ALONE (No presence)
     return "Alone"
 
+def classify_interaction_rules(row, results_df):
+    """
+    Classify which specific interaction rules are active for each frame.
+    
+    This function evaluates each of the four interaction rules separately
+    to enable analysis of which rules are most commonly triggering interactions.
+    
+    Rules:
+    1. Turn-taking audio interaction (highest priority)
+    2. Very close proximity (>= PROXIMITY_THRESHOLD)
+    3. Other person speaking
+    4. Adult face + recent speech
+    
+    Parameters
+    ----------
+    row : pd.Series
+        DataFrame row with detection flags and proximity values
+    results_df : pd.DataFrame
+        The full DataFrame to enable window-based lookups for recent speech
+        
+    Returns
+    -------
+    tuple
+        (rule1_active, rule2_active, rule3_active, rule4_active) - all boolean
+    """
+    # Calculate recent speech for rule 4
+    current_index = row.name
+    window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
+    recent_speech_exists = (results_df.loc[window_start:current_index, 'fem_mal_speech_present'] == 1).any()
+    
+    # Rule 1: Turn-taking audio interaction detected (highest priority)
+    rule1_turn_taking = bool(row['is_audio_interaction'])
+    
+    # Rule 2: Very close proximity (>= PROXIMITY_THRESHOLD)
+    rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
+    
+    # Rule 3: Other person speaking
+    rule3_other_speaking = bool(row['fem_mal_speech_present'])
+    
+    # Rule 4: Adult face + recent speech
+    rule4_adult_face_recent_speech = bool(row['has_adult_face'] == 1 and recent_speech_exists)
+    
+    return rule1_turn_taking, rule2_close_proximity, rule3_other_speaking, rule4_adult_face_recent_speech
+
 def classify_face_category(row):
     """Categorize face detection patterns for attention analysis."""
     if row['has_child_face'] and not row['has_adult_face']:
@@ -464,6 +508,18 @@ def main(db_path: Path, output_dir: Path):
         all_data['interaction_category'] = all_data.apply(
             lambda row: classify_interaction_with_audio(row, all_data), axis=1
         )
+        
+        # Step 4b: Interaction rule analysis - track which specific rules are active
+        print("🔍 Analyzing interaction rule patterns...")
+        rule_results = all_data.apply(
+            lambda row: classify_interaction_rules(row, all_data), axis=1
+        )
+        
+        # Unpack the rule results into separate columns
+        all_data['rule1_turn_taking'] = [result[0] for result in rule_results]
+        all_data['rule2_close_proximity'] = [result[1] for result in rule_results]
+        all_data['rule3_other_speaking'] = [result[2] for result in rule_results]
+        all_data['rule4_adult_face_recent_speech'] = [result[3] for result in rule_results]
 
         # Step 5: Presence pattern categorization       
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
@@ -476,12 +532,11 @@ def main(db_path: Path, output_dir: Path):
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Step 8: Save results
-
         file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.name
         all_data.to_csv(output_dir / file_name, index=False)
 
         print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
-        print(f"📄 File contains {len(all_data):,} records across {all_data['video_id'].nunique()} videos")
+        print(f"📄 File contains {len(all_data):,} records across {all_data['video_id'].nunique()} videos")   
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
