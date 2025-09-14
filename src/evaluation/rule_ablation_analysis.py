@@ -352,11 +352,6 @@ def create_comprehensive_visualization(all_results, output_dir):
     print(f"Baseline F1-Score (All Rules): {baseline_f1:.4f}")
     print("-"*50)
     
-    for rule_name, f1_drop in zip([r['rule_name'].replace('\n', ' ') for r in rule_data], f1_drops):
-        percentage_drop = (f1_drop / baseline_f1) * 100 if baseline_f1 > 0 else 0
-        impact_level = "HIGH" if f1_drop > 0.01 else "MODERATE" if f1_drop > 0.005 else "LOW"
-        print(f"{rule_name:<25}: -{f1_drop:.4f} ({percentage_drop:.1f}%) [{impact_level}]")
-    
     # Create summary table
     create_summary_table(all_results, output_dir)
 
