@@ -250,27 +250,31 @@ def create_comprehensive_visualization(all_results, output_dir):
     # Extract baseline performance (all rules)
     baseline_f1 = all_results['All_Rules']['detailed_metrics'].get('macro_avg', {}).get('f1_score', 0)
     
-    # Define the four rules and their performance when excluded
+    # Define the four rules with custom colors
     rule_data = [
         {
             'rule_name': 'Turn-Taking\nAudio Interaction', 
             'condition': 'No_Rule1_TurnTaking',
-            'description': 'Conversational exchanges between child and others'
+            'description': 'Conversational exchanges between child and others',
+            'color': '#69777B'  # Gray
         },
         {
             'rule_name': 'Close Proximity\n(≥ threshold)', 
             'condition': 'No_Rule2_Proximity',
-            'description': 'Physical closeness above proximity threshold'
+            'description': 'Physical closeness above proximity threshold',
+            'color': '#8E7C3B'  # Olive Green
         },
         {
             'rule_name': 'Other Person\nSpeaking', 
             'condition': 'No_Rule3_OtherSpeaking',
-            'description': 'Any non-child speech activity detected'
+            'description': 'Any non-child speech activity detected',
+            'color': '#8D8E49'  # Olive Drab
         },
         {
             'rule_name': 'Adult Face +\nRecent Speech', 
             'condition': 'No_Rule4_AdultFaceRecentSpeech',
-            'description': 'Adult face visible with recent speech activity'
+            'description': 'Adult face visible with recent speech activity',
+            'color': '#81867C'  # Gray
         }
     ]
     
@@ -281,6 +285,7 @@ def create_comprehensive_visualization(all_results, output_dir):
     
     for rule_info in rule_data:
         rule_names.append(rule_info['rule_name'])
+        colors.append(rule_info['color'])  # Use custom color
         
         # Get F1 score when this rule is excluded
         excluded_f1 = all_results[rule_info['condition']]['detailed_metrics'].get('macro_avg', {}).get('f1_score', 0)
@@ -288,21 +293,13 @@ def create_comprehensive_visualization(all_results, output_dir):
         # Calculate the drop (positive values mean performance decreased)
         f1_drop = baseline_f1 - excluded_f1
         f1_drops.append(f1_drop)
-        
-        # Color coding: red for significant drops (>0.01), blue for minimal impact
-        if f1_drop > 0.01:
-            colors.append('#E74C3C')  # Red for important rules
-        elif f1_drop > 0.005:
-            colors.append('#F39C12')  # Orange for moderate impact
-        else:
-            colors.append('#3498DB')  # Blue for minimal impact
     
     # Create the focused plot
     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
     
     # Create bars
     bars = ax.bar(range(len(rule_names)), f1_drops, 
-                  color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
+                color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
     
     # Add value labels on top of bars
     for i, (bar, drop) in enumerate(zip(bars, f1_drops)):
@@ -317,7 +314,7 @@ def create_comprehensive_visualization(all_results, output_dir):
     # Customize the plot
     ax.set_title('Performance Drop in Overall F1-Score if Rule was Excluded', 
                 fontsize=16, fontweight='bold', pad=20)
-    ax.set_ylabel('F1-Score Drop (Baseline - Excluded)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('F1-Score Drop', fontsize=12, fontweight='bold')
     ax.set_xlabel('Excluded Rule', fontsize=12, fontweight='bold')
     
     # Set x-axis
@@ -336,21 +333,9 @@ def create_comprehensive_visualization(all_results, output_dir):
     
     # Add baseline F1 score as text
     ax.text(0.02, 0.98, f'Baseline F1-Score (All Rules): {baseline_f1:.4f}', 
-            transform=ax.transAxes, fontsize=11, fontweight='bold',
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
+            transform=ax.transAxes, fontsize=11, fontweight='bold', color='white',
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#601D33", alpha=0.8),
             verticalalignment='top')
-    
-    # Add interpretation note
-    interpretation_text = (
-        "Interpretation:\n"
-        "• Larger bars = more important rules\n"
-        "• Red bars = high impact (>1% drop)\n"
-        "• Orange bars = moderate impact\n"
-        "• Blue bars = minimal impact"
-    )
-    ax.text(0.98, 0.02, interpretation_text, transform=ax.transAxes, 
-            fontsize=9, verticalalignment='bottom', horizontalalignment='right',
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9))
     
     plt.tight_layout()
     
@@ -374,6 +359,72 @@ def create_comprehensive_visualization(all_results, output_dir):
     
     # Create summary table
     create_summary_table(all_results, output_dir)
+
+def load_existing_results(output_dir):
+    """
+    Load existing analysis results from saved files.
+    
+    Parameters
+    ----------
+    output_dir : Path
+        Directory containing saved results
+        
+    Returns
+    -------
+    dict or None
+        Loaded results if successful, None otherwise
+    """
+    print("🔄 Loading existing analysis results...")
+    
+    # Check if summary file exists
+    summary_file = output_dir / 'rule_ablation_summary.csv'
+    if not summary_file.exists():
+        print("❌ No existing results found. Run full analysis first.")
+        return None
+    
+    try:
+        # Load the summary data
+        summary_df = pd.read_csv(summary_file)
+        
+        # Reconstruct results structure for visualization
+        all_results = {}
+        
+        for _, row in summary_df.iterrows():
+            condition_name = row['Condition']
+            
+            # Create mock detailed metrics structure
+            detailed_metrics = {
+                'macro_avg': {
+                    'f1_score': row['Macro_F1'],
+                    'precision': row['Macro_Precision'],
+                    'recall': row['Macro_Recall']
+                }
+            }
+            
+            # Add class-specific metrics
+            for class_name in ['interacting', 'available', 'alone']:
+                detailed_metrics[class_name] = {
+                    'f1_score': row[f'{class_name.capitalize()}_F1'],
+                    'precision': row[f'{class_name.capitalize()}_Precision'],
+                    'recall': row[f'{class_name.capitalize()}_Recall']
+                }
+            
+            # Create mock results structure
+            results = {
+                'overall_accuracy': row['Overall_Accuracy']
+            }
+            
+            all_results[condition_name] = {
+                'results': results,
+                'detailed_metrics': detailed_metrics
+            }
+        
+        print(f"✅ Successfully loaded results for {len(all_results)} conditions")
+        return all_results
+        
+    except Exception as e:
+        print(f"❌ Error loading existing results: {e}")
+        return None
 
 def create_summary_table(all_results, output_dir):
     """Create a summary table with all metrics."""
@@ -426,30 +477,57 @@ def create_summary_table(all_results, output_dir):
         print(f"{row['Condition']:<25} {row['Macro_F1']:<10.4f} {row['Interacting_F1']:<15.4f} {row['Available_F1']:<13.4f} {row['Alone_F1']:<10.4f}")
 
 def main():
-    """Main function to run the complete ablation analysis."""
+    """Main function to run the complete ablation analysis or regenerate plots."""
     
     parser = argparse.ArgumentParser(description='Rule Ablation Analysis for Social Interaction Classification')
     parser.add_argument('--db_path', type=str, default=str(DataPaths.INFERENCE_DB_PATH),
-                    help='Path to the inference database')    
+                       help='Path to the inference database')
+    parser.add_argument('--plot_only', action='store_true',
+                       help='Only regenerate plots from existing results (skip full analysis)')
+    parser.add_argument('--output_dir', type=str, 
+                       help='Custom output directory')
+    
     args = parser.parse_args()
     
     # Setup paths
     db_path = Path(args.db_path)
     ground_truth_path = Inference.GROUND_TRUTH_SEGMENTS_CSV
-    output_dir = Inference.BASE_OUTPUT_DIR
+    
+    # Use custom output directory if specified
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Inference.BASE_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load ground truth
-    print(f"📖 Loading ground truth from {ground_truth_path}")
-    ground_truth_df = pd.read_csv(ground_truth_path, delimiter=';')
-    
-    # Run ablation analysis
-    all_results = run_ablation_analysis(db_path, ground_truth_df, output_dir)
-    
-    # Create visualizations
-    create_comprehensive_visualization(all_results, output_dir)
-    
-    print(f"\n🎉 Rule ablation analysis complete! Results saved to {output_dir}")
+    if args.plot_only:
+        print("🎨 Plot-only mode: Regenerating visualizations from existing results...")
+        
+        # Load existing results
+        all_results = load_existing_results(output_dir)
+        
+        if all_results is None:
+            print("❌ Cannot generate plots without existing results. Run full analysis first.")
+            sys.exit(1)
+        
+        # Generate new plots
+        create_comprehensive_visualization(all_results, output_dir)
+        print(f"\n🎉 Plot regeneration complete! Visualization saved to {output_dir}")
+        
+    else:
+        print("🚀 Full analysis mode: Running complete rule ablation analysis...")
+        
+        # Load ground truth
+        print(f"📖 Loading ground truth from {ground_truth_path}")
+        ground_truth_df = pd.read_csv(ground_truth_path, delimiter=';')
+        
+        # Run ablation analysis
+        all_results = run_ablation_analysis(db_path, ground_truth_df, output_dir)
+        
+        # Create visualizations
+        create_comprehensive_visualization(all_results, output_dir)
+        
+        print(f"\n🎉 Rule ablation analysis complete! Results saved to {output_dir}")
 
 if __name__ == "__main__":
     main()
