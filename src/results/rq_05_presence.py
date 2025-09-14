@@ -9,86 +9,90 @@ sys.path.append(str(src_path))
 
 from constants import Inference
 
-def extract_child_id(video_name):
-    match = re.search(r'id(\d{6})', video_name)
-    return match.group(1) if match else None
+def enhance_segments_with_presence(segments_df, frame_data_df):
+    """
+    Enhance interaction segments with adult/child presence information.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        Existing interaction segments data
+    frame_data_df : pd.DataFrame
+        Frame-level data with presence information
+        
+    Returns
+    -------
+    pd.DataFrame
+        Enhanced segments with adult_present and child_present flags
+    """
+    enhanced_segments = segments_df.copy()
+    enhanced_segments['adult_present'] = 0
+    enhanced_segments['child_present'] = 0
+    
+    print(f"🔄 Processing {len(enhanced_segments)} segments...")
+    
+    for idx, segment in enhanced_segments.iterrows():
+        video_name = segment['video_name']
+        segment_start = segment['segment_start']
+        segment_end = segment['segment_end']
+        
+        # Get frame data for this video and segment
+        video_frames = frame_data_df[
+            (frame_data_df['video_name'] == video_name) &
+            (frame_data_df['frame_number'] >= segment_start) &
+            (frame_data_df['frame_number'] <= segment_end)
+        ]
+        
+        if len(video_frames) > 0:
+            # Check if any frame in this segment has adult or child present
+            has_adult = video_frames['adult_present'].sum() > 0
+            has_child = video_frames['child_present'].sum() > 0
+            
+            enhanced_segments.loc[idx, 'adult_present'] = 1 if has_adult else 0
+            enhanced_segments.loc[idx, 'child_present'] = 1 if has_child else 0
+    
+    return enhanced_segments
 
-def main(csv_file: Path=Inference.FRAME_LEVEL_INTERACTIONS_CSV):
+def main(frame_data_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV,
+        segments_csv: Path = Inference.INTERACTION_SEGMENTS_CSV):
     print("=" * 60)
-    print("RQ 04: EXTRACTING PRESENCE COUNTS")
+    print("RQ 05: ENHANCING SEGMENTS WITH PRESENCE INFORMATION")
     print("=" * 60)
     
-    # Load data
+    # Load frame-level data
     try:
-        df = pd.read_csv(csv_file)
+        frame_df = pd.read_csv(frame_data_csv)
     except FileNotFoundError:
-        print(f"❌ Error: File not found at {csv_file}")
+        print(f"❌ Error: Frame data file not found at {frame_data_csv}")
         return
     except Exception as e:
-        print(f"❌ Error loading file: {e}")
-        return
-
-    # Extract child_id from video_name and add as new column
-    df['child_id'] = df['video_name'].apply(extract_child_id)
-    
-    # Check extraction success
-    valid_child_ids = df['child_id'].notna().sum()
-    total_frames = len(df)
-    
-    if valid_child_ids == 0:
-        print("❌ Warning: No child IDs could be extracted. Check video name format.")
+        print(f"❌ Error loading frame data: {e}")
         return
     
-    unique_children = df['child_id'].nunique()
-    
-    # Group by child (video_id or video_name) and age_at_recording
-    grouped = (
-        df.groupby(['child_id', 'age_at_recording'])
-        .agg(
-            frames_with_adult_present=('adult_present', 'sum'),
-            frames_with_child_present=('child_present', 'sum'),
-            total_frames=('frame_number', 'count')
-        )
-        .reset_index()
-    )
-        
-    # Create the pivoted structure
-    pivot_data = []
-    
-    for _, row in grouped.iterrows():
-        child_id = row['child_id']
-        age_at_recording = row['age_at_recording']
-        total_frames = row['total_frames']
-        
-        # Add Adult row
-        pivot_data.append({
-            'child_id': child_id,
-            'age_at_recording': age_at_recording,
-            'total_frames': total_frames,
-            'category': 'Adult',
-            'frames_present': row['frames_with_adult_present']
-        })
-        
-        # Add Child row
-        pivot_data.append({
-            'child_id': child_id,
-            'age_at_recording': age_at_recording,
-            'total_frames': total_frames,
-            'category': 'Child',
-            'frames_present': row['frames_with_child_present']
-        })
-    
-    # Convert to DataFrame
-    results = pd.DataFrame(pivot_data)
-        
-    # Save results
-    output_file = Inference.PRESENCE_COUNTS_CSV 
+    # Load existing segments
     try:
-        results.to_csv(output_file, index=False)
-        print(f"💾 Successfully saved results to: {output_file}")        
-    except Exception as e:
-        print(f"❌ Error saving results: {e}")
+        segments_df = pd.read_csv(segments_csv)
+        print(f"� Loaded {len(segments_df):,} existing segments")
+    except FileNotFoundError:
+        print(f"❌ Error: Segments file not found at {segments_csv}")
         return
-
+    except Exception as e:
+        print(f"❌ Error loading segments: {e}")
+        return
+    
+    # Enhance segments with presence information
+    enhanced_segments = enhance_segments_with_presence(segments_df, frame_df)
+    
+    print(f"✅ Enhanced {len(enhanced_segments)} segments with presence information")
+    
+    # Save enhanced segments
+    output_file = Inference.BASE_OUTPUT_DIR / 'enhanced_interaction_segments.csv'
+    try:
+        enhanced_segments.to_csv(output_file, index=False)
+        print(f"\n💾 Enhanced segments saved to: {output_file}")        
+    except Exception as e:
+        print(f"❌ Error saving enhanced segments: {e}")
+        return
+    
 if __name__ == "__main__":
     main()
