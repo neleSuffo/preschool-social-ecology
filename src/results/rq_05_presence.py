@@ -83,12 +83,13 @@ def main(frame_data_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV,
     # Enhance segments with presence information
     enhanced_segments = enhance_segments_with_presence(segments_df, frame_df)
     
-    print(f"✅ Enhanced {len(enhanced_segments)} segments with presence information")
+    filtered_segments = enhanced_segments[enhanced_segments['interaction_type'] != 'Alone']
+    print(f"✅ Enhanced {len(filtered_segments)} segments with presence information")
     
     # Save enhanced segments
     output_file = Inference.BASE_OUTPUT_DIR / 'enhanced_interaction_segments.csv'
     try:
-        enhanced_segments.to_csv(output_file, index=False)
+        filtered_segments.to_csv(output_file, index=False)
         print(f"\n💾 Enhanced segments saved to: {output_file}")        
     except Exception as e:
         print(f"❌ Error saving enhanced segments: {e}")
