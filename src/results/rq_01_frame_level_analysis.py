@@ -564,7 +564,7 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Step 8: Save results with information about which rules were included e.g. 01_frame_level_social_interactions_1_2_3_4.csv
-        file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.name + f"_{'_'.join(map(str, included_rules))}.csv"  
+        file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem + f"_{'_'.join(map(str, included_rules))}.csv"  
         all_data.to_csv(output_dir / file_name, index=False)
 
         print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
