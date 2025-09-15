@@ -20,11 +20,7 @@ import subprocess
 import argparse
 import sys
 
-# Add src path for imports
-src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
-sys.path.append(str(src_path))
-
-from constants import DataPaths, Inference
+from constants import Inference
 from evaluation.eval_segment_performance import evaluate_performance_by_frames, calculate_detailed_metrics
 
 def run_frame_level_analysis(rules: list, condition_name: str):
@@ -43,16 +39,16 @@ def run_frame_level_analysis(rules: list, condition_name: str):
         A tuple containing the frame output file and segment output file paths.
     """
     print(f"🔄 Running frame-level analysis for {condition_name} (rules: {rules})")
-    
-    frame_level_script = src_path / "src" / "results" / "rq_01_frame_level_analysis.py"
-    
+
+    frame_level_script = "results/rq_01_frame_level_analysis.py"
+
     cmd = [
         "python", str(frame_level_script),
         "--rules"
     ] + [str(r) for r in rules]
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=src_path.parent)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"❌ Error in frame-level analysis for {condition_name}:")
             print(result.stderr)
@@ -60,8 +56,10 @@ def run_frame_level_analysis(rules: list, condition_name: str):
         
         # The output file name includes the rules
         rules_str = "_".join(map(str, rules))
-        frame_output_file = Inference.FRAME_LEVEL_INTERACTIONS_CSV.name + f"_{rules_str}.csv"
-        segment_output_file = Inference.INTERACTION_SEGMENTS_CSV.name + f"_{rules_str}.csv"
+        output_dir = Path(Inference.INTERACTION_SEGMENTS_CSV.parent)
+
+        frame_output_file = output_dir / f"{Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem}_{rules_str}.csv"
+        segment_output_file = output_dir / f"{Inference.INTERACTION_SEGMENTS_CSV.stem}_{rules_str}.csv"
 
         print(f"✅ Frame-level analysis completed for {condition_name}")
         return frame_output_file, segment_output_file
@@ -88,9 +86,9 @@ def run_video_level_analysis(frame_file, segment_file_path, condition_name):
         Path to the output segments file.
     """
     print(f"🔄 Running video-level analysis for {condition_name}")
-    
-    video_level_script = src_path / "src" / "results" / "rq_01_video_level_analysis.py"
-        
+
+    video_level_script = "results/rq_01_video_level_analysis.py"
+
     cmd = [
         "python", str(video_level_script),
         "--input", str(frame_file),
@@ -98,7 +96,7 @@ def run_video_level_analysis(frame_file, segment_file_path, condition_name):
     ]
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=src_path.parent)
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"❌ Error in video-level analysis for {condition_name}:")
             print(result.stderr)
@@ -166,22 +164,15 @@ def run_evaluation(segments_file, condition_name):
         print(f"❌ Error in evaluation for {condition_name}: {e}")
         return None
 
-def run_ablation_analysis(output_dir):
+def run_ablation_analysis():
     """
     Run complete ablation analysis by orchestrating the three main scripts.
-    
-    Parameters
-    ----------
-    output_dir : Path
-        Output directory for results
-        
+            
     Returns
     -------
     dict
         Results for all conditions
-    """
-    print("🚀 Starting comprehensive rule ablation analysis...")
-    
+    """    
     # Define conditions to test
     conditions = {
         'All_Rules': [1, 2, 3, 4],  # All rules included
@@ -193,16 +184,14 @@ def run_ablation_analysis(output_dir):
     
     all_metrics = []
     
-    for condition_name, rules in conditions.items():
-        print(f"\n{'='*60}")
-        print(f"Processing condition: {condition_name}")
-        print(f"Using rules: {rules}")
-        print(f"{'='*60}")
-        
+    for condition_name, rules in conditions.items():      
         # Step 1: Run frame-level analysis
-        frame_file, segment_file_path = run_frame_level_analysis(rules, condition_name)
-        if frame_file is None:
+        result = run_frame_level_analysis(rules, condition_name)
+        if result is None:
+            print(f"❌ Skipping {condition_name} due to frame-level analysis failure")
             continue
+        
+        frame_file, segment_file_path = result
         
         # Step 2: Run video-level analysis
         segments_file = run_video_level_analysis(frame_file, segment_file_path, condition_name)
@@ -219,9 +208,8 @@ def run_ablation_analysis(output_dir):
     # Save all metrics to a single summary file
     if all_metrics:
         summary_df = pd.DataFrame(all_metrics)
-        summary_file = output_dir / 'rule_ablation_summary.csv'
-        summary_df.to_csv(summary_file, index=False)
-        print(f"\n💾 All metrics saved to: {summary_file}")
+        summary_df.to_csv(Inference.RULE_ABLATION_SUMMARY_CSV, index=False)
+        print(f"\n💾 All metrics saved to: {Inference.RULE_ABLATION_SUMMARY_CSV}")
         
         return summary_df
     else:
@@ -399,7 +387,7 @@ def main():
         print("🎨 Plot-only mode: Regenerating visualizations from existing results...")
         
         # Load existing results
-        summary_df = load_existing_results(output_file_path = Inference.RULE_ABLATION_SUMMARY_CSV)
+        summary_df = load_existing_results(Inference.RULE_ABLATION_SUMMARY_CSV)
         
         if summary_df is None:
             print("❌ Cannot generate plots without existing results. Run full analysis first.")
@@ -411,7 +399,7 @@ def main():
         print("🚀 Full analysis mode: Running complete rule ablation analysis...")
         
         # Run ablation analysis
-        summary_df = run_ablation_analysis(output_dir)
+        summary_df = run_ablation_analysis()
         
         if summary_df is not None:
             # Create visualizations
