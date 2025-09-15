@@ -54,12 +54,14 @@ def run_frame_level_analysis(rules: list, condition_name: str):
             print(result.stderr)
             return None
         
-        # The output file name includes the rules
-        rules_str = "_".join(map(str, rules))
-        output_dir = Path(Inference.INTERACTION_SEGMENTS_CSV.parent)
+        def add_suffix(path: Path, suffix: str) -> Path:
+            """Return a new Path with suffix inserted before extension."""
+            return sys.path.with_name(f"{path.stem}_{suffix}{path.suffix}")
 
-        frame_output_file = output_dir / f"{Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem}_{rules_str}.csv"
-        segment_output_file = output_dir / f"{Inference.INTERACTION_SEGMENTS_CSV.stem}_{rules_str}.csv"
+        # The output file name includes the rules
+        rules_str = "_".join(map(str, rules))        
+        frame_output_file = add_suffix(Inference.FRAME_LEVEL_INTERACTIONS_CSV, rules_str)
+        segment_output_file = add_suffix(Inference.INTERACTION_SEGMENTS_CSV, rules_str)
 
         print(f"✅ Frame-level analysis completed for {condition_name}")
         return frame_output_file, segment_output_file
