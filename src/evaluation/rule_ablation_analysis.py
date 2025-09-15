@@ -2,9 +2,9 @@
 Comprehensive Rule Ablation Analysis for Social Interaction Classification
 
 This script evaluates the impact of each individual classification rule by:
-1. Generating 5 different segment sets (all rules + 4 ablation conditions)
-2. Evaluating performance for each condition
-3. Creating comprehensive visualizations showing rule importance
+1. Running frame-level analysis 5 times with different rule combinations
+2. Running segment-level analysis 5 times using the frame-level outputs
+3. Running evaluation 5 times and collecting all metrics in one summary file
 
 Rules being analyzed:
 1. Turn-taking audio interaction (highest priority)
@@ -14,159 +14,164 @@ Rules being analyzed:
 """
 
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
-import sqlite3
+import subprocess
 import argparse
 import sys
-from collections import defaultdict
 
 # Add src path for imports
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
 from constants import DataPaths, Inference
-from config import DataConfig, InferenceConfig
-from results.rq_01_frame_level_analysis import get_all_analysis_data, check_audio_interaction_turn_taking
 from evaluation.eval_segment_performance import evaluate_performance_by_frames, calculate_detailed_metrics
 
-def classify_interaction_with_rules(row, results_df, excluded_rules=None):
-    """
-    Modified interaction classifier that can exclude specific rules for ablation analysis.
-    
+def run_frame_level_analysis(rules: list, condition_name: str):
+    """Run frame-level analysis with specific rules.
+
     Parameters
     ----------
-    row : pd.Series
-        DataFrame row with detection flags and proximity values
-    results_df : pd.DataFrame
-        The full DataFrame to enable window-based lookups
-    excluded_rules : list, optional
-        List of rule numbers to exclude (1, 2, 3, 4)
-        
-    Returns
-    -------
-    str
-        Interaction category ('Interacting', 'Available', 'Alone')
-    """
-    if excluded_rules is None:
-        excluded_rules = []
-    
-    # Calculate recent proximity for rule 4
-    current_index = row.name
-    window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
-    recent_speech_exists = (results_df.loc[window_start:current_index, 'fem_mal_speech_present'] == 1).any()
-
-    # Check if a person is present at all
-    person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
-    
-    # Evaluate each rule (skip if excluded)
-    active_rules = []
-    
-    # Rule 1: Turn-taking audio interaction
-    if 1 not in excluded_rules and row['is_audio_interaction']:
-        active_rules.append(1)
-    
-    # Rule 2: Very close proximity
-    if 2 not in excluded_rules and (row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD):
-        active_rules.append(2)
-    
-    # Rule 3: Other person speaking
-    if 3 not in excluded_rules and row['fem_mal_speech_present']:
-        active_rules.append(3)
-    
-    # Rule 4: Adult face + recent speech
-    if 4 not in excluded_rules and (row['has_adult_face'] == 1 and recent_speech_exists):
-        active_rules.append(4)
-    
-    # Classification logic
-    if active_rules:
-        return "Interacting"
-    elif person_is_present:
-        return "Available"
-    else:
-        return "Alone"
-
-def generate_segments_for_condition(df, condition_name, excluded_rules=None):
-    """
-    Generate interaction segments for a specific rule condition.
-    
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Frame-level data with all detection flags
+    rules : list
+        List of rules to apply during analysis.
     condition_name : str
-        Name of the condition (e.g., "All_Rules", "No_Rule1", etc.)
-    excluded_rules : list, optional
-        List of rule numbers to exclude
-        
+        Name of the condition being analyzed.
+
     Returns
     -------
-    pd.DataFrame
-        Segments DataFrame with columns: video_name, start_time_sec, end_time_sec, interaction_type
+    tuple
+        A tuple containing the frame output file and segment output file paths.
     """
-    print(f"🔄 Generating segments for condition: {condition_name}")
+    print(f"🔄 Running frame-level analysis for {condition_name} (rules: {rules})")
     
-    # Apply classification with rule exclusion
-    df['interaction_category'] = df.apply(
-        lambda row: classify_interaction_with_rules(row, df, excluded_rules), axis=1
-    )
+    frame_level_script = src_path / "src" / "results" / "rq_01_frame_level_analysis.py"
     
-    # Convert frame-level classifications to segments
-    segments = []
-    fps = DataConfig.FPS
+    cmd = [
+        "python", str(frame_level_script),
+        "--rules"
+    ] + [str(r) for r in rules]
     
-    for video_name, video_df in df.groupby('video_name'):
-        video_df = video_df.sort_values('frame_number').reset_index(drop=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=src_path.parent)
+        if result.returncode != 0:
+            print(f"❌ Error in frame-level analysis for {condition_name}:")
+            print(result.stderr)
+            return None
         
-        current_category = None
-        segment_start_frame = None
-        
-        for idx, row in video_df.iterrows():
-            frame_category = row['interaction_category']
-            
-            if current_category is None:
-                # Start first segment
-                current_category = frame_category
-                segment_start_frame = row['frame_number']
-            elif current_category != frame_category:
-                # Category changed, end current segment and start new one
-                if segment_start_frame is not None:
-                    segments.append({
-                        'video_name': video_name,
-                        'start_time_sec': segment_start_frame / fps,
-                        'end_time_sec': video_df.iloc[idx-1]['frame_number'] / fps,
-                        'interaction_type': current_category
-                    })
-                
-                current_category = frame_category
-                segment_start_frame = row['frame_number']
-        
-        # Add final segment
-        if current_category is not None and segment_start_frame is not None:
-            segments.append({
-                'video_name': video_name,
-                'start_time_sec': segment_start_frame / fps,
-                'end_time_sec': video_df.iloc[-1]['frame_number'] / fps,
-                'interaction_type': current_category
-            })
-    
-    segments_df = pd.DataFrame(segments)
-    print(f"✅ Generated {len(segments_df)} segments for {condition_name}")
-    
-    return segments_df
+        # The output file name includes the rules
+        rules_str = "_".join(map(str, rules))
+        frame_output_file = Inference.FRAME_LEVEL_INTERACTIONS_CSV.name + f"_{rules_str}.csv"
+        segment_output_file = Inference.INTERACTION_SEGMENTS_CSV.name + f"_{rules_str}.csv"
 
-def run_ablation_analysis(db_path, ground_truth_df, output_dir):
+        print(f"✅ Frame-level analysis completed for {condition_name}")
+        return frame_output_file, segment_output_file
+
+    except Exception as e:
+        print(f"❌ Error running frame-level analysis for {condition_name}: {e}")
+        return None
+
+def run_video_level_analysis(frame_file, segment_file_path, condition_name):
+    """Run video-level analysis using frame-level output.
+
+    Parameters
+    ----------
+    frame_file : Path
+        Path to the frame-level output file.
+    segment_file_path : Path
+        Path to the segment-level output file.
+    condition_name : str
+        Name of the condition being analyzed.
+
+    Returns
+    -------
+    Path
+        Path to the output segments file.
     """
-    Run complete ablation analysis for all rule combinations.
+    print(f"🔄 Running video-level analysis for {condition_name}")
+    
+    video_level_script = src_path / "src" / "results" / "rq_01_video_level_analysis.py"
+        
+    cmd = [
+        "python", str(video_level_script),
+        "--input", str(frame_file),
+        "--output", str(segment_file_path)
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=src_path.parent)
+        if result.returncode != 0:
+            print(f"❌ Error in video-level analysis for {condition_name}:")
+            print(result.stderr)
+            return None
+        
+        print(f"✅ Video-level analysis completed for {condition_name}")
+        return segment_file_path
+
+    except Exception as e:
+        print(f"❌ Error running video-level analysis for {condition_name}: {e}")
+        return None
+
+def run_evaluation(segments_file, condition_name):
+    """Run evaluation and return metrics.
+
+    Parameters
+    ----------
+    segments_file : Path
+        Path to the segments file.
+    condition_name : str
+        Name of the condition being analyzed.
+
+    Returns
+    -------
+    dict
+        Evaluation metrics.
+    """
+    print(f"🔄 Running evaluation for {condition_name}")
+    
+    try:
+        # Load files
+        segments_df = pd.read_csv(segments_file)
+        ground_truth_df = pd.read_csv(Inference.GROUND_TRUTH_SEGMENTS_CSV, delimiter=';')
+        
+        # Run evaluation
+        results = evaluate_performance_by_frames(segments_df, ground_truth_df)
+        detailed_metrics = calculate_detailed_metrics(results)
+        
+        # Extract key metrics
+        macro_avg = detailed_metrics.get('macro_avg', {})
+        metrics = {
+            'Condition': condition_name,
+            'Overall_Accuracy': results.get('overall_accuracy', 0),
+            'Macro_F1': macro_avg.get('f1_score', 0),
+            'Macro_Precision': macro_avg.get('precision', 0),
+            'Macro_Recall': macro_avg.get('recall', 0),
+        }
+        
+        # Add class-specific metrics
+        for class_name in ['Interacting', 'Co-present', 'Alone']:
+            class_key = class_name.lower().replace('-', '_')
+            if class_key in detailed_metrics:
+                metrics[f'{class_name}_F1'] = detailed_metrics[class_key]['f1_score']
+                metrics[f'{class_name}_Precision'] = detailed_metrics[class_key]['precision']
+                metrics[f'{class_name}_Recall'] = detailed_metrics[class_key]['recall']
+            else:
+                metrics[f'{class_name}_F1'] = 0
+                metrics[f'{class_name}_Precision'] = 0
+                metrics[f'{class_name}_Recall'] = 0
+        
+        print(f"✅ Evaluation completed for {condition_name} (Macro F1: {metrics['Macro_F1']:.4f})")
+        return metrics
+        
+    except Exception as e:
+        print(f"❌ Error in evaluation for {condition_name}: {e}")
+        return None
+
+def run_ablation_analysis(output_dir):
+    """
+    Run complete ablation analysis by orchestrating the three main scripts.
     
     Parameters
     ----------
-    db_path : Path
-        Path to the SQLite database
-    ground_truth_df : pd.DataFrame
-        Ground truth segments
     output_dir : Path
         Output directory for results
         
@@ -177,78 +182,101 @@ def run_ablation_analysis(db_path, ground_truth_df, output_dir):
     """
     print("🚀 Starting comprehensive rule ablation analysis...")
     
-    # Load and prepare data
-    with sqlite3.connect(db_path) as conn:
-        all_data = get_all_analysis_data(conn)
-        
-        # Add audio interaction analysis
-        all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
-            all_data, DataConfig.FPS, 
-            InferenceConfig.TURN_TAKING_BASE_WINDOW_SEC, 
-            InferenceConfig.TURN_TAKING_EXT_WINDOW_SEC
-        )
-        
-        # Add speech features
-        for cls in InferenceConfig.SPEECH_CLASSES:
-            col_name = f"{cls.lower()}_speech_present"
-            all_data[col_name] = all_data['speaker'].str.contains(cls, na=False).astype(int)
-    
     # Define conditions to test
     conditions = {
-        'All_Rules': None,  # No rules excluded
-        'No_Rule1_TurnTaking': [1],  # Exclude turn-taking
-        'No_Rule2_Proximity': [2],   # Exclude close proximity
-        'No_Rule3_OtherSpeaking': [3],  # Exclude other person speaking
-        'No_Rule4_AdultFaceRecentSpeech': [4]  # Exclude adult face + recent speech
+        'All_Rules': [1, 2, 3, 4],  # All rules included
+        'No_Rule1_TurnTaking': [2, 3, 4],  # Exclude turn-taking
+        'No_Rule2_Proximity': [1, 3, 4],   # Exclude close proximity  
+        'No_Rule3_OtherSpeaking': [1, 2, 4],  # Exclude other person speaking
+        'No_Rule4_AdultFaceRecentSpeech': [1, 2, 3]  # Exclude adult face + recent speech
     }
     
-    all_results = {}
+    all_metrics = []
     
-    for condition_name, excluded_rules in conditions.items():
+    for condition_name, rules in conditions.items():
         print(f"\n{'='*60}")
         print(f"Processing condition: {condition_name}")
+        print(f"Using rules: {rules}")
         print(f"{'='*60}")
         
-        # Generate segments for this condition
-        segments_df = generate_segments_for_condition(all_data, condition_name, excluded_rules)
+        # Step 1: Run frame-level analysis
+        frame_file, segment_file_path = run_frame_level_analysis(rules, condition_name)
+        if frame_file is None:
+            continue
         
-        # Save segments
-        segments_file = output_dir / f"segments_{condition_name.lower()}.csv"
-        segments_df.to_csv(segments_file, index=False)
-        print(f"💾 Saved segments to {segments_file}")
+        # Step 2: Run video-level analysis
+        segments_file = run_video_level_analysis(frame_file, segment_file_path, condition_name)
+        if segments_file is None:
+            continue
         
-        # Evaluate performance
-        results = evaluate_performance_by_frames(segments_df, ground_truth_df)
-        detailed_metrics = calculate_detailed_metrics(results)
+        # Step 3: Run evaluation
+        metrics = run_evaluation(segments_file, condition_name)
+        if metrics is None:
+            continue
         
-        # Store results
-        all_results[condition_name] = {
-            'results': results,
-            'detailed_metrics': detailed_metrics,
-            'segments_df': segments_df
-        }
-        
-        # Print summary
-        overall_f1 = detailed_metrics.get('macro_avg', {}).get('f1_score', 0)
-        print(f"📊 {condition_name}: Macro F1-Score = {overall_f1:.4f}")
+        all_metrics.append(metrics)
     
-    return all_results
+    # Save all metrics to a single summary file
+    if all_metrics:
+        summary_df = pd.DataFrame(all_metrics)
+        summary_file = output_dir / 'rule_ablation_summary.csv'
+        summary_df.to_csv(summary_file, index=False)
+        print(f"\n💾 All metrics saved to: {summary_file}")
+        
+        return summary_df
+    else:
+        print("❌ No results obtained from any condition")
+        return None
 
-def create_comprehensive_visualization(all_results, output_dir):
+def load_existing_results(summary_file_path: Path):
+    """
+    Load existing analysis results from saved files.
+    
+    Parameters
+    ----------
+    output_file_path : Path
+        Path to the saved results file
+
+    Returns
+    -------
+    pd.DataFrame or None
+        Loaded results if successful, None otherwise
+    """
+    print("🔄 Loading existing analysis results...")
+    
+    # Check if summary file exists
+    if not summary_file_path.exists():
+        print("❌ No existing results found. Run full analysis first.")
+        return None
+    
+    try:
+        # Load the summary data
+        summary_df = pd.read_csv(summary_file_path)
+        print(f"✅ Successfully loaded results for {len(summary_df)} conditions")
+        return summary_df
+        
+    except Exception as e:
+        print(f"❌ Error loading existing results: {e}")
+        return None
+
+def create_comprehensive_visualization(summary_df):
     """
     Create a focused visualization showing the F1 performance drop when each rule is excluded.
     
     Parameters
     ----------
-    all_results : dict
-        Results from all conditions
-    output_dir : Path
-        Output directory for plots
+    summary_df : pd.DataFrame
+        Summary dataframe with results from all conditions
     """
     print("\n🎨 Creating rule impact visualization...")
     
     # Extract baseline performance (all rules)
-    baseline_f1 = all_results['All_Rules']['detailed_metrics'].get('macro_avg', {}).get('f1_score', 0)
+    baseline_row = summary_df[summary_df['Condition'] == 'All_Rules']
+    if len(baseline_row) == 0:
+        print("❌ Error: No baseline (All_Rules) condition found")
+        return
+        
+    baseline_f1 = baseline_row['Macro_F1'].iloc[0]
     
     # Define the four rules with custom colors
     rule_data = [
@@ -285,10 +313,14 @@ def create_comprehensive_visualization(all_results, output_dir):
     
     for rule_info in rule_data:
         rule_names.append(rule_info['rule_name'])
-        colors.append(rule_info['color'])  # Use custom color
+        colors.append(rule_info['color'])
         
         # Get F1 score when this rule is excluded
-        excluded_f1 = all_results[rule_info['condition']]['detailed_metrics'].get('macro_avg', {}).get('f1_score', 0)
+        excluded_row = summary_df[summary_df['Condition'] == rule_info['condition']]
+        if len(excluded_row) > 0:
+            excluded_f1 = excluded_row['Macro_F1'].iloc[0]
+        else:
+            excluded_f1 = 0
         
         # Calculate the drop (positive values mean performance decreased)
         f1_drop = baseline_f1 - excluded_f1
@@ -340,154 +372,22 @@ def create_comprehensive_visualization(all_results, output_dir):
     plt.tight_layout()
     
     # Save plot
-    plot_file = output_dir / 'rule_impact_f1_drops.png'
-    plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+    plt.savefig(Inference.RULE_ABLATION_PLOT, dpi=300, bbox_inches='tight')
     plt.close()
-    
-    print(f"✅ Rule impact visualization saved to {plot_file}")
-    
-    # Print summary to console
-    print(f"\n📊 RULE IMPACT ANALYSIS")
-    print("="*50)
-    print(f"Baseline F1-Score (All Rules): {baseline_f1:.4f}")
-    print("-"*50)
-    
-    # Create summary table
-    create_summary_table(all_results, output_dir)
 
-def load_existing_results(output_dir):
-    """
-    Load existing analysis results from saved files.
-    
-    Parameters
-    ----------
-    output_dir : Path
-        Directory containing saved results
-        
-    Returns
-    -------
-    dict or None
-        Loaded results if successful, None otherwise
-    """
-    print("🔄 Loading existing analysis results...")
-    
-    # Check if summary file exists
-    summary_file = output_dir / 'rule_ablation_summary.csv'
-    if not summary_file.exists():
-        print("❌ No existing results found. Run full analysis first.")
-        return None
-    
-    try:
-        # Load the summary data
-        summary_df = pd.read_csv(summary_file)
-        
-        # Reconstruct results structure for visualization
-        all_results = {}
-        
-        for _, row in summary_df.iterrows():
-            condition_name = row['Condition']
-            
-            # Create mock detailed metrics structure
-            detailed_metrics = {
-                'macro_avg': {
-                    'f1_score': row['Macro_F1'],
-                    'precision': row['Macro_Precision'],
-                    'recall': row['Macro_Recall']
-                }
-            }
-            
-            # Add class-specific metrics
-            for class_name in ['interacting', 'available', 'alone']:
-                detailed_metrics[class_name] = {
-                    'f1_score': row[f'{class_name.capitalize()}_F1'],
-                    'precision': row[f'{class_name.capitalize()}_Precision'],
-                    'recall': row[f'{class_name.capitalize()}_Recall']
-                }
-            
-            # Create mock results structure
-            results = {
-                'overall_accuracy': row['Overall_Accuracy']
-            }
-            
-            all_results[condition_name] = {
-                'results': results,
-                'detailed_metrics': detailed_metrics
-            }
-        
-        print(f"✅ Successfully loaded results for {len(all_results)} conditions")
-        return all_results
-        
-    except Exception as e:
-        print(f"❌ Error loading existing results: {e}")
-        return None
-
-def create_summary_table(all_results, output_dir):
-    """Create a summary table with all metrics."""
-    
-    summary_data = []
-    
-    for condition_name, data in all_results.items():
-        detailed_metrics = data['detailed_metrics']
-        results = data['results']
-        
-        # Overall metrics
-        macro_avg = detailed_metrics.get('macro_avg', {})
-        
-        row = {
-            'Condition': condition_name,
-            'Overall_Accuracy': results.get('overall_accuracy', 0),
-            'Macro_F1': macro_avg.get('f1_score', 0),
-            'Macro_Precision': macro_avg.get('precision', 0),
-            'Macro_Recall': macro_avg.get('recall', 0),
-        }
-        
-        # Class-specific F1 scores
-        for class_name in ['interacting', 'available', 'alone']:
-            if class_name in detailed_metrics:
-                row[f'{class_name.capitalize()}_F1'] = detailed_metrics[class_name]['f1_score']
-                row[f'{class_name.capitalize()}_Precision'] = detailed_metrics[class_name]['precision']
-                row[f'{class_name.capitalize()}_Recall'] = detailed_metrics[class_name]['recall']
-            else:
-                row[f'{class_name.capitalize()}_F1'] = 0
-                row[f'{class_name.capitalize()}_Precision'] = 0
-                row[f'{class_name.capitalize()}_Recall'] = 0
-        
-        summary_data.append(row)
-    
-    summary_df = pd.DataFrame(summary_data)
-    
-    # Save summary
-    summary_file = output_dir / 'rule_ablation_summary.csv'
-    summary_df.to_csv(summary_file, index=False)
-    print(f"📊 Summary table saved to {summary_file}")
-    
-    # Print to console
-    print("\n" + "="*80)
-    print("RULE ABLATION ANALYSIS SUMMARY")
-    print("="*80)
-    print(f"{'Condition':<25} {'Macro F1':<10} {'Interacting F1':<15} {'Available F1':<13} {'Alone F1':<10}")
-    print("-"*80)
-    
-    for _, row in summary_df.iterrows():
-        print(f"{row['Condition']:<25} {row['Macro_F1']:<10.4f} {row['Interacting_F1']:<15.4f} {row['Available_F1']:<13.4f} {row['Alone_F1']:<10.4f}")
+    print(f"✅ Rule impact visualization saved to {Inference.RULE_ABLATION_PLOT}")
 
 def main():
     """Main function to run the complete ablation analysis or regenerate plots."""
     
     parser = argparse.ArgumentParser(description='Rule Ablation Analysis for Social Interaction Classification')
-    parser.add_argument('--db_path', type=str, default=str(DataPaths.INFERENCE_DB_PATH),
-                       help='Path to the inference database')
     parser.add_argument('--plot_only', action='store_true',
-                       help='Only regenerate plots from existing results (skip full analysis)')
+                    help='Only regenerate plots from existing results (skip full analysis)')
     parser.add_argument('--output_dir', type=str, 
-                       help='Custom output directory')
+                    help='Custom output directory')
     
     args = parser.parse_args()
-    
-    # Setup paths
-    db_path = Path(args.db_path)
-    ground_truth_path = Inference.GROUND_TRUTH_SEGMENTS_CSV
-    
+        
     # Use custom output directory if specified
     if args.output_dir:
         output_dir = Path(args.output_dir)
@@ -499,30 +399,26 @@ def main():
         print("🎨 Plot-only mode: Regenerating visualizations from existing results...")
         
         # Load existing results
-        all_results = load_existing_results(output_dir)
+        summary_df = load_existing_results(output_file_path = Inference.RULE_ABLATION_SUMMARY_CSV)
         
-        if all_results is None:
+        if summary_df is None:
             print("❌ Cannot generate plots without existing results. Run full analysis first.")
             sys.exit(1)
         
         # Generate new plots
-        create_comprehensive_visualization(all_results, output_dir)
-        print(f"\n🎉 Plot regeneration complete! Visualization saved to {output_dir}")
-        
+        create_comprehensive_visualization(summary_df)        
     else:
         print("🚀 Full analysis mode: Running complete rule ablation analysis...")
         
-        # Load ground truth
-        print(f"📖 Loading ground truth from {ground_truth_path}")
-        ground_truth_df = pd.read_csv(ground_truth_path, delimiter=';')
-        
         # Run ablation analysis
-        all_results = run_ablation_analysis(db_path, ground_truth_df, output_dir)
+        summary_df = run_ablation_analysis(output_dir)
         
-        # Create visualizations
-        create_comprehensive_visualization(all_results, output_dir)
-        
-        print(f"\n🎉 Rule ablation analysis complete! Results saved to {output_dir}")
+        if summary_df is not None:
+            # Create visualizations
+            create_comprehensive_visualization(summary_df)
+        else:
+            print("❌ Analysis failed - no results obtained")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
