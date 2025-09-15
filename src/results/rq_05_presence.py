@@ -28,9 +28,7 @@ def enhance_segments_with_presence(segments_df, frame_data_df):
     enhanced_segments = segments_df.copy()
     enhanced_segments['adult_present'] = 0
     enhanced_segments['child_present'] = 0
-    
-    print(f"🔄 Processing {len(enhanced_segments)} segments...")
-    
+        
     for idx, segment in enhanced_segments.iterrows():
         video_name = segment['video_name']
         segment_start = segment['segment_start']
@@ -82,6 +80,19 @@ def main(frame_data_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV,
     
     # Enhance segments with presence information
     enhanced_segments = enhance_segments_with_presence(segments_df, frame_df)
+    
+    # Add interaction_partner column based on presence flags
+    def categorize_interaction_partner(row):
+        if row['adult_present'] == 1 and row['child_present'] == 0:
+            return 'adults_only'
+        elif row['adult_present'] == 0 and row['child_present'] == 1:
+            return 'children_only'
+        elif row['adult_present'] == 1 and row['child_present'] == 1:
+            return 'both_adults_and_children'
+        else:  # adult_present == 0 and child_present == 0
+            return 'neither'
+
+    enhanced_segments['interaction_partner'] = enhanced_segments.apply(categorize_interaction_partner, axis=1)
     
     filtered_segments = enhanced_segments[enhanced_segments['interaction_type'] != 'Alone']
     print(f"✅ Enhanced {len(filtered_segments)} segments with presence information")
