@@ -142,7 +142,7 @@ def create_segments_for_video(video_id, video_df):
         return []
                 
     # Get interaction states and frame numbers
-    states = video_df['interaction_category'].values
+    states = video_df['interaction_type'].values
     frame_numbers = video_df['frame_number'].values
     video_name = video_df['video_name'].iloc[0]
     
@@ -351,7 +351,7 @@ def print_segment_summary(segments_df):
     else:
         print("\n📊 No segments created")
 
-def main(output_dir: Path, frame_data_path: Path):
+def main(output_file_path: Path, frame_data_path: Path):
     """
     Main entry point for video-level segment analysis.
     Creates mutually exclusive interaction segments from frame-level data.
@@ -366,8 +366,8 @@ def main(output_dir: Path, frame_data_path: Path):
     
     Parameters
     ----------
-    output_dir : Path
-        Directory to save the output segments.
+    output_file_path : Path
+        Path to the output CSV file for saving the segments.
     frame_data_path : Path
         Path to the CSV file containing frame-level interaction data.
     """        
@@ -399,9 +399,8 @@ def main(output_dir: Path, frame_data_path: Path):
     print_segment_summary(segments_df)
     
     # Step 6: Save results
-    file_name = Inference.INTERACTION_SEGMENTS_CSV.name
-    segments_df.to_csv(output_dir / file_name, index=False)
-    print(f"✅ Saved {len(segments_df)} interaction segments to {output_dir / file_name}")
+    segments_df.to_csv(output_file_path, index=False)
+    print(f"✅ Saved {len(segments_df)} interaction segments to {output_file_path}")
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Video-level social interaction segment analysis')
@@ -419,13 +418,7 @@ if __name__ == "__main__":
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Run analysis and save to specific file
-        main(output_dir=output_dir, frame_data_path=Path(args.input))
-        
-        # If the generated file has a different name, rename it
-        default_output = output_dir / Inference.INTERACTION_SEGMENTS_CSV.name
-        if default_output.exists() and default_output != output_path:
-            default_output.rename(output_path)
-            print(f"✅ Renamed output to {output_path}")
+        main(output_file_path=output_path, frame_data_path=Path(args.input))
     else:
         # Use default behavior
-        main(output_dir=Inference.BASE_OUTPUT_DIR, frame_data_path=Path(args.input))
+        main(output_file_path=Inference.INTERACTION_SEGMENTS_CSV, frame_data_path=Path(args.input))
