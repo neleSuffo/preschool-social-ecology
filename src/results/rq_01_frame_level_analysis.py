@@ -292,7 +292,7 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
 
     return df_with_interaction['is_audio_interaction']
 
-def classify_interaction_with_audio(row, results_df):
+def classify_interaction_with_audio(row, results_df, included_rules=None):
     """
     Hierarchical social interaction classifier with dynamic proximity and audio priority.
     
@@ -314,12 +314,18 @@ def classify_interaction_with_audio(row, results_df):
         DataFrame row with detection flags and proximity values
     results_df : pd.DataFrame
         The full DataFrame to enable window-based lookups
+    included_rules : list, optional
+        List of rule numbers to include (1, 2, 3, 4). If None, uses default rules.
         
     Returns
     -------
     str
         Interaction category ('Interacting', 'Co-present Silent', 'Alone')
     """
+    # Default rules if none specified (currently excluding rule 1 - turn taking)
+    if included_rules is None:
+        included_rules = [1, 2, 3, 4]  # Default: turn taking, proximity, other speaking, adult face + recent speech
+    
     # Calculate recent proximity once at the beginning
     current_index = row.name
     window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
@@ -328,15 +334,26 @@ def classify_interaction_with_audio(row, results_df):
     # Check if a person is present at all, using the combined flags
     person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
     
-    # Tier 1: INTERACTING (Active engagement)
-    is_active_interaction = (
-        row['is_audio_interaction'] or # turn taking
-        (row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) or # very close proximity
-        row['fem_mal_speech_present'] or # other person speaking
-        (row['has_adult_face'] == 1 and recent_speech_exists) # adult face + recent speech
-    )
+    # Tier 1: INTERACTING (Active engagement) - evaluate only included rules
+    active_rules = []
+    
+    # Rule 1: Turn-taking audio interaction (highest priority)
+    if 1 in included_rules and row['is_audio_interaction']:
+        active_rules.append(1)
+    
+    # Rule 2: Very close proximity (>= PROXIMITY_THRESHOLD)
+    if 2 in included_rules and (row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD):
+        active_rules.append(2)
+    
+    # Rule 3: Other person speaking
+    if 3 in included_rules and row['fem_mal_speech_present']:
+        active_rules.append(3)
+    
+    # Rule 4: Adult face + recent speech
+    if 4 in included_rules and (row['has_adult_face'] == 1 and recent_speech_exists):
+        active_rules.append(4)
 
-    if is_active_interaction:
+    if active_rules:
         return "Interacting"
 
     # Tier 2: CO-PRESENT SILENT (Passive presence)
@@ -461,7 +478,7 @@ def merge_age_information(df):
         print("Proceeding without age information")
         return df
 
-def main(db_path: Path, output_dir: Path):
+def main(db_path: Path, output_dir: Path, included_rules: list = None):
     """
     Main analysis function that orchestrates multimodal social interaction analysis.
     
@@ -482,31 +499,46 @@ def main(db_path: Path, output_dir: Path):
         Path to the SQLite database containing analysis data.
     output_dir : Path
         Directory where output files will be saved.
+    included_rules : list, optional
+        List of rule numbers to include in interaction classification (1, 2, 3, 4).
+        If None, uses default rules [2, 3, 4].
 
     Returns
     -------
     dict: 
         Summary statistics including interaction and presence distributions
     """
+    if included_rules is None:
+        included_rules = [1, 2, 3, 4]  # Default: include all rules
+
+    # Print which rules are being used
+    rule_names = {
+        1: "Turn-taking audio interaction",
+        2: "Very close proximity",
+        3: "Other person speaking", 
+        4: "Adult face + recent speech"
+    }
+    
     print("🔄 Running comprehensive multimodal social interaction analysis...")
+    print(f"📋 Using interaction rules: {[f'{i}: {rule_names[i]}' for i in included_rules]}")
     
     with sqlite3.connect(db_path) as conn:
         # Step 1: Data integration
         all_data = get_all_analysis_data(conn)
-        
+
         # Step 2: Audio turn-taking analysis
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
             all_data, FPS, InferenceConfig.TURN_TAKING_BASE_WINDOW_SEC, InferenceConfig.TURN_TAKING_EXT_WINDOW_SEC
         )
-        
+
         # Step 3: Speech feature extraction        
         for cls in InferenceConfig.SPEECH_CLASSES:
             col_name = f"{cls.lower()}_speech_present"
             all_data[col_name] = all_data['speaker'].str.contains(cls, na=False).astype(int)
         
-        # Step 4: Social interaction classification
-        all_data['interaction_category'] = all_data.apply(
-            lambda row: classify_interaction_with_audio(row, all_data), axis=1
+        # Step 4: Social interaction classification with specified rules
+        all_data['interaction_type'] = all_data.apply(
+            lambda row: classify_interaction_with_audio(row, all_data, included_rules), axis=1
         )
         
         # Step 4b: Interaction rule analysis - track which specific rules are active
@@ -530,37 +562,26 @@ def main(db_path: Path, output_dir: Path):
                 
         # Create output directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Step 8: Save results
-        file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.name
+
+        # Step 8: Save results with information about which rules were included e.g. 01_frame_level_social_interactions_1_2_3_4.csv
+        file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.name + f"_{'_'.join(map(str, included_rules))}.csv"  
         all_data.to_csv(output_dir / file_name, index=False)
 
         print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
-        print(f"📄 File contains {len(all_data):,} records across {all_data['video_id'].nunique()} videos")   
+        
+        return all_data
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
-    parser.add_argument('--db_path', type=str, default=str(DataPaths.INFERENCE_DB_PATH),
-                    help='Path to the inference database')
-    parser.add_argument('--output', type=str, 
-                    help='Output CSV file path (if not specified, uses default output directory)')
-    
+    parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4],
+                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=other-speaking, 4=adult-face-recent-speech). Default: [1, 2, 3, 4]')
+
     args = parser.parse_args()
     
-    # Determine output path
-    if args.output:
-        output_path = Path(args.output)
-        output_dir = output_path.parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Run analysis and save to specific file
-        main(db_path=Path(args.db_path), output_dir=output_dir)
-        
-        # If the generated file has a different name, rename it
-        default_output = output_dir / Inference.FRAME_LEVEL_INTERACTIONS_CSV.name
-        if default_output.exists() and default_output != output_path:
-            default_output.rename(output_path)
-            print(f"✅ Renamed output to {output_path}")
-    else:
-        # Use default behavior
-        main(db_path=Path(args.db_path), output_dir=Inference.BASE_OUTPUT_DIR)
+    # Validate rule numbers
+    valid_rules = [1, 2, 3, 4]
+    if not all(rule in valid_rules for rule in args.rules):
+        print(f"❌ Error: Invalid rule numbers. Valid options are: {valid_rules}")
+        sys.exit(1)
+
+    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=Inference.BASE_OUTPUT_DIR, included_rules=args.rules)
