@@ -1,5 +1,4 @@
 import librosa
-import numpy as np
 import pandas as pd
 import json
 from tqdm import tqdm
@@ -199,6 +198,7 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
     """
     # Save as .txt file instead of JSON
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    BasePaths.LOGGING_DIR.mkdir(parents=True, exist_ok=True)
     summary_path = BasePaths.LOGGING_DIR / f"split_distribution_audio_{timestamp}.txt"
     
     # Build input files information
