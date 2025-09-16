@@ -2,7 +2,168 @@ import tensorflow as tf
 import numpy as np
 import json
 import os
+from tensorflow.keras.metrics import Precision, Recall
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.layers import *
 from sklearn.metrics import f1_score
+
+# --- Deep Learning Model Architecture ---
+def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
+    """
+    Build a deep learning model for multi-label voice type classification.
+    
+    Creates a CNN-RNN hybrid architecture with multi-head attention for 
+    classifying overlapping voice types in audio segments. The model combines:
+    - ResNet-style CNN blocks for feature extraction from spectrograms
+    - Bidirectional GRU layers for temporal modeling
+    - Multi-head attention mechanism for focus on important features
+    - Independent output heads per class for multi-label prediction
+    
+    Parameters:
+    ----------
+    n_mels (int): 
+        Number of mel-frequency bins in input spectrograms (will be capped at 128)
+    fixed_time_steps (int): 
+        Fixed number of time steps in input spectrograms
+    num_classes (int): 
+        Number of voice type classes to predict
+        
+    Returns
+    -------
+    Model
+        Compiled Keras model ready for training
+        
+    Architecture details
+    -------------------
+    Input: 
+        (effective_n_mels + 13, fixed_time_steps, 1) - mel + MFCC features
+    CNN: 
+        4 ResNet blocks with [32, 64, 128, 256] filters
+    RNN: 
+        2 bidirectional GRU layers with [256, 128] units
+    Attention: 
+        4-head attention mechanism
+    Output: 
+        Sigmoid activation per class for multi-label prediction
+    Loss: 
+        Focal loss for handling class imbalance
+    Metrics: 
+        Accuracy, precision, recall, macro F1-score
+    """
+    # Use effective mel count (capped at 128 for 16kHz audio)
+    effective_n_mels = min(n_mels, 128)
+    input_shape = (effective_n_mels + 13, fixed_time_steps, 1)
+    
+    input_mel = Input(shape=input_shape, name='mel_spectrogram_input')
+    x = input_mel
+
+    def conv_block(x, filters, kernel_size=(3, 3), strides=(1, 1)):
+        """ResNet-style convolutional block with skip connections."""
+        shortcut = x  # Store input for skip connection
+        
+        # First convolution + batch norm + activation
+        x = Conv2D(filters, kernel_size, strides=strides, padding='same')(x)
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+        
+        # Second convolution + batch norm (no activation yet)
+        x = Conv2D(filters, kernel_size, padding='same')(x)
+        x = BatchNormalization()(x)
+        
+        # Adjust shortcut dimensions if needed for skip connection
+        if shortcut.shape[-1] != filters or strides != (1, 1):
+            shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same')(shortcut)
+            shortcut = BatchNormalization()(shortcut)
+        
+        # Add skip connection and final activation
+        x = Add()([x, shortcut])  # Element-wise addition enables gradient flow
+        x = Activation('relu')(x)
+        return x
+    
+    # Build CNN backbone: 4 ResNet blocks with progressive filter sizes
+    x = conv_block(x, 32)      # First block: learn basic patterns
+    x = MaxPooling2D((2, 2))(x)  # Downsample by 2x
+    x = Dropout(0.25)(x)       # Prevent overfitting
+    
+    x = conv_block(x, 64)      # Second block: more complex features  
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.25)(x)
+    
+    x = conv_block(x, 128)     # Third block: high-level patterns
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.3)(x)
+    
+    x = conv_block(x, 256)     # Fourth block: abstract representations
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.3)(x)
+
+    # Calculate dimensions after CNN layers for reshaping
+    reduced_n_mels = (effective_n_mels + 13) // 16     # Divided by 2^4 from 4 pooling layers
+    reduced_time_steps = fixed_time_steps // 16
+    channels_after_cnn = 256
+
+    # Prepare for RNN: reshape (freq, time, channels) -> (time, freq * channels)
+    x = Permute((2, 1, 3))(x)  # Change from (freq, time, channels) to (time, freq, channels)
+    x = Reshape((reduced_time_steps, reduced_n_mels * channels_after_cnn))(x)
+    
+    # RNN layers for temporal modeling of audio sequences
+    x = Bidirectional(GRU(256, return_sequences=True, dropout=0.3))(x)  # Bidirectional: see past and future context
+    x = Bidirectional(GRU(128, return_sequences=True, dropout=0.3))(x)  # Smaller layer for refinement
+
+    def multi_head_attention(x, num_heads=4):
+        """Multi-head attention mechanism to focus on important time steps."""
+        head_size = x.shape[-1] // num_heads
+        heads = []
+        
+        # Create multiple attention heads to focus on different aspects
+        for i in range(num_heads):
+            # Compute attention weights: which time steps are most important?
+            attention = Dense(1, activation='tanh')(x)     # Score each time step
+            attention = Flatten()(attention)               # Flatten to 1D
+            attention = Activation('softmax')(attention)   # Convert to probabilities (sum=1)
+            attention = RepeatVector(x.shape[-1])(attention)  # Broadcast to feature dimension
+            attention = Permute((2, 1))(attention)         # Align dimensions for multiplication
+            
+            # Apply attention: weight the features by importance
+            head = multiply([x, attention])                # Element-wise multiplication
+            head = Lambda(lambda xin: tf.reduce_sum(xin, axis=1), output_shape=(256,))(head)  # Specify the expected output shape
+            heads.append(head)
+        
+        # Combine all attention heads
+        return Concatenate()(heads) if len(heads) > 1 else heads[0]
+
+    x = multi_head_attention(x)
+
+    dense_input = x
+    x = Dense(512, activation='relu')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.5)(x)
+    x = Dense(256, activation='relu')(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.4)(x)
+    if dense_input.shape[-1] == 256:
+        x = Add()([x, dense_input])
+    
+    class_outputs = []
+    for i in range(num_classes):
+        class_branch = Dense(128, activation='relu', name=f'class_{i}_dense')(x)
+        class_branch = Dropout(0.3)(class_branch)
+        class_output = Dense(1, activation='sigmoid', name=f'class_{i}_output')(class_branch)
+        class_outputs.append(class_output)
+    
+    output = Concatenate(name='combined_output')(class_outputs)
+
+    model = Model(inputs=input_mel, outputs=output)
+    
+    macro_f1 = MacroF1Score(num_classes=num_classes, name='macro_f1')
+    model.compile(
+        optimizer=Adam(learning_rate=0.0005),
+        loss=FocalLoss(gamma=2.0, alpha=0.25),
+        metrics=['accuracy', Precision(name='precision'), Recall(name='recall'), macro_f1]
+    )
+    model.log_dir = None  # For ThresholdOptimizer
+    return model
 class FocalLoss(tf.keras.losses.Loss):
     """
     Custom Focal Loss implementation for handling class imbalance in multi-label classification.
