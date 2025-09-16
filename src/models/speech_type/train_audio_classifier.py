@@ -19,6 +19,15 @@ print("� Configuring GPU mode...")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Use first GPU
 
 import tensorflow as tf
+from sklearn.preprocessing import MultiLabelBinarizer
+from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
+from tensorflow.keras.layers import *
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.metrics import Precision, Recall
+from constants import AudioClassification
+from config import AudioConfig
+from audio_classifier import FocalLoss, MacroF1Score, ThresholdOptimizer
 
 def setup_gpu_config():
     """
@@ -63,16 +72,23 @@ if not gpu_available:
     input("   Press Enter to continue with current configuration...")
     print()
 
-from sklearn.preprocessing import MultiLabelBinarizer
-from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
-from tensorflow.keras.layers import *
-from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.metrics import Precision, Recall
-from tqdm import tqdm
-from constants import AudioClassification
-from config import AudioConfig
-from audio_classifier import FocalLoss, MacroF1Score, ThresholdOptimizer
+# --- Utility Functions ---
+def calculate_fixed_time_steps(window_duration=None, sr=None, hop_length=None):
+    """
+    Calculate consistent time steps for spectrograms.
+    
+    This ensures all spectrograms have the same time dimension for batching.
+    Used consistently across data generators and model architecture.
+    
+    Returns
+    -------
+    int: Fixed number of time steps for spectrogram padding/truncation
+    """
+    window_duration = window_duration or AudioConfig.WINDOW_DURATION
+    sr = sr or AudioConfig.SR  
+    hop_length = hop_length or AudioConfig.HOP_LENGTH
+    
+    return int(np.ceil(window_duration * sr / hop_length))
 
 # --- Feature Extraction ---
 def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=None):
@@ -100,56 +116,66 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
     fixed_time_steps (int): 
         Fixed number of time steps for output padding
 
-    Returns:
-        np.ndarray: Combined feature matrix of shape (n_mels + 13, fixed_time_steps)
-                where 13 is the number of MFCC coefficients
+    Returns
+    -------
+    np.ndarray: 
+        Combined feature matrix of shape (n_mels + 13, fixed_time_steps) where 13 is the number of MFCC coefficients
 
-    Features extracted:
-        - Mel-spectrogram: Perceptually-relevant frequency representation
-        - MFCC: Compact spectral features for speech/audio
-        - Preprocessing: Normalization, pre-emphasis filtering
-        - Post-processing: Padding/truncation to fixed dimensions
+    Features extracted
+    -----------------
+    Mel-spectrogram: 
+        Perceptually-relevant frequency representation
+    MFCC: 
+        Compact spectral features for speech/audio
+    Preprocessing: 
+        Normalization, pre-emphasis filtering
+    Post-processing: 
+        Padding/truncation to fixed dimensions
     """
     if fixed_time_steps is None:
         fixed_time_steps = int(np.ceil(duration * sr / hop_length))
     
     try:
+        # Load audio segment with resampling if needed
         y, sr_loaded = librosa.load(audio_path, sr=sr, offset=start_time, duration=duration)
         if sr_loaded != sr:
             y = librosa.resample(y, orig_sr=sr_loaded, target_sr=sr)
         
+        # Ensure consistent audio length through padding/truncation
         expected_samples = int(duration * sr)
         if len(y) < expected_samples:
-            y = np.pad(y, (0, expected_samples - len(y)), 'constant')
+            y = np.pad(y, (0, expected_samples - len(y)), 'constant')  # Zero-padding
         elif len(y) > expected_samples:
-            y = y[:expected_samples]
+            y = y[:expected_samples]  # Truncation
         
+        # Handle empty audio segments
         if len(y) == 0:
             return np.zeros((n_mels + 13, fixed_time_steps), dtype=np.float32)  # +13 for MFCC
         
-        y = y / (np.max(np.abs(y)) + 1e-6)
-        y = np.append(y[0], y[1:] - 0.97 * y[:-1])
+        # Audio preprocessing: normalization and pre-emphasis filtering
+        y = y / (np.max(np.abs(y)) + 1e-6)  # Amplitude normalization
+        y = np.append(y[0], y[1:] - 0.97 * y[:-1])  # Pre-emphasis filter (removes DC bias)
         
-        # Mel-spectrogram with optimized parameters to avoid empty filters
-        # For 16kHz audio, use fmax = 8000 (Nyquist frequency)
-        # Reduce n_mels if needed to avoid empty filters
-        effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz audio
-        fmax_safe = min(sr // 2, 8000)  # Safe maximum frequency
+        # Mel-spectrogram computation with frequency limits for 16kHz audio
+        effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
+        fmax_safe = min(sr // 2, 8000)  # Use Nyquist frequency or 8kHz, whichever is lower
         
         mel_spectrogram = librosa.feature.melspectrogram(
             y=y, sr=sr, n_mels=effective_n_mels, hop_length=hop_length, n_fft=2048, 
-            fmin=80, fmax=fmax_safe
+            fmin=80, fmax=fmax_safe  # Focus on speech-relevant frequencies
         )
+        # Convert to dB scale and normalize to [-1, 1] range
         mel_spectrogram_db = librosa.power_to_db(mel_spectrogram, ref=np.max, top_db=80)
         mel_spectrogram_db = 2 * (mel_spectrogram_db - mel_spectrogram_db.min()) / (mel_spectrogram_db.max() - mel_spectrogram_db.min() + 1e-6) - 1
         
-        # MFCC
+        # MFCC computation for complementary spectral features
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=hop_length)
-        mfcc = 2 * (mfcc - mfcc.min()) / (mfcc.max() - mfcc.min() + 1e-6) - 1
+        mfcc = 2 * (mfcc - mfcc.min()) / (mfcc.max() - mfcc.min() + 1e-6) - 1  # Normalize to [-1, 1]
         
-        # Concatenate features
+        # Concatenate mel and MFCC features along frequency axis
         combined = np.concatenate([mel_spectrogram_db, mfcc], axis=0)
         
+        # Ensure consistent time dimension through padding/truncation
         if combined.shape[1] < fixed_time_steps:
             pad_width = fixed_time_steps - combined.shape[1]
             combined = np.pad(combined, ((0, 0), (0, pad_width)), 'constant', constant_values=-1)
@@ -188,14 +214,22 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     Model
         Compiled Keras model ready for training
         
-    Architecture details:
-        - Input: (effective_n_mels + 13, fixed_time_steps, 1) - mel + MFCC features
-        - CNN: 4 ResNet blocks with [32, 64, 128, 256] filters
-        - RNN: 2 bidirectional GRU layers with [256, 128] units
-        - Attention: 4-head attention mechanism
-        - Output: Sigmoid activation per class for multi-label prediction
-        - Loss: Focal loss for handling class imbalance
-        - Metrics: Accuracy, precision, recall, macro F1-score
+    Architecture details
+    -------------------
+    Input: 
+        (effective_n_mels + 13, fixed_time_steps, 1) - mel + MFCC features
+    CNN: 
+        4 ResNet blocks with [32, 64, 128, 256] filters
+    RNN: 
+        2 bidirectional GRU layers with [256, 128] units
+    Attention: 
+        4-head attention mechanism
+    Output: 
+        Sigmoid activation per class for multi-label prediction
+    Loss: 
+        Focal loss for handling class imbalance
+    Metrics: 
+        Accuracy, precision, recall, macro F1-score
     """
     # Use effective mel count (capped at 128 for 16kHz audio)
     effective_n_mels = min(n_mels, 128)
@@ -205,54 +239,78 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     x = input_mel
 
     def conv_block(x, filters, kernel_size=(3, 3), strides=(1, 1)):
-        shortcut = x
+        """ResNet-style convolutional block with skip connections."""
+        shortcut = x  # Store input for skip connection
+        
+        # First convolution + batch norm + activation
         x = Conv2D(filters, kernel_size, strides=strides, padding='same')(x)
         x = BatchNormalization()(x)
         x = Activation('relu')(x)
+        
+        # Second convolution + batch norm (no activation yet)
         x = Conv2D(filters, kernel_size, padding='same')(x)
         x = BatchNormalization()(x)
+        
+        # Adjust shortcut dimensions if needed for skip connection
         if shortcut.shape[-1] != filters or strides != (1, 1):
             shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same')(shortcut)
             shortcut = BatchNormalization()(shortcut)
-        x = Add()([x, shortcut])
+        
+        # Add skip connection and final activation
+        x = Add()([x, shortcut])  # Element-wise addition enables gradient flow
         x = Activation('relu')(x)
         return x
-
-    x = conv_block(x, 32)
+    
+    # Build CNN backbone: 4 ResNet blocks with progressive filter sizes
+    x = conv_block(x, 32)      # First block: learn basic patterns
+    x = MaxPooling2D((2, 2))(x)  # Downsample by 2x
+    x = Dropout(0.25)(x)       # Prevent overfitting
+    
+    x = conv_block(x, 64)      # Second block: more complex features  
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.25)(x)
-    x = conv_block(x, 64)
-    x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.25)(x)
-    x = conv_block(x, 128)
+    
+    x = conv_block(x, 128)     # Third block: high-level patterns
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.3)(x)
-    x = conv_block(x, 256)  # Added deeper block
+    
+    x = conv_block(x, 256)     # Fourth block: abstract representations
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.3)(x)
 
-    reduced_n_mels = (effective_n_mels + 13) // 16
+    # Calculate dimensions after CNN layers for reshaping
+    reduced_n_mels = (effective_n_mels + 13) // 16     # Divided by 2^4 from 4 pooling layers
     reduced_time_steps = fixed_time_steps // 16
     channels_after_cnn = 256
 
-    x = Permute((2, 1, 3))(x)
+    # Prepare for RNN: reshape (freq, time, channels) -> (time, freq * channels)
+    x = Permute((2, 1, 3))(x)  # Change from (freq, time, channels) to (time, freq, channels)
     x = Reshape((reduced_time_steps, reduced_n_mels * channels_after_cnn))(x)
     
-    x = Bidirectional(GRU(256, return_sequences=True, dropout=0.3))(x)  # Increased units
-    x = Bidirectional(GRU(128, return_sequences=True, dropout=0.3))(x)
+    # RNN layers for temporal modeling of audio sequences
+    x = Bidirectional(GRU(256, return_sequences=True, dropout=0.3))(x)  # Bidirectional: see past and future context
+    x = Bidirectional(GRU(128, return_sequences=True, dropout=0.3))(x)  # Smaller layer for refinement
 
     def multi_head_attention(x, num_heads=4):
+        """Multi-head attention mechanism to focus on important time steps."""
         head_size = x.shape[-1] // num_heads
         heads = []
+        
+        # Create multiple attention heads to focus on different aspects
         for i in range(num_heads):
-            attention = Dense(1, activation='tanh')(x)
-            attention = Flatten()(attention)
-            attention = Activation('softmax')(attention)
-            attention = RepeatVector(x.shape[-1])(attention)
-            attention = Permute((2, 1))(attention)
-            head = multiply([x, attention])
-            head = Lambda(lambda xin: tf.reduce_sum(xin, axis=1))(head)
+            # Compute attention weights: which time steps are most important?
+            attention = Dense(1, activation='tanh')(x)     # Score each time step
+            attention = Flatten()(attention)               # Flatten to 1D
+            attention = Activation('softmax')(attention)   # Convert to probabilities (sum=1)
+            attention = RepeatVector(x.shape[-1])(attention)  # Broadcast to feature dimension
+            attention = Permute((2, 1))(attention)         # Align dimensions for multiplication
+            
+            # Apply attention: weight the features by importance
+            head = multiply([x, attention])                # Element-wise multiplication
+            head = Lambda(lambda xin: tf.reduce_sum(xin, axis=1))(head)  # Sum across time (weighted average)
             heads.append(head)
+        
+        # Combine all attention heads
         return Concatenate()(heads) if len(heads) > 1 else heads[0]
 
     x = multi_head_attention(x)
@@ -296,26 +354,42 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
     multi-label targets for training and evaluation. Supports data augmentation
     during training to improve model generalization.
     
-    Args:
-        segments_file_path (str): Path to JSONL file containing segment metadata
-        mlb (MultiLabelBinarizer): Fitted multi-label binarizer for encoding
-        n_mels (int): Number of mel-frequency bands
-        hop_length (int): Hop length for feature extraction
-        sr (int): Sample rate for audio processing
-        window_duration (float): Duration of each audio segment
-        fixed_time_steps (int): Fixed number of time steps for consistent input shape
-        batch_size (int): Number of samples per batch (default: 32)
-        shuffle (bool): Whether to shuffle data at epoch end (default: True)
-        augment (bool): Whether to apply data augmentation (default: False)
-        
-    Features:
-        - Lazy loading: Features extracted on-demand for memory efficiency
-        - Data augmentation: Time/frequency masking, noise addition, pitch shifting
-        - Multi-label support: Handles overlapping voice type labels
-        - Consistent batching: Fixed input dimensions across all samples
+    Parameters
+    ----------
+    segments_file_path (str): 
+        Path to JSONL file containing segment metadata
+    mlb (MultiLabelBinarizer): 
+        Fitted multi-label binarizer for encoding
+    n_mels (int): 
+        Number of mel-frequency bands
+    hop_length (int): 
+        Hop length for feature extraction
+    sr (int): 
+        Sample rate for audio processing
+    window_duration (float): 
+        Duration of each audio segment
+    fixed_time_steps (int): 
+        Fixed number of time steps for consistent input shape
+    batch_size (int): 
+        Number of samples per batch (default: 32)
+    shuffle (bool): 
+        Whether to shuffle data at epoch end (default: True)
+    augment (bool): 
+        Whether to apply data augmentation (default: False)
+
+    Features
+    --------
+    Lazy loading: 
+        Features extracted on-demand for memory efficiency
+    Data augmentation:
+        Time/frequency masking, noise addition, pitch shifting
+    Multi-label support: 
+        Handles overlapping voice type labels
+    Consistent batching: 
+        Fixed input dimensions across all samples
     """
     def __init__(self, segments_file_path, mlb, n_mels, hop_length, sr, window_duration, fixed_time_steps, 
-                 batch_size=32, shuffle=True, augment=False):
+                batch_size=32, shuffle=True, augment=False):
         self.segments_file_path = segments_file_path
         self.mlb = mlb
         self.n_mels = n_mels
@@ -340,24 +414,34 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
         return segments
 
     def augment_spectrogram(self, mel_spec):
+        """Apply data augmentation to spectrograms for better generalization."""
         if not self.augment:
             return mel_spec
+            
         augmented = mel_spec.copy()
+        
+        # Time masking: mask random time segments (simulates missing audio)
         if np.random.random() < 0.5:
             time_mask_width = np.random.randint(1, min(20, mel_spec.shape[1] // 4))
             time_mask_start = np.random.randint(0, mel_spec.shape[1] - time_mask_width)
             augmented[:, time_mask_start:time_mask_start + time_mask_width] = -1
+            
+        # Frequency masking: mask random frequency bands (simulates filtering effects)  
         if np.random.random() < 0.5:
             freq_mask_width = np.random.randint(1, min(15, mel_spec.shape[0] // 4))
             freq_mask_start = np.random.randint(0, mel_spec.shape[0] - freq_mask_width)
             augmented[freq_mask_start:freq_mask_start + freq_mask_width, :] = -1
+            
+        # Additive noise: simulate background noise conditions
         if np.random.random() < 0.3:
             noise = np.random.normal(0, 0.05, mel_spec.shape)
             augmented = np.clip(augmented + noise, -1, 1)
-        # Pitch shift (new augmentation)
+            
+        # Pitch shift: simulate speaker variation (changes fundamental frequency)
         if np.random.random() < 0.3:
-            n_steps = np.random.uniform(-2, 2)
+            n_steps = np.random.uniform(-2, 2)  # Shift by up to 2 semitones
             augmented = librosa.effects.pitch_shift(augmented, sr=self.sr, n_steps=n_steps)
+            
         return augmented
 
     def __getitem__(self, index):
@@ -397,24 +481,44 @@ def compute_cosine_annealing_lr(epoch):
     Calculate learning rate using cosine annealing schedule.
     
     Implements cosine annealing with warm restarts every 20 epochs,
-    cycling between maximum and minimum learning rates.
+    cycling between maximum and minimum learning rates. This helps
+    the model escape local minima and achieve better convergence.
+
+    Parameters
+    ----------
+    epoch (int): 
+        Current training epoch (0-indexed)
     
-    Args:
-        epoch (int): Current training epoch (0-indexed)
-    
-    Returns:
-        float: Learning rate for the current epoch
+    Returns
+    -------
+    float:
+        Learning rate for the current epoch
         
-    Schedule details:
-        - max_lr: 0.001 (peak learning rate)
-        - min_lr: 0.00001 (minimum learning rate)
-        - cycle_length: 20 epochs per complete cosine cycle
-        - Formula: min_lr + (max_lr - min_lr) * (1 + cos(π * epoch_in_cycle / cycle_length)) / 2
+    Schedule details
+    ---------------
+    max_lr: 
+        0.001 (peak learning rate at start of each cycle)
+    min_lr: 
+        0.00001 (minimum learning rate at end of each cycle)  
+    cycle_length: 
+        20 epochs per complete cosine cycle
+    Formula: 
+        min_lr + (max_lr - min_lr) * (1 + cos(π * epoch_in_cycle / cycle_length)) / 2
+    
+    The cosine shape provides:
+    - Fast initial learning (high LR)
+    - Gradual slowdown for fine-tuning (decreasing LR)  
+    - Periodic restarts to escape local minima
     """
     max_lr = 0.001
     min_lr = 0.00001
     epochs_per_cycle = 20
-    cos_inner = (np.pi * (epoch % epochs_per_cycle)) / epochs_per_cycle
+    
+    # Calculate position within current cycle (0 to epochs_per_cycle-1)
+    epoch_in_cycle = epoch % epochs_per_cycle
+    
+    # Compute cosine annealing: starts at max_lr, decreases to min_lr
+    cos_inner = (np.pi * epoch_in_cycle) / epochs_per_cycle
     lr = min_lr + (max_lr - min_lr) * (1 + np.cos(cos_inner)) / 2
     return lr
 
@@ -427,20 +531,28 @@ class TrainingLogger(tf.keras.callbacks.Callback):
     after training completion. Tracks loss, accuracy, precision, recall, 
     macro F1-score, and learning rate for both training and validation.
     
-    Args:
-        log_dir (str): Directory to save CSV logs and plot images
-        mlb_classes (list): List of multi-label class names
-        
-    Attributes:
-        csv_file_path (str): Path to CSV file containing training metrics
-        history (dict): Dictionary storing all training metrics
-        start_time (float): Training start timestamp
-        
-    Features:
-        - Real-time CSV logging of all metrics per epoch
-        - Automatic plot generation (loss and macro F1-score)
-        - Elapsed time tracking
-        - Learning rate monitoring
+    Parameters
+    ----------
+    log_dir (str): 
+        Directory to save CSV logs and plot images
+    mlb_classes (list): 
+        List of multi-label class names
+
+    Attributes
+    ----------
+    csv_file_path (str): 
+        Path to CSV file containing training metrics
+    history (dict): 
+        Dictionary storing all training metrics
+    start_time (float): 
+        Training start timestamp
+
+    Features
+    --------
+    Real-time CSV logging of all metrics per epoch
+    Automatic plot generation (loss and macro F1-score)
+    Elapsed time tracking
+    Learning rate monitoring
     """
     def __init__(self, log_dir, mlb_classes):
         super().__init__()
@@ -476,7 +588,7 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         self.epoch_times.append(elapsed_time)
 
         # Get learning rate from optimizer
-        current_lr = float(tf.keras.backend.get_value(self.model.optimizer.lr))
+        current_lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
 
         # Store metrics in history
         self.history['loss'].append(logs.get('loss'))
@@ -543,7 +655,8 @@ def setup_training_environment():
     
     Returns:
     -------
-    str: Path to training run directory
+    str: 
+        Path to training run directory
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = AudioClassification.OUTPUT_DIR / timestamp
@@ -567,7 +680,7 @@ def setup_multilabel_encoder(unique_labels):
     Returns:
     -------
     tuple: (mlb, num_classes) where mlb is fitted MultiLabelBinarizer 
-           and num_classes is the number of classes
+        and num_classes is the number of classes
     """
     mlb = MultiLabelBinarizer(classes=unique_labels)
     mlb.fit([[]])  # Fit with empty list to initialize
@@ -582,35 +695,38 @@ def create_data_generators(segment_files, mlb):
     
     Parameters:
     ----------
-    segment_files (dict): Paths to segment files for each split
-    mlb: Fitted MultiLabelBinarizer
+    segment_files (dict): 
+        Paths to segment files for each split
+    mlb: 
+        Fitted MultiLabelBinarizer
         
     Returns:
     -------
-    tuple: (train_generator, val_generator, test_generator)
+    tuple: 
+        (train_generator, val_generator, test_generator)
     """
-    # Calculate fixed time steps for consistent input shape
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+    # Use centralized time steps calculation to ensure consistency
+    fixed_time_steps = calculate_fixed_time_steps()
     
     train_generator = AudioSegmentDataGenerator(
         segment_files['train'], mlb, 
         AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
         AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32, shuffle=True, augment=True
+        batch_size=32, shuffle=True, augment=True  # Enable augmentation for training
     )
     
     val_generator = AudioSegmentDataGenerator(
         segment_files['val'], mlb,
         AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
         AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32, shuffle=False, augment=False
+        batch_size=32, shuffle=False, augment=False  # No augmentation for validation
     )
     
     test_generator = AudioSegmentDataGenerator(
         segment_files['test'], mlb,
         AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
         AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32, shuffle=False, augment=False
+        batch_size=32, shuffle=False, augment=False  # No augmentation for testing
     )
     
     return train_generator, val_generator, test_generator
@@ -621,19 +737,23 @@ def create_training_callbacks(run_dir, val_generator, mlb_classes):
     
     Parameters:
     ----------
-    run_dir (str): Directory to save model checkpoints and logs
-    val_generator: Validation data generator for threshold optimization
-    mlb_classes (list): List of multi-label class names
+    run_dir (str): 
+        Directory to save model checkpoints and logs
+    val_generator: 
+        Validation data generator for threshold optimization
+    mlb_classes (list): 
+        List of multi-label class names
         
     Returns:
     -------
-    list: Configured Keras callbacks for training
+    list: 
+        Configured Keras callbacks for training
     """
     callbacks = [
         EarlyStopping(monitor='val_macro_f1', patience=30, mode='max', restore_best_weights=True, verbose=1),
         LearningRateScheduler(compute_cosine_annealing_lr, verbose=1),
         ModelCheckpoint(
-            filepath=(run_dir / 'best_model.h5'),
+            filepath=(run_dir / 'best_model.keras'),
             monitor='val_macro_f1',
             mode='max',
             save_best_only=True,
@@ -654,17 +774,18 @@ def create_model_and_setup(unique_labels):
         
     Returns:
     -------
-    tuple: (model, mlb, num_classes, fixed_time_steps) where:
-        - model: Compiled Keras model
-        - mlb: Fitted MultiLabelBinarizer
-        - num_classes: Number of classes
-        - fixed_time_steps: Fixed time steps for model input
+    tuple: 
+        (model, mlb, num_classes, fixed_time_steps) where:
+            - model: Compiled Keras model
+            - mlb: Fitted MultiLabelBinarizer
+            - num_classes: Number of classes
+            - fixed_time_steps: Fixed time steps for model input
     """
     # Setup multi-label encoder
     mlb, num_classes = setup_multilabel_encoder(unique_labels)
     
-    # Calculate fixed time steps for consistent input shape
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+    # Use centralized calculation for consistent time steps across all components
+    fixed_time_steps = calculate_fixed_time_steps()
 
     # Build model architecture
     model = build_model_multi_label(
@@ -677,44 +798,93 @@ def create_model_and_setup(unique_labels):
 
 def train_model_with_callbacks(model, train_generator, val_generator, callbacks, epochs):
     """
-    Train the model with specified callbacks and data generators.
+    Train the audio classification model using data generators and callbacks.
+    
+    This function orchestrates the training process with:
+    - Validation data monitoring for overfitting detection
+    - Callback mechanisms for early stopping and model checkpointing
+    - Uniform class weighting suitable for balanced ID-split data
+    - Comprehensive training history tracking
     
     Parameters:
     ----------
-    model: Compiled Keras model
-    train_generator: Training data generator
-    val_generator: Validation data generator
-    callbacks: List of Keras callbacks
-    epochs (int): Number of training epochs
-        
+    model: tf.keras.Model
+        Compiled multi-label audio classification model
+    train_generator: AudioSegmentDataGenerator
+        Training data generator with augmentation enabled
+    val_generator: AudioSegmentDataGenerator  
+        Validation data generator (no augmentation)
+    callbacks: list
+        Keras callbacks (EarlyStopping, ModelCheckpoint, LRScheduler)
+    epochs (int): 
+        Maximum number of training epochs
+
     Returns:
     -------
-    History: Keras training history object
+    tf.keras.callbacks.History:
+        Training history with metrics per epoch
+        
+    Raises:
+    ------
+    ValueError:
+        If generators contain no data batches
     """
     print(f"\nStarting training for {epochs} epochs...")
     
+    # Validate data availability before training
     if len(train_generator) == 0 or len(val_generator) == 0:
         raise ValueError("No batches available for training/validation. Check your segment files and data paths.")
     
-    # Using uniform class weights for ID-split balanced data
+    # Use uniform class weights for balanced ID-split data
+    # Note: For time-split data, consider computing class weights from training data
     class_weight = None
     print("Using uniform class weighting (recommended for ID-split balanced data)")
     
+    # Execute training with validation monitoring
     history = model.fit(
         train_generator,
         validation_data=val_generator,
         epochs=epochs,
-        callbacks=callbacks,
+        callbacks=callbacks,  # Early stopping, checkpointing, LR scheduling
         class_weight=class_weight,
-        verbose=1
+        verbose=1  # Show progress bar and metrics per epoch
     )
     
     return history
 
 def main():
     """
-    Main function for audio classification training.
+    Main training pipeline for multi-label audio voice type classification.
+    
+    This function orchestrates the complete training workflow:
+    1. Data preparation with train/validation/test split
+    2. Model architecture construction and compilation  
+    3. Training with callbacks (early stopping, checkpointing, LR scheduling)
+    4. Model evaluation with threshold optimization
+    5. Results saving and reporting
+    
+    The pipeline uses:
+    - CNN-RNN hybrid architecture with multi-head attention
+    - Focal loss for handling class imbalance
+    - Data augmentation for training robustness
+    - Macro F1-score optimization for multi-label performance
+    - Cosine annealing learning rate scheduling
+    
+    Configuration:
+    -------------
+    - Labels: Defined in AudioConfig.VALID_RTTM_CLASSES
+    - Data paths: Defined in AudioClassification segment files
+    - Audio parameters: Defined in AudioConfig
+    - Model parameters: Hardcoded in build_model_multi_label()
+    
+    Outputs:
+    -------
+    - Trained model saved as .keras file
+    - Training history plots and metrics
+    - Threshold optimization results
+    - Test set performance evaluation
     """   
+    # Define voice type classes and data split file paths
     unique_labels = AudioConfig.VALID_RTTM_CLASSES
     segment_files = {
         'train': AudioClassification.TRAIN_SEGMENTS_FILE,
@@ -763,7 +933,7 @@ def main():
         print("✅ Training pipeline completed successfully!")
         print(f"📁 Results saved to: {run_dir}")
         print(f"\n🔍 To evaluate on test set, run:")
-        print(f"   python evaluate_audio_classifier.py --model_path {run_dir}/best_model.h5 --run_dir {run_dir}")
+        print(f"   python evaluate_audio_classifier.py --model_path {run_dir}/best_model.keras --run_dir {run_dir}")
         
     except Exception as e:
         print(f"❌ Training pipeline failed with error: {e}")
