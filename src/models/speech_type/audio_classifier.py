@@ -582,7 +582,8 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
         
         # Handle empty audio segments
         if len(y) == 0:
-            return np.zeros((n_mels + 13, fixed_time_steps), dtype=np.float32)  # +13 for MFCC
+            effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
+            return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)  # +13 for MFCC
         
         # Audio preprocessing: normalization and pre-emphasis filtering
         y = y / (np.max(np.abs(y)) + 1e-6)  # Amplitude normalization
@@ -618,4 +619,5 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
     
     except Exception as e:
         print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
-        return np.zeros((n_mels + 13, fixed_time_steps), dtype=np.float32)
+        effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
+        return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
