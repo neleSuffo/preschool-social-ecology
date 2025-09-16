@@ -640,7 +640,7 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
         print("⚠️ Warning: No positive instances found in test set")
         print("❌ Cannot compute meaningful evaluation metrics")
     
-    print(f"\n✅ Comprehensive evaluation completed!")
+    print(f"\n✅ Evaluation completed!")
     print(f"📁 Results saved to: {output_dir}")
 
 def save_evaluation_results(output_dir, class_names, thresholds,
