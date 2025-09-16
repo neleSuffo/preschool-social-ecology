@@ -438,7 +438,6 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         print(f"Epoch {epoch+1} completed. Elapsed time: {elapsed_time:.2f}s")
 
     def on_train_end(self, logs=None):
-        print("Training finished. Generating plots...")
         self.plot_metrics()
 
     def plot_metrics(self):
@@ -752,8 +751,6 @@ def main():
         
         print("✅ Training pipeline completed successfully!")
         print(f"📁 Results saved to: {run_dir}")
-        print(f"\n🔍 To evaluate on test set, run:")
-        print(f"   python evaluate_audio_classifier.py --model_path {run_dir}/best_model.keras --run_dir {run_dir}")
         
     except Exception as e:
         print(f"❌ Training pipeline failed with error: {e}")
