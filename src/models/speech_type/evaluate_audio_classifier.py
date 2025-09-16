@@ -60,17 +60,20 @@ def create_empty_feature_matrix(n_mels, fixed_time_steps):
     
     This helper ensures consistent fallback behavior when audio processing
     fails, maintaining expected input dimensions for the neural network.
+    Uses effective n_mels calculation to match model architecture.
     
     Parameters:
     ----------
-    n_mels (int): Number of mel frequency bands
+    n_mels (int): Number of mel frequency bands (will be capped at 128)
     fixed_time_steps (int): Number of time steps
         
     Returns:
     -------
     np.ndarray: Zero-filled feature matrix with correct dimensions
     """
-    return np.zeros((n_mels + 13, fixed_time_steps), dtype=np.float32)
+    # Use effective mel count to match model architecture 
+    effective_n_mels = min(n_mels, 128)
+    return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
 
 # --- Feature Extraction ---
 def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_length, fixed_time_steps=None):
@@ -97,7 +100,7 @@ def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_
     - Sample Rate: Configured in AudioConfig.SR
     - Frequency Range: 20 Hz - 10 kHz (human speech range)
     - Window: 2048-point FFT with hop_length overlap
-    - Mel Bands: Perceptually spaced frequency bins
+    - Mel Bands: Perceptually spaced frequency bins (capped at 128 for 16kHz)
     - MFCC: 13 coefficients capturing spectral envelope
     
     Parameters:
@@ -111,7 +114,7 @@ def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_
     sr (int): 
         Target sample rate for audio loading and processing
     n_mels (int): 
-        Number of mel frequency bands for spectrogram
+        Number of mel frequency bands for spectrogram (will be capped at 128)
     hop_length (int): 
         Hop length in samples for STFT computation
     fixed_time_steps (int, optional): 
@@ -119,10 +122,13 @@ def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_
 
     Returns:
     -------
-    np.ndarray: Combined feature matrix (n_mels + 13, fixed_time_steps)
+    np.ndarray: Combined feature matrix (effective_n_mels + 13, fixed_time_steps)
         Shape represents concatenated mel-spectrogram and MFCC features
         normalized to [-1, 1] range with standardized temporal dimension
     """
+    # Use effective mel count (capped at 128 for 16kHz audio) to match model architecture
+    effective_n_mels = min(n_mels, 128)
+    
     # Use centralized time steps calculation if not provided
     if fixed_time_steps is None:
         fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
@@ -155,9 +161,9 @@ def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_
         # Formula: y[n] = x[n] - α*x[n-1] with α=0.97
         y = np.append(y[0], y[1:] - 0.97 * y[:-1])
         
-        # Extract mel-spectrogram with perceptually relevant frequency range
+        # Extract mel-spectrogram with perceptually relevant frequency range (using effective n_mels)
         mel_spectrogram = librosa.feature.melspectrogram(
-            y=y, sr=sr, n_mels=n_mels, hop_length=hop_length, 
+            y=y, sr=sr, n_mels=effective_n_mels, hop_length=hop_length, 
             n_fft=2048,    # 2048-point FFT for good frequency resolution
             fmin=20,       # Lower frequency bound (human hearing)
             fmax=10000     # Upper frequency bound (speech content)
@@ -290,7 +296,7 @@ class EvaluationDataGenerator(tf.keras.utils.Sequence):
         Returns:
         -------
         tuple: (X_batch, y_batch) where:
-            - X_batch: Feature array (batch_size, n_mels+13, time_steps, 1)
+            - X_batch: Feature array (batch_size, effective_n_mels+13, time_steps, 1)
             - y_batch: Multi-hot label array (batch_size, n_classes)
         """
         # Calculate batch boundaries with overflow protection
@@ -376,7 +382,7 @@ def load_model_and_setup(model_path):
         
         # Load only the weights from the saved .keras file
         model.load_weights(model_path)
-        print("✅ Model loaded successfully by rebuilding architecture and loading weights.")
+        print("✅ Model loaded successfully.")
     
     except Exception as e:
         raise ValueError(f"Failed to load model: {e}")
@@ -434,7 +440,6 @@ def load_thresholds(run_dir, mlb_classes):
             # Map class names to thresholds, using 0.5 as fallback for missing classes
             thresholds = [thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes]
             
-            print(f"✅ Loaded optimized thresholds from: {thresholds_file}")
             print(f"📊 Class thresholds: {dict(zip(mlb_classes, thresholds))}")
             
             # Validate threshold ranges
