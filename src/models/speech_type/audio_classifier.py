@@ -483,8 +483,8 @@ def load_thresholds(run_dir, mlb_classes):
     
     Returns:
     -------
-    list: 
-        Per-class thresholds in the same order as mlb_classes
+    dict: 
+        Dictionary mapping class names to their optimal thresholds
         
     File Format:
     -----------
@@ -503,21 +503,21 @@ def load_thresholds(run_dir, mlb_classes):
             with open(thresholds_file, 'r') as f:
                 thresholds_dict = json.load(f)
             
-            # Map class names to thresholds, using 0.5 as fallback for missing classes
-            thresholds = [thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes]
+            # Return the dictionary directly, filtering out non-class keys
+            thresholds = {class_name: thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes}
             
-            print(f"📊 Class thresholds: {dict(zip(mlb_classes, thresholds))}")
+            print(f"📊 Class thresholds: {thresholds}")
             
             # Validate threshold ranges
-            if any(t < 0.1 or t > 0.9 for t in thresholds):
+            if any(t < 0.1 or t > 0.9 for t in thresholds.values()):
                 print("⚠️ Warning: Some thresholds are outside typical range [0.1, 0.9]")
                 
         except (json.JSONDecodeError, KeyError) as e:
             print(f"⚠️ Warning: Error reading thresholds file: {e}")
             print("🔄 Falling back to default thresholds (0.5)")
-            thresholds = [0.5] * len(mlb_classes)
+            thresholds = {class_name: 0.5 for class_name in mlb_classes}
     else:
-        thresholds = [0.5] * len(mlb_classes)
+        thresholds = {class_name: 0.5 for class_name in mlb_classes}
         print(f"⚠️ Optimized thresholds not found at: {thresholds_file}")
         print("🔄 Using default thresholds (0.5 for all classes)")
     
