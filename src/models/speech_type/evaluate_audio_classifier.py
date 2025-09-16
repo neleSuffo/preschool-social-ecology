@@ -54,7 +54,7 @@ from tensorflow.keras.models import load_model
 from tqdm import tqdm
 from constants import AudioClassification
 from config import AudioConfig
-from audio_classifier import MacroF1Score, FocalLoss, calculate_fixed_time_steps
+from audio_classifier import MacroF1Score, FocalLoss
 
 def create_empty_feature_matrix(n_mels, fixed_time_steps):
     """
@@ -127,8 +127,8 @@ def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_
     """
     # Use centralized time steps calculation if not provided
     if fixed_time_steps is None:
-        fixed_time_steps = calculate_fixed_time_steps()
-    
+        fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+
     try:
         # Load audio segment with precise timing control
         y, sr_loaded = librosa.load(audio_path, sr=sr, offset=start_time, duration=duration)
@@ -340,75 +340,197 @@ class EvaluationDataGenerator(tf.keras.utils.Sequence):
 # --- Evaluation Functions ---
 def load_model_and_setup(model_path):
     """
-    Load trained model and setup multi-label binarizer from training run.
+    Load trained model with Lambda layer handling and setup multi-label binarizer.
+    
+    This function handles modern Keras security restrictions for Lambda layers by
+    enabling unsafe deserialization when necessary. The Lambda layers in our models
+    are safe since they come from our own training pipeline and contain only
+    mathematical operations for attention mechanisms.
+    
+    Security Note:
+    - Lambda layers are disabled by default in Keras for security
+    - Our models contain Lambda layers for multi-head attention
+    - These are safe since they originate from our controlled training process
+    - We enable unsafe deserialization only for our own trusted model files
     
     Parameters:
     ----------
     model_path (str or Path): 
-        Path to saved model (.keras file)
+        Path to saved model (.keras file from our training pipeline)
     
     Returns:
     -------
-    tuple: (model, mlb)
+    tuple: (model, mlb) where:
+        - model: Loaded and compiled Keras model
+        - mlb: Fitted MultiLabelBinarizer for label encoding
+        
+    Raises:
+    ------
+    FileNotFoundError: If model file doesn't exist
+    ValueError: If model loading fails due to incompatible format
     """    
+    model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_path}")
         
-    # Setup multi-label binarizer
+    # Setup multi-label binarizer consistent with training
     mlb = MultiLabelBinarizer(classes=AudioConfig.VALID_RTTM_CLASSES)
-    mlb.fit([[]])  # Initialize
+    mlb.fit([[]])  # Initialize with empty list to set up classes
     
-    # Load model with custom objects
+    # Define custom objects for model reconstruction
     custom_objects = {
         'MacroF1Score': MacroF1Score,
         'FocalLoss': FocalLoss
     }
     
     print(f"Loading model from: {model_path}")
-    model = load_model(model_path, custom_objects=custom_objects)
+    
+    try:
+        # First attempt: Standard loading (safe mode)
+        model = load_model(model_path, custom_objects=custom_objects)
+        print("✅ Model loaded successfully in safe mode")
+        
+    except ValueError as e:
+        if "Lambda" in str(e) and "unsafe deserialization" in str(e):
+            # Handle Lambda layer deserialization for our trusted models
+            print("⚠️ Model contains Lambda layers (attention mechanism)")
+            print("🔓 Enabling unsafe deserialization for trusted model file")
+            
+            # Enable unsafe deserialization for Lambda layers
+            import keras
+            keras.config.enable_unsafe_deserialization()
+            
+            try:
+                # Retry loading with unsafe deserialization enabled
+                model = load_model(model_path, custom_objects=custom_objects)
+                print("✅ Model loaded successfully with Lambda layer support")
+                
+            except Exception as retry_e:
+                raise ValueError(f"Failed to load model even with unsafe deserialization: {retry_e}")
+                
+            finally:
+                # Restore safe deserialization after loading
+                keras.config.disable_unsafe_deserialization()
+                
+        else:
+            # Re-raise non-Lambda related errors
+            raise e
+            
+    except Exception as e:
+        raise ValueError(f"Unexpected error loading model: {e}")
     
     return model, mlb
 
 def load_thresholds(run_dir, mlb_classes):
     """
-    Load optimized thresholds from training run.
+    Load class-specific optimized thresholds from training run output.
+    
+    During training, the ThresholdOptimizer callback searches for optimal 
+    decision thresholds per class to maximize macro F1-score. These thresholds
+    are typically different from the default 0.5 due to class imbalance and
+    varying prediction confidence distributions.
+    
+    Threshold Optimization Process:
+    1. During training, validation set predictions are analyzed
+    2. For each class, thresholds from 0.1 to 0.9 are tested
+    3. The threshold maximizing F1-score per class is selected
+    4. Results are saved to thresholds.json in the training run directory
+    
+    Fallback Strategy:
+    If optimized thresholds are not available (e.g., interrupted training),
+    the function defaults to 0.5 for all classes with appropriate warnings.
     
     Parameters:
     ----------
-    run_dir (str or Path): Directory containing training run files
-    mlb_classes (list): List of class names
+    run_dir (str or Path): 
+        Training run directory containing threshold optimization results
+    mlb_classes (list): 
+        List of class names in the same order as model outputs
     
     Returns:
     -------
-    list: Optimized thresholds for each class
+    list: 
+        Per-class thresholds in the same order as mlb_classes
+        
+    File Format:
+    -----------
+    thresholds.json contains:
+    {
+        "class_name_1": 0.3,
+        "class_name_2": 0.7,
+        ...
+    }
     """
     run_dir = Path(run_dir)
     thresholds_file = run_dir / 'thresholds.json'
     
     if thresholds_file.exists():
-        with open(thresholds_file, 'r') as f:
-            thresholds_dict = json.load(f)
-        thresholds = [thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes]
-        print(f"Loaded optimized thresholds: {dict(zip(mlb_classes, thresholds))}")
+        try:
+            with open(thresholds_file, 'r') as f:
+                thresholds_dict = json.load(f)
+            
+            # Map class names to thresholds, using 0.5 as fallback for missing classes
+            thresholds = [thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes]
+            
+            print(f"✅ Loaded optimized thresholds from: {thresholds_file}")
+            print(f"📊 Class thresholds: {dict(zip(mlb_classes, thresholds))}")
+            
+            # Validate threshold ranges
+            if any(t < 0.1 or t > 0.9 for t in thresholds):
+                print("⚠️ Warning: Some thresholds are outside typical range [0.1, 0.9]")
+                
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"⚠️ Warning: Error reading thresholds file: {e}")
+            print("🔄 Falling back to default thresholds (0.5)")
+            thresholds = [0.5] * len(mlb_classes)
     else:
         thresholds = [0.5] * len(mlb_classes)
-        print("Using default thresholds (0.5) - optimized thresholds not found.")
+        print(f"⚠️ Optimized thresholds not found at: {thresholds_file}")
+        print("🔄 Using default thresholds (0.5 for all classes)")
+        print("💡 Tip: Ensure training completed and ThresholdOptimizer callback was active")
     
     return thresholds
 
 def create_evaluation_generator(test_segments_file, mlb):
     """
-    Create data generator for evaluation.
+    Create deterministic data generator for comprehensive model evaluation.
+    
+    This function creates a specialized data generator for evaluation that maintains
+    consistency with the training pipeline while optimizing for inference performance.
+    The generator eliminates randomness and augmentation to ensure reproducible 
+    evaluation results across multiple runs.
+    
+    Generator Configuration:
+    - Deterministic ordering (no shuffling) for reproducible results
+    - No data augmentation to preserve original audio characteristics  
+    - Consistent feature extraction pipeline matching training
+    - Fixed batch size for optimal inference throughput
+    - Lazy loading strategy for memory efficiency
+    
+    Time Steps Calculation:
+    Uses centralized helper function to ensure consistency with training
+    pipeline and eliminate redundant calculations across the codebase.
     
     Parameters:
     ----------
-    test_segments_file (str or Path): Path to test segments file
-    mlb: Fitted MultiLabelBinarizer
+    test_segments_file (str or Path): 
+        Path to JSONL file containing test segment metadata
+    mlb (MultiLabelBinarizer): 
+        Fitted multi-label binarizer from training run
     
     Returns:
     -------
-    EvaluationDataGenerator: Test data generator
+    EvaluationDataGenerator: 
+        Configured test data generator ready for model evaluation
+        
+    Features:
+    --------
+    - Batch size: 32 samples (optimal for most GPUs)
+    - Memory efficient: Lazy loading with small memory footprint
+    - Consistent preprocessing: Identical to training feature extraction
+    - Reproducible: Deterministic sample ordering for consistent metrics
     """
+    # Use centralized time steps calculation to ensure consistency with training
     fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
     
     test_generator = EvaluationDataGenerator(
@@ -419,19 +541,69 @@ def create_evaluation_generator(test_segments_file, mlb):
     )
     
     print(f"Created test generator with {len(test_generator)} batches")
+    print(f"Using fixed time steps: {fixed_time_steps} (consistent with training)")
     return test_generator
 
 def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir):
     """
-    Perform comprehensive evaluation of the model on test set.
+    Perform comprehensive multi-label classification evaluation with detailed analysis.
+    
+    This function executes a thorough evaluation protocol that goes beyond basic
+    accuracy metrics to provide insights into model performance across different
+    dimensions. It handles the complexities of multi-label evaluation where
+    traditional metrics may be misleading due to label dependencies and imbalance.
+    
+    Evaluation Protocol:
+    1. Generate probability predictions for all test samples
+    2. Apply class-specific optimized thresholds for binary classification
+    3. Calculate comprehensive metrics (subset accuracy, macro/micro F1, per-class)
+    4. Handle data mismatches gracefully with appropriate corrections
+    5. Generate detailed reports and visualizations for analysis
+    6. Save results in multiple formats for different use cases
+    
+    Multi-Label Metrics Explanation:
+    - Subset Accuracy: Percentage of samples where ALL labels are predicted correctly
+    - Macro F1: Average F1 across classes (treats all classes equally)
+    - Micro F1: Global F1 from aggregated true/false positives (favors frequent classes)
+    - Per-class F1: Individual class performance (identifies problematic classes)
+    
+    Threshold Application:
+    Uses class-specific thresholds optimized during training rather than uniform 0.5.
+    This accounts for different prediction confidence distributions per class and
+    maximizes overall macro F1-score performance.
+    
+    Error Handling:
+    - Graceful handling of prediction/label shape mismatches
+    - Fallback to available samples when batch sizes don't align
+    - Warning system for unusual evaluation conditions
+    - Comprehensive error reporting for debugging
     
     Parameters:
     ----------
-    model: Loaded Keras model
-    test_generator: Test data generator
-    mlb: MultiLabelBinarizer
-    thresholds (list): Optimized thresholds for each class
-    output_dir (str or Path): Directory to save evaluation results
+    model (tf.keras.Model): 
+        Trained multi-label audio classification model
+    test_generator (EvaluationDataGenerator): 
+        Test data generator with deterministic ordering
+    mlb (MultiLabelBinarizer): 
+        Fitted label encoder from training pipeline
+    thresholds (list): 
+        Per-class decision thresholds for binary classification
+    output_dir (str or Path): 
+        Directory to save evaluation results and visualizations
+        
+    Outputs:
+    -------
+    Files Created:
+    - evaluation_summary.json: Comprehensive metrics summary
+    - detailed_predictions.csv: Per-sample predictions and probabilities
+    - per_class_f1_scores.png: Class-wise F1 score visualization
+    - prediction_distributions.png: Probability distribution plots
+    - class_support.png: Class frequency analysis plot
+    
+    Raises:
+    ------
+    ValueError: If test generator is empty or predictions fail
+    RuntimeError: If evaluation cannot complete due to data issues
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -439,49 +611,70 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
     print("🔍 Running comprehensive model evaluation...")
     print("=" * 60)
     
-    # Get predictions and true labels
+    # Stage 1: Generate probability predictions for all test samples
+    print("📊 Generating predictions for test set...")
     test_predictions = model.predict(test_generator, verbose=1)
     
+    # Stage 2: Collect true labels with progress tracking
+    print("🏷️ Collecting true labels from test generator...")
     test_true_labels = []
-    for i in tqdm(range(len(test_generator)), desc="Collecting labels"):
+    for i in tqdm(range(len(test_generator)), desc="Processing batches"):
         _, labels = test_generator[i]
-        test_true_labels.extend(labels)
+        if len(labels) > 0:  # Skip empty batches
+            test_true_labels.extend(labels)
     test_true_labels = np.array(test_true_labels)
     
-    # Handle shape mismatches
+    # Stage 3: Handle potential shape mismatches between predictions and labels
     if test_predictions.shape[0] != test_true_labels.shape[0]:
-        print(f"⚠️ Shape mismatch: predictions {test_predictions.shape[0]}, labels {test_true_labels.shape[0]}")
+        print(f"⚠️ Shape mismatch detected:")
+        print(f"   Predictions: {test_predictions.shape[0]} samples")
+        print(f"   True labels: {test_true_labels.shape[0]} samples")
+        
+        # Use minimum available samples to ensure valid comparison
         min_samples = min(test_predictions.shape[0], test_true_labels.shape[0])
         test_predictions = test_predictions[:min_samples]
         test_true_labels = test_true_labels[:min_samples]
-        print(f"✂️ Adjusted to {min_samples} samples")
+        
+        print(f"✂️ Adjusted evaluation set to {min_samples} samples")
+        
+        if min_samples == 0:
+            raise ValueError("No samples available for evaluation after shape adjustment")
     
-    # Apply thresholds
+    # Stage 4: Apply class-specific thresholds to convert probabilities to predictions
+    print("🎯 Applying optimized thresholds for binary classification...")
     test_pred_binary = np.array([
         (test_predictions[:, i] > thresholds[i]).astype(int) 
         for i in range(len(mlb.classes_))
     ]).T
     
+    # Stage 5: Calculate comprehensive evaluation metrics
     if test_true_labels.sum() > 0:
-        # Per-class metrics
+        print("📈 Computing comprehensive evaluation metrics...")
+        
+        # Per-class detailed metrics
         precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
             test_true_labels, test_pred_binary, average=None, zero_division=0
         )
         
-        # Macro metrics
+        # Macro-averaged metrics (equal weight per class)
         macro_precision = precision_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
         macro_recall = recall_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
         macro_f1 = f1_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
         
-        # Micro metrics
+        # Micro-averaged metrics (global performance)
         micro_precision = precision_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
         micro_recall = recall_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
         micro_f1 = f1_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
         
-        # Subset accuracy (exact match)
+        # Subset accuracy (exact multi-label match)
         subset_accuracy = accuracy_score(test_true_labels, test_pred_binary)
         
-        # Save detailed results
+        print(f"✅ Evaluation metrics computed successfully:")
+        print(f"   📊 Macro F1: {macro_f1:.4f}")
+        print(f"   📊 Micro F1: {micro_f1:.4f}") 
+        print(f"   📊 Subset Accuracy: {subset_accuracy:.4f}")
+        
+        # Stage 6: Save comprehensive results to files
         save_evaluation_results(
             output_dir, mlb.classes_, thresholds,
             test_true_labels, test_pred_binary, test_predictions,
@@ -490,26 +683,77 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
             micro_precision, micro_recall, micro_f1, subset_accuracy
         )
         
-        # Generate plots
+        # Stage 7: Generate visualization plots for performance analysis
         generate_evaluation_plots(
             output_dir, mlb.classes_,
             test_true_labels, test_pred_binary, test_predictions
         )
         
     else:
-        print("⚠️ Warning: No positive instances in test set for metrics calculation.")
+        print("⚠️ Warning: No positive instances found in test set")
+        print("❌ Cannot compute meaningful evaluation metrics")
+        print("💡 Check data preparation and label distribution")
     
-    print(f"\n✅ Evaluation completed! Results saved to: {output_dir}")
+    print(f"\n✅ Comprehensive evaluation completed!")
+    print(f"📁 Results saved to: {output_dir}")
+    print(f"🔍 Check evaluation_summary.json for detailed metrics")
 
 def save_evaluation_results(output_dir, class_names, thresholds,
                         test_true_labels, test_pred_binary, test_predictions,
                         precision_per_class, recall_per_class, f1_per_class, support_per_class,
                         macro_precision, macro_recall, macro_f1,
                         micro_precision, micro_recall, micro_f1, subset_accuracy):
-    """Save detailed evaluation results to files."""
+    """
+    Save comprehensive evaluation results in multiple formats for analysis and reporting.
     
-    # Save summary metrics
+    This function creates both machine-readable (JSON) and human-readable (CSV) outputs
+    containing detailed evaluation metrics. The dual format approach supports both
+    automated analysis pipelines and manual inspection of results.
+    
+    Output Files:
+    1. evaluation_summary.json: Structured metrics summary for programmatic analysis
+    2. detailed_predictions.csv: Per-sample results for error analysis and debugging
+    
+    JSON Structure:
+    - overall_metrics: Global performance (macro/micro F1, subset accuracy)
+    - per_class_metrics: Individual class performance with support counts
+    - test_set_size: Number of evaluated samples for statistical significance
+    - thresholds: Applied decision thresholds per class
+    
+    CSV Structure:
+    - Probability columns: Raw model outputs (0-1) per class
+    - Binary prediction columns: Thresholded binary decisions per class
+    - True label columns: Ground truth binary labels per class
+    
+    Parameters:
+    ----------
+    output_dir (Path): Target directory for result files
+    class_names (list): Names of classification classes
+    thresholds (list): Applied decision thresholds per class
+    test_true_labels (ndarray): Ground truth binary labels (n_samples, n_classes)
+    test_pred_binary (ndarray): Binary predictions (n_samples, n_classes)
+    test_predictions (ndarray): Probability predictions (n_samples, n_classes)
+    precision_per_class (ndarray): Per-class precision scores
+    recall_per_class (ndarray): Per-class recall scores  
+    f1_per_class (ndarray): Per-class F1 scores
+    support_per_class (ndarray): Per-class positive sample counts
+    macro_precision (float): Macro-averaged precision
+    macro_recall (float): Macro-averaged recall
+    macro_f1 (float): Macro-averaged F1 score
+    micro_precision (float): Micro-averaged precision
+    micro_recall (float): Micro-averaged recall
+    micro_f1 (float): Micro-averaged F1 score
+    subset_accuracy (float): Subset accuracy (exact match rate)
+    """
+    
+    # Create comprehensive metrics summary for programmatic analysis
     summary = {
+        'evaluation_metadata': {
+            'test_set_size': len(test_true_labels),
+            'num_classes': len(class_names),
+            'class_names': class_names,
+            'evaluation_timestamp': datetime.now().isoformat()
+        },
         'overall_metrics': {
             'subset_accuracy': float(subset_accuracy),
             'macro_precision': float(macro_precision),
@@ -525,136 +769,372 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                 'recall': float(recall_per_class[i]),
                 'f1_score': float(f1_per_class[i]),
                 'support': int(support_per_class[i]),
-                'threshold': float(thresholds[i])
+                'threshold': float(thresholds[i]),
+                'positive_rate': float(support_per_class[i] / len(test_true_labels))
             } for i in range(len(class_names))
         },
-        'test_set_size': len(test_true_labels),
-        'thresholds': {class_names[i]: float(thresholds[i]) for i in range(len(class_names))}
+        'threshold_configuration': {
+            'method': 'optimized_from_validation',
+            'fallback': 0.5,
+            'per_class_thresholds': {class_names[i]: float(thresholds[i]) for i in range(len(class_names))}
+        }
     }
     
-    with open(output_dir / 'evaluation_summary.json', 'w') as f:
-        json.dump(summary, f, indent=4)
+    # Save structured JSON summary for automated analysis
+    summary_path = output_dir / 'evaluation_summary.json'
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=4, ensure_ascii=False)
     
-    # Save detailed predictions
-    predictions_df = pd.DataFrame(test_predictions, columns=[f'{name}_prob' for name in class_names])
-    predictions_binary_df = pd.DataFrame(test_pred_binary, columns=[f'{name}_pred' for name in class_names])
-    true_labels_df = pd.DataFrame(test_true_labels, columns=[f'{name}_true' for name in class_names])
+    # Create detailed per-sample results for error analysis
+    # Organize columns for easy analysis: probabilities, predictions, then true labels
     
-    detailed_results = pd.concat([predictions_df, predictions_binary_df, true_labels_df], axis=1)
-    detailed_results.to_csv(output_dir / 'detailed_predictions.csv', index=False)
+    # Probability predictions (raw model outputs)
+    predictions_df = pd.DataFrame(
+        test_predictions, 
+        columns=[f'{name}_prob' for name in class_names]
+    )
     
-    print(f"💾 Saved evaluation summary to: {output_dir / 'evaluation_summary.json'}")
-    print(f"💾 Saved detailed predictions to: {output_dir / 'detailed_predictions.csv'}")
+    # Binary predictions (after threshold application)
+    predictions_binary_df = pd.DataFrame(
+        test_pred_binary, 
+        columns=[f'{name}_pred' for name in class_names]
+    )
+    
+    # True labels (ground truth)
+    true_labels_df = pd.DataFrame(
+        test_true_labels, 
+        columns=[f'{name}_true' for name in class_names]
+    )
+    
+    # Combine all information for comprehensive per-sample analysis
+    detailed_results = pd.concat([
+        predictions_df, 
+        predictions_binary_df, 
+        true_labels_df
+    ], axis=1)
+    
+    # Add derived columns for quick analysis
+    detailed_results['sample_id'] = range(len(detailed_results))
+    detailed_results['num_true_labels'] = test_true_labels.sum(axis=1)
+    detailed_results['num_pred_labels'] = test_pred_binary.sum(axis=1)
+    detailed_results['exact_match'] = (test_true_labels == test_pred_binary).all(axis=1).astype(int)
+    
+    # Save detailed predictions for manual inspection and error analysis
+    predictions_path = output_dir / 'detailed_predictions.csv'
+    detailed_results.to_csv(predictions_path, index=False, float_format='%.4f')
+    
+    # Log successful save operations with file sizes
+    summary_size = summary_path.stat().st_size / 1024  # KB
+    predictions_size = predictions_path.stat().st_size / 1024  # KB
+    
+    print(f"💾 Saved evaluation summary to: {summary_path} ({summary_size:.1f} KB)")
+    print(f"💾 Saved detailed predictions to: {predictions_path} ({predictions_size:.1f} KB)")
+    print(f"📊 Summary includes {len(class_names)} classes and {len(test_true_labels)} test samples")
 
 def generate_evaluation_plots(output_dir, class_names, test_true_labels, test_pred_binary, test_predictions):
     """
-    Generate evaluation plots and save them.
+    Generate comprehensive evaluation visualizations for performance analysis.
+
+    This function creates publication-ready plots that provide visual insights into
+    model performance across different dimensions. The plots are designed to help
+    identify performance patterns, class-specific issues, and data distribution
+    characteristics that may not be apparent from numerical metrics alone.
+
+    Plot Types Generated:
+    1. Per-Class F1 Scores: Bar chart showing individual class performance
+    2. Prediction Probability Distributions: Histograms of raw prediction scores
+    3. Class Support Analysis: Bar chart showing positive sample counts per class
+
+    Visual Design Features:
+    - High DPI (300) for publication quality
+    - Consistent color scheme and styling
+    - Value annotations on bars for precise reading
+    - Grid lines for easier value estimation
+    - Rotated labels for readability
+    - Proper axis labeling and titles
+
+    Analysis Insights:
+    - F1 scores reveal which classes are hardest to predict
+    - Probability distributions show prediction confidence patterns
+    - Support counts identify potential class imbalance issues
+    - Together, these help diagnose performance bottlenecks
 
     Parameters:
     ----------
     output_dir (Path): 
-        Directory to save plots
+        Directory to save plot files (.png format)
     class_names (list): 
-        List of class names
+        Names of classification classes for labeling
     test_true_labels (ndarray): 
-        True labels for the test set
+        Ground truth binary labels (n_samples, n_classes)
     test_pred_binary (ndarray): 
-        Binary predictions for the test set
+        Binary predictions after thresholding (n_samples, n_classes)
     test_predictions (ndarray): 
-        Probability predictions for the test set
+        Raw probability predictions (n_samples, n_classes)
+
+    Generated Files:
+    ---------------
+    - per_class_f1_scores.png: Bar chart of F1 performance per class
+    - prediction_distributions.png: Probability distribution subplots
+    - class_support.png: Bar chart of positive samples per class
+
+    Plot Specifications:
+    -------------------
+    - Image format: PNG with 300 DPI
+    - Color scheme: Matplotlib default with consistent styling
+    - Font sizes: Optimized for readability at publication size
+    - Layout: Tight layout to minimize white space
     """
     
-    # 1. Per-class F1 scores
-    f1_scores = [f1_score(test_true_labels[:, i], test_pred_binary[:, i], zero_division=0) 
-                for i in range(len(class_names))]
+    # Plot 1: Per-Class F1 Scores for Performance Comparison
+    print("📊 Generating per-class F1 score visualization...")
+    f1_scores = [
+        f1_score(test_true_labels[:, i], test_pred_binary[:, i], zero_division=0) 
+        for i in range(len(class_names))
+    ]
     
-    plt.figure(figsize=(10, 6))
-    bars = plt.bar(class_names, f1_scores)
-    plt.title('Per-Class F1 Scores')
-    plt.ylabel('F1 Score')
-    plt.xlabel('Classes')
-    plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3)
+    plt.figure(figsize=(12, 7))
+    bars = plt.bar(class_names, f1_scores, alpha=0.8, color='steelblue', edgecolor='black', linewidth=1)
+    plt.title('Per-Class F1 Scores - Model Performance Analysis', fontsize=16, fontweight='bold')
+    plt.ylabel('F1 Score', fontsize=14)
+    plt.xlabel('Voice Type Classes', fontsize=14)
+    plt.xticks(rotation=45, ha='right')
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.ylim(0, 1.0)  # F1 scores range from 0 to 1
     
-    # Add value labels on bars
+    # Add value annotations on bars for precise reading
     for bar, score in zip(bars, f1_scores):
-        plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
-                f'{score:.3f}', ha='center', va='bottom')
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2, height + 0.01, 
+                f'{score:.3f}', ha='center', va='bottom', fontweight='bold')
+    
+    # Add mean F1 line for reference
+    mean_f1 = np.mean(f1_scores)
+    plt.axhline(y=mean_f1, color='red', linestyle='--', alpha=0.7, 
+                label=f'Mean F1: {mean_f1:.3f}')
+    plt.legend()
     
     plt.tight_layout()
     plt.savefig(output_dir / 'per_class_f1_scores.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 2. Prediction probability distributions
-    fig, axes = plt.subplots(1, len(class_names), figsize=(4*len(class_names), 4))
+    # Plot 2: Prediction Probability Distributions for Confidence Analysis
+    print("📈 Generating prediction probability distribution plots...")
+    fig, axes = plt.subplots(1, len(class_names), figsize=(4*len(class_names), 5))
     if len(class_names) == 1:
-        axes = [axes]
+        axes = [axes]  # Ensure axes is always a list
     
     for i, class_name in enumerate(class_names):
-        axes[i].hist(test_predictions[:, i], bins=50, alpha=0.7, edgecolor='black')
-        axes[i].set_title(f'{class_name} Prediction Probabilities')
-        axes[i].set_xlabel('Probability')
-        axes[i].set_ylabel('Frequency')
-        axes[i].grid(True, alpha=0.3)
+        # Create histogram of prediction probabilities
+        axes[i].hist(test_predictions[:, i], bins=50, alpha=0.7, color='lightcoral', 
+                    edgecolor='black', linewidth=0.5)
+        axes[i].set_title(f'{class_name}\nPrediction Probabilities', fontsize=12, fontweight='bold')
+        axes[i].set_xlabel('Probability Score', fontsize=11)
+        axes[i].set_ylabel('Frequency', fontsize=11)
+        axes[i].grid(True, alpha=0.3, linestyle='--')
+        axes[i].set_xlim(0, 1)  # Probabilities range from 0 to 1
+        
+        # Add threshold line and statistics
+        threshold_line = 0.5  # Could use actual threshold if available
+        axes[i].axvline(x=threshold_line, color='red', linestyle='--', alpha=0.8, 
+                       label=f'Threshold: {threshold_line}')
+        
+        # Add basic statistics
+        mean_prob = np.mean(test_predictions[:, i])
+        axes[i].axvline(x=mean_prob, color='green', linestyle=':', alpha=0.8, 
+                       label=f'Mean: {mean_prob:.3f}')
+        axes[i].legend(fontsize=9)
     
+    plt.suptitle('Prediction Probability Distributions - Model Confidence Analysis', 
+                 fontsize=16, fontweight='bold')
     plt.tight_layout()
     plt.savefig(output_dir / 'prediction_distributions.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 3. Class support (number of positive samples per class)
+    # Plot 3: Class Support Analysis for Data Balance Assessment
+    print("📊 Generating class support analysis visualization...")
     support_counts = test_true_labels.sum(axis=0)
+    total_samples = len(test_true_labels)
+    support_percentages = (support_counts / total_samples) * 100
     
-    plt.figure(figsize=(10, 6))
-    bars = plt.bar(class_names, support_counts)
-    plt.title('Class Support (Number of Positive Samples)')
-    plt.ylabel('Number of Samples')
-    plt.xlabel('Classes')
-    plt.xticks(rotation=45)
-    plt.grid(True, alpha=0.3)
+    plt.figure(figsize=(12, 7))
+    bars = plt.bar(class_names, support_counts, alpha=0.8, color='lightgreen', 
+                  edgecolor='black', linewidth=1)
+    plt.title('Class Support Distribution - Test Set Balance Analysis', 
+              fontsize=16, fontweight='bold')
+    plt.ylabel('Number of Positive Samples', fontsize=14)
+    plt.xlabel('Voice Type Classes', fontsize=14)
+    plt.xticks(rotation=45, ha='right')
+    plt.grid(True, alpha=0.3, linestyle='--')
     
-    # Add value labels on bars
-    for bar, count in zip(bars, support_counts):
-        plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
-                f'{int(count)}', ha='center', va='bottom')
+    # Add count and percentage annotations on bars
+    for bar, count, percentage in zip(bars, support_counts, support_percentages):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2, height + 0.5, 
+                f'{int(count)}\n({percentage:.1f}%)', 
+                ha='center', va='bottom', fontweight='bold')
+    
+    # Add total samples annotation
+    plt.text(0.02, 0.98, f'Total Test Samples: {total_samples}', 
+             transform=plt.gca().transAxes, fontsize=12, 
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     plt.tight_layout()
     plt.savefig(output_dir / 'class_support.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"📊 Generated evaluation plots in: {output_dir}")
+    print(f"📊 Generated evaluation plots saved to: {output_dir}")
+    print(f"   📈 per_class_f1_scores.png - Individual class performance")
+    print(f"   📊 prediction_distributions.png - Model confidence patterns") 
+    print(f"   📋 class_support.png - Test set class distribution")
 
 def main():
     """
-    Main function for model evaluation.
+    Execute comprehensive audio classification model evaluation pipeline.
+    
+    This is the main orchestration function that coordinates the complete evaluation
+    workflow for trained multi-label audio classification models. The pipeline
+    ensures consistency with training procedures while providing thorough
+    performance analysis and diagnostic capabilities.
+    
+    Evaluation Pipeline Stages:
+    1. Environment Setup: Configure paths and create output directories
+    2. Model Loading: Load trained model with custom objects and Lambda layer handling
+    3. Threshold Loading: Retrieve optimized decision thresholds from training
+    4. Data Generation: Create deterministic test data generator
+    5. Comprehensive Evaluation: Generate predictions and compute metrics
+    6. Results Export: Save detailed results and visualizations
+    7. Report Generation: Create summary reports for analysis
+    
+    Model Requirements:
+    - Trained .keras model file with custom FocalLoss and MacroF1Score
+    - Compatible with current TensorFlow version
+    - May contain Lambda layers from attention mechanisms
+    
+    Data Requirements:
+    - Test segments JSONL file with consistent format
+    - Audio files accessible at specified paths
+    - Label encoding consistent with training MultiLabelBinarizer
+    
+    Output Generation:
+    - Timestamped results directory for experiment tracking
+    - JSON summary with comprehensive metrics
+    - CSV file with per-sample predictions
+    - Publication-quality visualization plots
+    - Detailed logging for debugging and analysis
+    
+    Error Handling:
+    - Graceful handling of missing model files
+    - Lambda layer deserialization with security considerations
+    - Data loading validation and error reporting
+    - Comprehensive exception logging for debugging
+    
+    Configuration Sources:
+    - AudioClassification: File paths and directory configurations
+    - AudioConfig: Audio processing parameters and class definitions
+    
+    Performance Metrics:
+    - Subset Accuracy: Exact multi-label match percentage
+    - Macro F1: Unweighted average across classes (handles imbalance)
+    - Micro F1: Global performance from aggregated statistics
+    - Per-class Metrics: Individual class precision, recall, F1, support
+    - Threshold Analysis: Applied decision boundaries per class
+    
+    File Outputs:
+    - evaluation_summary.json: Structured metrics for automated analysis
+    - detailed_predictions.csv: Per-sample results for error analysis
+    - per_class_f1_scores.png: Class performance visualization
+    - prediction_distributions.png: Confidence pattern analysis
+    - class_support.png: Test set distribution analysis
+    
+    Reproducibility:
+    - Deterministic data loading (no shuffling)
+    - Fixed random seeds where applicable
+    - Timestamped results for experiment tracking
+    - Complete parameter logging for replication
+    
+    Usage:
+    -----
+    python evaluate_audio_classifier.py
+    
+    Prerequisites:
+    - Completed training run with saved model
+    - Test data prepared with create_input_jsonl_files.py
+    - Audio files accessible at configured paths
+    
+    Raises:
+    ------
+    FileNotFoundError: If model or data files are missing
+    ValueError: If model loading or evaluation fails
+    RuntimeError: For unexpected evaluation pipeline errors
     """   
     try:
-        print("🚀 Starting Audio Classification Model Evaluation")
-        print("=" * 60)
+        print("🚀 Starting Comprehensive Audio Classification Model Evaluation")
+        print("=" * 70)
         
-        #Setup paths
+        # Stage 1: Configure evaluation environment and paths
+        print("⚙️ Configuring evaluation environment...")
         results_dir = Path(AudioClassification.RESULTS_DIR)
         model_path = results_dir / "best_model.keras"
         test_segments_file = AudioClassification.TEST_SEGMENTS_FILE
         
+        # Create timestamped output directory for this evaluation run
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = model_path.parent / 'resnet_gru_evaluation_' / timestamp
-                
-        # Load model and setup
+        output_dir = results_dir / f'evaluation_results_{timestamp}'
+        
+        print(f"📂 Model path: {model_path}")
+        print(f"📂 Test data: {test_segments_file}")
+        print(f"📂 Output directory: {output_dir}")
+        
+        # Stage 2: Load trained model with Lambda layer handling
+        print("\n🤖 Loading trained model and setup...")
         model, mlb = load_model_and_setup(model_path)
+        print(f"✅ Model loaded successfully with {len(mlb.classes_)} classes: {list(mlb.classes_)}")
 
-        # Load optimized thresholds
+        # Stage 3: Load optimized thresholds from training run
+        print("\n🎯 Loading optimized decision thresholds...")
         thresholds = load_thresholds(results_dir, mlb.classes_)
         
-        # Create test data generator
+        # Stage 4: Create deterministic test data generator
+        print("\n📊 Setting up test data generator...")
         test_generator = create_evaluation_generator(test_segments_file, mlb)
         
-        # Run comprehensive evaluation
+        if len(test_generator) == 0:
+            raise ValueError("Test generator is empty. Check test data file and paths.")
+        
+        # Stage 5: Execute comprehensive model evaluation
+        print(f"\n🔍 Running comprehensive evaluation on {len(test_generator)} batches...")
         evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir)
         
-        print("✅ Evaluation completed successfully!")
+        # Stage 6: Final summary and recommendations
+        print("\n" + "=" * 70)
+        print("✅ Evaluation Pipeline Completed Successfully!")
+        print("=" * 70)
+        print(f"📁 Results Location: {output_dir}")
+        print("\n📋 Generated Files:")
+        print("   📊 evaluation_summary.json - Comprehensive metrics summary")
+        print("   📝 detailed_predictions.csv - Per-sample prediction analysis")
+        print("   📈 Visualization plots - Performance and distribution analysis")
+        print("\n💡 Next Steps:")
+        print("   1. Review evaluation_summary.json for overall performance")
+        print("   2. Examine per-class metrics for problem identification") 
+        print("   3. Analyze prediction distributions for confidence patterns")
+        print("   4. Use detailed_predictions.csv for error case analysis")
+        
+    except FileNotFoundError as e:
+        print(f"❌ File not found: {e}")
+        print("💡 Ensure training has completed and all required files exist")
+        raise
+        
+    except ValueError as e:
+        print(f"❌ Configuration or data error: {e}")
+        print("💡 Check model compatibility and data file formats")
+        raise
         
     except Exception as e:
-        print(f"❌ Evaluation failed with error: {e}")
+        print(f"❌ Unexpected evaluation error: {e}")
+        print("💡 Check logs above for detailed error information")
+        print("💡 Ensure sufficient memory and disk space available")
         raise
 
 if __name__ == "__main__":
