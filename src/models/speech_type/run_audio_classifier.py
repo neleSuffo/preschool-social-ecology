@@ -3,54 +3,13 @@ import numpy as np
 import tensorflow as tf
 import librosa
 import csv
+import json
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.layers import *
-from tensorflow.keras.models import Model
 from pathlib import Path
 from constants import AudioClassification
 from config import AudioConfig
-from audio_classifier import build_model_multi_label
-
-
-# --- Model Architecture (from your training script) ---
-def multi_head_attention(x, num_heads):
-    heads = []
-    for i in range(num_heads):
-        head = Conv1D(filters=128, kernel_size=1, activation='relu')(x)
-        attention = Conv1D(filters=1, kernel_size=1, activation='sigmoid')(head)
-        head = Multiply()([x, attention])
-        head = Lambda(
-            lambda xin: tf.reduce_sum(xin, axis=1),
-            output_shape=(256,)
-        )(head)
-        heads.append(head)
-    return Concatenate()(heads)
-
-# --- Utility Functions (from your script) ---
-def extract_mel_spectrogram_fixed_window(audio_path, start_time, duration, sr, n_mels, hop_length):
-    try:
-        y, sr_loaded = librosa.load(audio_path, sr=sr, offset=start_time, duration=duration)
-        if sr_loaded != sr:
-            y = librosa.resample(y, orig_sr=sr_loaded, target_sr=sr)
-        expected_samples = int(duration * sr)
-        if len(y) < expected_samples:
-            y = np.pad(y, (0, expected_samples - len(y)), 'constant')
-        elif len(y) > expected_samples:
-            y = y[:expected_samples]
-        if len(y) == 0:
-            return np.zeros((n_mels, int(np.ceil(duration * sr / hop_length))), dtype=np.float32)
-        mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=n_mels, hop_length=hop_length)
-        mel_spectrogram_db = librosa.power_to_db(mel_spectrogram, ref=np.max)
-        fixed_time_steps = int(np.ceil(duration * sr / hop_length))
-        if mel_spectrogram_db.shape[1] < fixed_time_steps:
-            pad_width = fixed_time_steps - mel_spectrogram_db.shape[1]
-            mel_spectrogram_db = np.pad(mel_spectrogram_db, ((0, 0), (0, pad_width)), 'constant')
-        elif mel_spectrogram_db.shape[1] > fixed_time_steps:
-            mel_spectrogram_db = mel_spectrogram_db[:, :fixed_time_steps]
-        return mel_spectrogram_db
-    except Exception as e:
-        print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
-        return np.zeros((n_mels, int(np.ceil(duration * sr / hop_length))), dtype=np.float32)
+from audio_classifier import build_model_multi_label, load_thresholds, extract_features
 
 def load_inference_model(model_path):
     try:
@@ -103,7 +62,7 @@ def classify_audio_windows(audio_path, model, mlb, batch_size=32):
         window_start = current_time
         window_end = min(current_time + AudioConfig.WINDOW_DURATION, audio_duration)
         if (window_end - window_start) > 0.01:
-            mel = extract_mel_spectrogram_fixed_window(
+            mel = extract_features(
                 audio_path, window_start, AudioConfig.WINDOW_DURATION, 
                 sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH
             )
@@ -128,11 +87,11 @@ def classify_audio_windows(audio_path, model, mlb, batch_size=32):
         })
     return results, mlb.classes_, audio_duration
 
-def aggregate_and_save_results(audio_file, predictions, class_names, output_writer, threshold=0.5):
+def aggregate_and_save_results(audio_file, predictions, class_names, output_writer, thresholds):
     """
     Aggregates overlapping window predictions and writes the final results to a CSV file.
     For each second of audio, averages the probabilities from all overlapping windows
-    and assigns binary labels based on the specified threshold.
+    and assigns binary labels based on the class-specific optimized thresholds.
     
     Parameters
     ----------
@@ -144,8 +103,8 @@ def aggregate_and_save_results(audio_file, predictions, class_names, output_writ
         List of class names corresponding to the model outputs.
     output_writer : csv.DictWriter
         CSV writer object to write the results.
-    threshold : float, optional
-        Probability threshold for class assignment, by default 0.5
+    thresholds : dict
+        Dictionary mapping class names to optimal thresholds
     """
     video_id = Path(audio_file).stem
     
@@ -161,10 +120,15 @@ def aggregate_and_save_results(audio_file, predictions, class_names, output_writ
             second_predictions[second]['probabilities'].append(p['probabilities'])
             second_predictions[second]['count'] += 1
 
-    # Aggregate and write results
+    # Aggregate and write results using class-specific thresholds
     for second in sorted(second_predictions.keys()):
         avg_probs = np.mean(second_predictions[second]['probabilities'], axis=0)
-        binary_labels = (avg_probs > threshold).astype(int)
+        
+        # Apply class-specific thresholds
+        binary_labels = []
+        for i, class_name in enumerate(class_names):
+            threshold = thresholds[str(class_name)]
+            binary_labels.append(1 if avg_probs[i] > threshold else 0)
         
         row = {'video_id': video_id, 'second': second}
         for i, class_name in enumerate(class_names):
@@ -172,9 +136,9 @@ def aggregate_and_save_results(audio_file, predictions, class_names, output_writ
         
         output_writer.writerow(row)
 
-def process_audio_folder(folder_path, model, mlb, output_dir):
+def process_audio_folder(folder_path, model, mlb, output_dir, thresholds):
     """
-    Process a folder of audio files and save classification results.
+    Process a folder of audio files and save classification results using optimized thresholds.
 
     Parameters
     ----------
@@ -186,6 +150,8 @@ def process_audio_folder(folder_path, model, mlb, output_dir):
         MultiLabelBinarizer fitted on the training data.
     output_dir : str
         Path to the directory where output files will be saved.
+    thresholds : dict
+        Dictionary mapping class names to optimal thresholds
     """
     folder_path = Path(folder_path)
     output_file = output_dir / 'classification_results.csv'
@@ -214,7 +180,7 @@ def process_audio_folder(folder_path, model, mlb, output_dir):
                 prediction_results, _, _ = classify_audio_windows(str(audio_file), model, mlb)
                 
                 if prediction_results:
-                    aggregate_and_save_results(str(audio_file), prediction_results, class_names, writer)
+                    aggregate_and_save_results(str(audio_file), prediction_results, class_names, writer, thresholds)
                 else:
                     print(f"No prediction results for {audio_file.name}")
             except Exception as e:
@@ -229,11 +195,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Load the trained model and MultiLabelBinarizer once
-    model, mlb = load_inference_model()
+    results_dir = Path(AudioClassification.RESULTS_DIR)
+    model_path = results_dir / "best_model.keras"
+    
+    model, mlb = load_inference_model(model_path)
     if model is None:
         exit()
+    
+    # Load optimized thresholds from training
+    thresholds = load_thresholds(results_dir, mlb.classes_)
     
     output_dir = AudioClassification.OUTPUT_DIR
 
     # Process all audio files in the specified folder and save results
-    process_audio_folder(args.audio_folder, model, mlb, output_dir)
+    process_audio_folder(args.audio_folder, model, mlb, output_dir, thresholds)
