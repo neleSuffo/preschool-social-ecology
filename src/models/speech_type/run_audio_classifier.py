@@ -3,7 +3,6 @@ import numpy as np
 import tensorflow as tf
 import librosa
 import csv
-import json
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.layers import *
 from pathlib import Path
@@ -19,7 +18,7 @@ def load_inference_model(model_path):
         num_classes = len(mlb.classes_)
         fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
         model = build_model_multi_label(
-            n_mels=AudioConfig.N_MELS,
+            n_mels=min(AudioConfig.N_MELS, 128),  # Use same capping as training
             fixed_time_steps=fixed_time_steps,
             num_classes=num_classes
         )
@@ -64,7 +63,7 @@ def classify_audio_windows(audio_path, model, mlb, batch_size=32):
         if (window_end - window_start) > 0.01:
             mel = extract_features(
                 audio_path, window_start, AudioConfig.WINDOW_DURATION, 
-                sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH
+                sr=AudioConfig.SR, n_mels=min(AudioConfig.N_MELS, 128), hop_length=AudioConfig.HOP_LENGTH
             )
             all_window_data.append({
                 'start_time': window_start,
