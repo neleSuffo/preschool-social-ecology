@@ -3,25 +3,6 @@ import numpy as np
 import json
 import os
 from sklearn.metrics import f1_score
-from config import AudioConfig
-
-def calculate_fixed_time_steps(window_duration=None, sr=None, hop_length=None):
-    """
-    Calculate consistent time steps for spectrograms.
-    
-    This ensures all spectrograms have the same time dimension for batching.
-    Used consistently across data generators and model architecture.
-    
-    Returns
-    -------
-    int: Fixed number of time steps for spectrogram padding/truncation
-    """
-    window_duration = window_duration or AudioConfig.WINDOW_DURATION
-    sr = sr or AudioConfig.SR  
-    hop_length = hop_length or AudioConfig.HOP_LENGTH
-    
-    return int(np.ceil(window_duration * sr / hop_length))
-
 class FocalLoss(tf.keras.losses.Loss):
     """
     Custom Focal Loss implementation for handling class imbalance in multi-label classification.
