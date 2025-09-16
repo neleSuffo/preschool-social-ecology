@@ -481,8 +481,8 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
         Test data generator with deterministic ordering
     mlb (MultiLabelBinarizer): 
         Fitted label encoder from training pipeline
-    thresholds (list): 
-        Per-class decision thresholds for binary classification
+    thresholds (dict): 
+        Dictionary mapping class names to decision thresholds for binary classification
     output_dir (str or Path): 
         Directory to save evaluation results and visualizations
         
@@ -536,7 +536,7 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
     
     # Stage 4: Apply class-specific thresholds to convert probabilities to predictions
     test_pred_binary = np.array([
-        (test_predictions[:, i] > thresholds[i]).astype(int) 
+        (test_predictions[:, i] > thresholds[mlb.classes_[i]]).astype(int) 
         for i in range(len(mlb.classes_))
     ]).T
     
@@ -606,7 +606,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     ----------
     output_dir (Path): Target directory for result files
     class_names (list): Names of classification classes
-    thresholds (list): Applied decision thresholds per class
+    thresholds (dict): Dictionary mapping class names to decision thresholds
     test_true_labels (ndarray): Ground truth binary labels (n_samples, n_classes)
     test_pred_binary (ndarray): Binary predictions (n_samples, n_classes)
     test_predictions (ndarray): Probability predictions (n_samples, n_classes)
@@ -646,14 +646,14 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                 'recall': float(recall_per_class[i]),
                 'f1_score': float(f1_per_class[i]),
                 'support': int(support_per_class[i]),
-                'threshold': float(thresholds[i]),
+                'threshold': float(thresholds[str(class_names[i])]),
                 'positive_rate': float(support_per_class[i] / len(test_true_labels))
             } for i in range(len(class_names))
         },
         'threshold_configuration': {
             'method': 'optimized_from_validation',
             'fallback': 0.5,
-            'per_class_thresholds': {str(class_names[i]): float(thresholds[i]) for i in range(len(class_names))}
+            'per_class_thresholds': {str(class_name): float(thresholds[str(class_name)]) for class_name in class_names}
         }
     }
     
