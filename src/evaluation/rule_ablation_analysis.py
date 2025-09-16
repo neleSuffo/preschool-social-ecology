@@ -53,17 +53,16 @@ def run_frame_level_analysis(rules: list, condition_name: str):
             print(f"❌ Error in frame-level analysis for {condition_name}:")
             print(result.stderr)
             return None
-        
-        def add_suffix(path: Path, suffix: str) -> Path:
-            """Return a new Path with suffix inserted before extension."""
-            return sys.path.with_name(f"{path.stem}_{suffix}{path.suffix}")
-
+    
         # The output file name includes the rules
         rules_str = "_".join(map(str, rules))        
-        frame_output_file = add_suffix(Inference.FRAME_LEVEL_INTERACTIONS_CSV, rules_str)
-        segment_output_file = add_suffix(Inference.INTERACTION_SEGMENTS_CSV, rules_str)
+        
+        output_dir = Inference.FRAME_LEVEL_INTERACTIONS_CSV.parent
+        frame_output_file = output_dir / f"{Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem}_{rules_str}.csv"
+        segment_output_file = output_dir / f"{Inference.INTERACTION_SEGMENTS_CSV.stem}_{rules_str}.csv"
 
         print(f"✅ Frame-level analysis completed for {condition_name}")
+        print(f"Saving frames output files to: {frame_output_file}")
         return frame_output_file, segment_output_file
 
     except Exception as e:
@@ -87,8 +86,6 @@ def run_video_level_analysis(frame_file, segment_file_path, condition_name):
     Path
         Path to the output segments file.
     """
-    print(f"🔄 Running video-level analysis for {condition_name}")
-
     video_level_script = "results/rq_01_video_level_analysis.py"
 
     cmd = [
@@ -125,9 +122,7 @@ def run_evaluation(segments_file, condition_name):
     -------
     dict
         Evaluation metrics.
-    """
-    print(f"🔄 Running evaluation for {condition_name}")
-    
+    """    
     try:
         # Load files
         segments_df = pd.read_csv(segments_file)
@@ -188,15 +183,10 @@ def run_ablation_analysis():
     
     for condition_name, rules in conditions.items():      
         # Step 1: Run frame-level analysis
-        result = run_frame_level_analysis(rules, condition_name)
-        if result is None:
-            print(f"❌ Skipping {condition_name} due to frame-level analysis failure")
-            continue
-        
-        frame_file, segment_file_path = result
+        frame_file_path, segment_file_path = run_frame_level_analysis(rules, condition_name)
         
         # Step 2: Run video-level analysis
-        segments_file = run_video_level_analysis(frame_file, segment_file_path, condition_name)
+        segments_file = run_video_level_analysis(frame_file_path, segment_file_path, condition_name)
         if segments_file is None:
             continue
         
@@ -218,161 +208,10 @@ def run_ablation_analysis():
         print("❌ No results obtained from any condition")
         return None
 
-def load_existing_results(summary_file_path: Path):
-    """
-    Load existing analysis results from saved files.
-    
-    Parameters
-    ----------
-    output_file_path : Path
-        Path to the saved results file
-
-    Returns
-    -------
-    pd.DataFrame or None
-        Loaded results if successful, None otherwise
-    """
-    print("🔄 Loading existing analysis results...")
-    
-    # Check if summary file exists
-    if not summary_file_path.exists():
-        print("❌ No existing results found. Run full analysis first.")
-        return None
-    
-    try:
-        # Load the summary data
-        summary_df = pd.read_csv(summary_file_path)
-        print(f"✅ Successfully loaded results for {len(summary_df)} conditions")
-        return summary_df
-        
-    except Exception as e:
-        print(f"❌ Error loading existing results: {e}")
-        return None
-
-def create_comprehensive_visualization(summary_df):
-    """
-    Create a focused visualization showing the F1 performance drop when each rule is excluded.
-    
-    Parameters
-    ----------
-    summary_df : pd.DataFrame
-        Summary dataframe with results from all conditions
-    """
-    print("\n🎨 Creating rule impact visualization...")
-    
-    # Extract baseline performance (all rules)
-    baseline_row = summary_df[summary_df['Condition'] == 'All_Rules']
-    if len(baseline_row) == 0:
-        print("❌ Error: No baseline (All_Rules) condition found")
-        return
-        
-    baseline_f1 = baseline_row['Macro_F1'].iloc[0]
-    
-    # Define the four rules with custom colors
-    rule_data = [
-        {
-            'rule_name': 'Turn-Taking\nAudio Interaction', 
-            'condition': 'No_Rule1_TurnTaking',
-            'description': 'Conversational exchanges between child and others',
-            'color': '#69777B'  # Gray
-        },
-        {
-            'rule_name': 'Close Proximity\n(≥ threshold)', 
-            'condition': 'No_Rule2_Proximity',
-            'description': 'Physical closeness above proximity threshold',
-            'color': '#8E7C3B'  # Olive Green
-        },
-        {
-            'rule_name': 'Other Person\nSpeaking', 
-            'condition': 'No_Rule3_OtherSpeaking',
-            'description': 'Any non-child speech activity detected',
-            'color': '#8D8E49'  # Olive Drab
-        },
-        {
-            'rule_name': 'Adult Face +\nRecent Speech', 
-            'condition': 'No_Rule4_AdultFaceRecentSpeech',
-            'description': 'Adult face visible with recent speech activity',
-            'color': '#81867C'  # Gray
-        }
-    ]
-    
-    # Calculate F1 drops for each rule
-    rule_names = []
-    f1_drops = []
-    colors = []
-    
-    for rule_info in rule_data:
-        rule_names.append(rule_info['rule_name'])
-        colors.append(rule_info['color'])
-        
-        # Get F1 score when this rule is excluded
-        excluded_row = summary_df[summary_df['Condition'] == rule_info['condition']]
-        if len(excluded_row) > 0:
-            excluded_f1 = excluded_row['Macro_F1'].iloc[0]
-        else:
-            excluded_f1 = 0
-        
-        # Calculate the drop (positive values mean performance decreased)
-        f1_drop = baseline_f1 - excluded_f1
-        f1_drops.append(f1_drop)
-    
-    # Create the focused plot
-    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-    
-    # Create bars
-    bars = ax.bar(range(len(rule_names)), f1_drops, 
-                color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
-    
-    # Add value labels on top of bars
-    for i, (bar, drop) in enumerate(zip(bars, f1_drops)):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(f1_drops)*0.02,
-                f'{drop:.4f}', ha='center', va='bottom', fontweight='bold', fontsize=11)
-        
-        # Add percentage drop as well
-        percentage_drop = (drop / baseline_f1) * 100 if baseline_f1 > 0 else 0
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(f1_drops)*0.08,
-                f'({percentage_drop:.1f}%)', ha='center', va='bottom', fontsize=9, style='italic')
-    
-    # Customize the plot
-    ax.set_title('Performance Drop in Overall F1-Score if Rule was Excluded', 
-                fontsize=16, fontweight='bold', pad=20)
-    ax.set_ylabel('F1-Score Drop', fontsize=12, fontweight='bold')
-    ax.set_xlabel('Excluded Rule', fontsize=12, fontweight='bold')
-    
-    # Set x-axis
-    ax.set_xticks(range(len(rule_names)))
-    ax.set_xticklabels(rule_names, fontsize=10, ha='center')
-    
-    # Add horizontal line at y=0 for reference
-    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-    
-    # Set y-axis limits with some padding
-    max_drop = max(f1_drops) if f1_drops else 0
-    ax.set_ylim(-max_drop*0.1, max_drop*1.2)
-    
-    # Add grid for better readability
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Add baseline F1 score as text
-    ax.text(0.02, 0.98, f'Baseline F1-Score (All Rules): {baseline_f1:.4f}', 
-            transform=ax.transAxes, fontsize=11, fontweight='bold', color='white',
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="#601D33", alpha=0.8),
-            verticalalignment='top')
-    
-    plt.tight_layout()
-    
-    # Save plot
-    plt.savefig(Inference.RULE_ABLATION_PLOT, dpi=300, bbox_inches='tight')
-    plt.close()
-
-    print(f"✅ Rule impact visualization saved to {Inference.RULE_ABLATION_PLOT}")
-
 def main():
     """Main function to run the complete ablation analysis or regenerate plots."""
     
     parser = argparse.ArgumentParser(description='Rule Ablation Analysis for Social Interaction Classification')
-    parser.add_argument('--plot_only', action='store_true',
-                    help='Only regenerate plots from existing results (skip full analysis)')
     parser.add_argument('--output_dir', type=str, 
                     help='Custom output directory')
     
@@ -385,30 +224,17 @@ def main():
         output_dir = Inference.BASE_OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    if args.plot_only:
-        print("🎨 Plot-only mode: Regenerating visualizations from existing results...")
-        
-        # Load existing results
-        summary_df = load_existing_results(Inference.RULE_ABLATION_SUMMARY_CSV)
-        
-        if summary_df is None:
-            print("❌ Cannot generate plots without existing results. Run full analysis first.")
-            sys.exit(1)
-        
-        # Generate new plots
-        create_comprehensive_visualization(summary_df)        
+    print("🚀 Full analysis mode: Running complete rule ablation analysis...")
+    
+    # Run ablation analysis
+    summary_df = run_ablation_analysis()
+    
+    if summary_df is not None:
+        # Create visualizations
+        print("Rule ablation analysis completed successfully.")
     else:
-        print("🚀 Full analysis mode: Running complete rule ablation analysis...")
-        
-        # Run ablation analysis
-        summary_df = run_ablation_analysis()
-        
-        if summary_df is not None:
-            # Create visualizations
-            create_comprehensive_visualization(summary_df)
-        else:
-            print("❌ Analysis failed - no results obtained")
-            sys.exit(1)
+        print("❌ Analysis failed - no results obtained")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
