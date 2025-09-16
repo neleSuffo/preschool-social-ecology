@@ -49,11 +49,10 @@ from pathlib import Path
 from datetime import datetime
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
-from tensorflow.keras.models import load_model
 from tqdm import tqdm
 from constants import AudioClassification
 from config import AudioConfig
-from audio_classifier import MacroF1Score, FocalLoss
+from audio_classifier import build_model_multi_label
 
 def create_empty_feature_matrix(n_mels, fixed_time_steps):
     """
@@ -339,34 +338,21 @@ class EvaluationDataGenerator(tf.keras.utils.Sequence):
 # --- Evaluation Functions ---
 def load_model_and_setup(model_path):
     """
-    Load trained model with Lambda layer handling and setup multi-label binarizer.
+    Load trained model by building the architecture and loading weights.
     
-    This function handles modern Keras security restrictions for Lambda layers by
-    enabling unsafe deserialization when necessary. The Lambda layers in our models
-    are safe since they come from our own training pipeline and contain only
-    mathematical operations for attention mechanisms.
-    
-    Security Note:
-    - Lambda layers are disabled by default in Keras for security
-    - Our models contain Lambda layers for multi-head attention
-    - These are safe since they originate from our controlled training process
-    - We enable unsafe deserialization only for our own trusted model files
+    This function rebuilds the model's architecture with correct layer
+    configurations and then loads the weights from the saved file.
     
     Parameters:
     ----------
     model_path (str or Path): 
-        Path to saved model (.keras file from our training pipeline)
-    
+        Path to the saved model weights file (.keras)
+        
     Returns:
     -------
     tuple: (model, mlb) where:
-        - model: Loaded and compiled Keras model
-        - mlb: Fitted MultiLabelBinarizer for label encoding
-        
-    Raises:
-    ------
-    FileNotFoundError: If model file doesn't exist
-    ValueError: If model loading fails due to incompatible format
+        - model: Loaded Keras model ready for inference
+        - mlb: Fitted MultiLabelBinarizer for decoding predictions
     """    
     model_path = Path(model_path)
     if not model_path.exists():
@@ -375,42 +361,25 @@ def load_model_and_setup(model_path):
     # Setup multi-label binarizer consistent with training
     mlb = MultiLabelBinarizer(classes=AudioConfig.VALID_RTTM_CLASSES)
     mlb.fit([[]])  # Initialize with empty list to set up classes
-    
-    # Define custom objects for model reconstruction
-    custom_objects = {
-        'MacroF1Score': MacroF1Score,
-        'FocalLoss': FocalLoss
-    }
-        
+    num_classes = len(mlb.classes_)
+
+    # Use centralized calculation for consistent time steps across all components
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+
     try:
-        # First attempt: Standard loading (safe mode)
-        model = load_model(model_path, custom_objects=custom_objects)
-        print("✅ Model loaded successfully in safe mode")
+        # Build the model architecture first, with the corrected Lambda layer
+        model = build_model_multi_label(
+            n_mels=AudioConfig.N_MELS,
+            fixed_time_steps=fixed_time_steps,
+            num_classes=num_classes
+        )
         
-    except ValueError as e:
-        if "Lambda" in str(e) and "unsafe deserialization" in str(e):            
-            # Enable unsafe deserialization for Lambda layers
-            import keras
-            keras.config.enable_unsafe_deserialization()
-            
-            try:
-                # Retry loading with unsafe deserialization enabled
-                model = load_model(model_path, custom_objects=custom_objects)
-                print("✅ Model loaded successfully with Lambda layer support")
-                
-            except Exception as retry_e:
-                raise ValueError(f"Failed to load model even with unsafe deserialization: {retry_e}")
-                
-            finally:
-                # Restore safe deserialization after loading
-                keras.config.disable_unsafe_deserialization()
-                
-        else:
-            # Re-raise non-Lambda related errors
-            raise e
-            
+        # Load only the weights from the saved .keras file
+        model.load_weights(model_path)
+        print("✅ Model loaded successfully by rebuilding architecture and loading weights.")
+    
     except Exception as e:
-        raise ValueError(f"Unexpected error loading model: {e}")
+        raise ValueError(f"Failed to load model: {e}")
     
     return model, mlb
 
