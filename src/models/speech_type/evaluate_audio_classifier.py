@@ -45,7 +45,6 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import json
-import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
 from sklearn.preprocessing import MultiLabelBinarizer
@@ -382,20 +381,14 @@ def load_model_and_setup(model_path):
         'MacroF1Score': MacroF1Score,
         'FocalLoss': FocalLoss
     }
-    
-    print(f"Loading model from: {model_path}")
-    
+        
     try:
         # First attempt: Standard loading (safe mode)
         model = load_model(model_path, custom_objects=custom_objects)
         print("✅ Model loaded successfully in safe mode")
         
     except ValueError as e:
-        if "Lambda" in str(e) and "unsafe deserialization" in str(e):
-            # Handle Lambda layer deserialization for our trusted models
-            print("⚠️ Model contains Lambda layers (attention mechanism)")
-            print("🔓 Enabling unsafe deserialization for trusted model file")
-            
+        if "Lambda" in str(e) and "unsafe deserialization" in str(e):            
             # Enable unsafe deserialization for Lambda layers
             import keras
             keras.config.enable_unsafe_deserialization()
@@ -487,7 +480,6 @@ def load_thresholds(run_dir, mlb_classes):
         thresholds = [0.5] * len(mlb_classes)
         print(f"⚠️ Optimized thresholds not found at: {thresholds_file}")
         print("🔄 Using default thresholds (0.5 for all classes)")
-        print("💡 Tip: Ensure training completed and ThresholdOptimizer callback was active")
     
     return thresholds
 
@@ -539,9 +531,6 @@ def create_evaluation_generator(test_segments_file, mlb):
         AudioConfig.WINDOW_DURATION, fixed_time_steps,
         batch_size=32
     )
-    
-    print(f"Created test generator with {len(test_generator)} batches")
-    print(f"Using fixed time steps: {fixed_time_steps} (consistent with training)")
     return test_generator
 
 def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir):
@@ -616,7 +605,6 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
     test_predictions = model.predict(test_generator, verbose=1)
     
     # Stage 2: Collect true labels with progress tracking
-    print("🏷️ Collecting true labels from test generator...")
     test_true_labels = []
     for i in tqdm(range(len(test_generator)), desc="Processing batches"):
         _, labels = test_generator[i]
@@ -641,16 +629,13 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
             raise ValueError("No samples available for evaluation after shape adjustment")
     
     # Stage 4: Apply class-specific thresholds to convert probabilities to predictions
-    print("🎯 Applying optimized thresholds for binary classification...")
     test_pred_binary = np.array([
         (test_predictions[:, i] > thresholds[i]).astype(int) 
         for i in range(len(mlb.classes_))
     ]).T
     
     # Stage 5: Calculate comprehensive evaluation metrics
-    if test_true_labels.sum() > 0:
-        print("📈 Computing comprehensive evaluation metrics...")
-        
+    if test_true_labels.sum() > 0:        
         # Per-class detailed metrics
         precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
             test_true_labels, test_pred_binary, average=None, zero_division=0
@@ -669,11 +654,6 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
         # Subset accuracy (exact multi-label match)
         subset_accuracy = accuracy_score(test_true_labels, test_pred_binary)
         
-        print(f"✅ Evaluation metrics computed successfully:")
-        print(f"   📊 Macro F1: {macro_f1:.4f}")
-        print(f"   📊 Micro F1: {micro_f1:.4f}") 
-        print(f"   📊 Subset Accuracy: {subset_accuracy:.4f}")
-        
         # Stage 6: Save comprehensive results to files
         save_evaluation_results(
             output_dir, mlb.classes_, thresholds,
@@ -682,21 +662,12 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
             macro_precision, macro_recall, macro_f1,
             micro_precision, micro_recall, micro_f1, subset_accuracy
         )
-        
-        # Stage 7: Generate visualization plots for performance analysis
-        generate_evaluation_plots(
-            output_dir, mlb.classes_,
-            test_true_labels, test_pred_binary, test_predictions
-        )
-        
     else:
         print("⚠️ Warning: No positive instances found in test set")
         print("❌ Cannot compute meaningful evaluation metrics")
-        print("💡 Check data preparation and label distribution")
     
     print(f"\n✅ Comprehensive evaluation completed!")
     print(f"📁 Results saved to: {output_dir}")
-    print(f"🔍 Check evaluation_summary.json for detailed metrics")
 
 def save_evaluation_results(output_dir, class_names, thresholds,
                         test_true_labels, test_pred_binary, test_predictions,
@@ -822,171 +793,6 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     # Save detailed predictions for manual inspection and error analysis
     predictions_path = output_dir / 'detailed_predictions.csv'
     detailed_results.to_csv(predictions_path, index=False, float_format='%.4f')
-    
-    # Log successful save operations with file sizes
-    summary_size = summary_path.stat().st_size / 1024  # KB
-    predictions_size = predictions_path.stat().st_size / 1024  # KB
-    
-    print(f"💾 Saved evaluation summary to: {summary_path} ({summary_size:.1f} KB)")
-    print(f"💾 Saved detailed predictions to: {predictions_path} ({predictions_size:.1f} KB)")
-    print(f"📊 Summary includes {len(class_names)} classes and {len(test_true_labels)} test samples")
-
-def generate_evaluation_plots(output_dir, class_names, test_true_labels, test_pred_binary, test_predictions):
-    """
-    Generate comprehensive evaluation visualizations for performance analysis.
-
-    This function creates publication-ready plots that provide visual insights into
-    model performance across different dimensions. The plots are designed to help
-    identify performance patterns, class-specific issues, and data distribution
-    characteristics that may not be apparent from numerical metrics alone.
-
-    Plot Types Generated:
-    1. Per-Class F1 Scores: Bar chart showing individual class performance
-    2. Prediction Probability Distributions: Histograms of raw prediction scores
-    3. Class Support Analysis: Bar chart showing positive sample counts per class
-
-    Visual Design Features:
-    - High DPI (300) for publication quality
-    - Consistent color scheme and styling
-    - Value annotations on bars for precise reading
-    - Grid lines for easier value estimation
-    - Rotated labels for readability
-    - Proper axis labeling and titles
-
-    Analysis Insights:
-    - F1 scores reveal which classes are hardest to predict
-    - Probability distributions show prediction confidence patterns
-    - Support counts identify potential class imbalance issues
-    - Together, these help diagnose performance bottlenecks
-
-    Parameters:
-    ----------
-    output_dir (Path): 
-        Directory to save plot files (.png format)
-    class_names (list): 
-        Names of classification classes for labeling
-    test_true_labels (ndarray): 
-        Ground truth binary labels (n_samples, n_classes)
-    test_pred_binary (ndarray): 
-        Binary predictions after thresholding (n_samples, n_classes)
-    test_predictions (ndarray): 
-        Raw probability predictions (n_samples, n_classes)
-
-    Generated Files:
-    ---------------
-    - per_class_f1_scores.png: Bar chart of F1 performance per class
-    - prediction_distributions.png: Probability distribution subplots
-    - class_support.png: Bar chart of positive samples per class
-
-    Plot Specifications:
-    -------------------
-    - Image format: PNG with 300 DPI
-    - Color scheme: Matplotlib default with consistent styling
-    - Font sizes: Optimized for readability at publication size
-    - Layout: Tight layout to minimize white space
-    """
-    
-    # Plot 1: Per-Class F1 Scores for Performance Comparison
-    print("📊 Generating per-class F1 score visualization...")
-    f1_scores = [
-        f1_score(test_true_labels[:, i], test_pred_binary[:, i], zero_division=0) 
-        for i in range(len(class_names))
-    ]
-    
-    plt.figure(figsize=(12, 7))
-    bars = plt.bar(class_names, f1_scores, alpha=0.8, color='steelblue', edgecolor='black', linewidth=1)
-    plt.title('Per-Class F1 Scores - Model Performance Analysis', fontsize=16, fontweight='bold')
-    plt.ylabel('F1 Score', fontsize=14)
-    plt.xlabel('Voice Type Classes', fontsize=14)
-    plt.xticks(rotation=45, ha='right')
-    plt.grid(True, alpha=0.3, linestyle='--')
-    plt.ylim(0, 1.0)  # F1 scores range from 0 to 1
-    
-    # Add value annotations on bars for precise reading
-    for bar, score in zip(bars, f1_scores):
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2, height + 0.01, 
-                f'{score:.3f}', ha='center', va='bottom', fontweight='bold')
-    
-    # Add mean F1 line for reference
-    mean_f1 = np.mean(f1_scores)
-    plt.axhline(y=mean_f1, color='red', linestyle='--', alpha=0.7, 
-                label=f'Mean F1: {mean_f1:.3f}')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / 'per_class_f1_scores.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # Plot 2: Prediction Probability Distributions for Confidence Analysis
-    print("📈 Generating prediction probability distribution plots...")
-    fig, axes = plt.subplots(1, len(class_names), figsize=(4*len(class_names), 5))
-    if len(class_names) == 1:
-        axes = [axes]  # Ensure axes is always a list
-    
-    for i, class_name in enumerate(class_names):
-        # Create histogram of prediction probabilities
-        axes[i].hist(test_predictions[:, i], bins=50, alpha=0.7, color='lightcoral', 
-                    edgecolor='black', linewidth=0.5)
-        axes[i].set_title(f'{class_name}\nPrediction Probabilities', fontsize=12, fontweight='bold')
-        axes[i].set_xlabel('Probability Score', fontsize=11)
-        axes[i].set_ylabel('Frequency', fontsize=11)
-        axes[i].grid(True, alpha=0.3, linestyle='--')
-        axes[i].set_xlim(0, 1)  # Probabilities range from 0 to 1
-        
-        # Add threshold line and statistics
-        threshold_line = 0.5  # Could use actual threshold if available
-        axes[i].axvline(x=threshold_line, color='red', linestyle='--', alpha=0.8, 
-                       label=f'Threshold: {threshold_line}')
-        
-        # Add basic statistics
-        mean_prob = np.mean(test_predictions[:, i])
-        axes[i].axvline(x=mean_prob, color='green', linestyle=':', alpha=0.8, 
-                       label=f'Mean: {mean_prob:.3f}')
-        axes[i].legend(fontsize=9)
-    
-    plt.suptitle('Prediction Probability Distributions - Model Confidence Analysis', 
-                 fontsize=16, fontweight='bold')
-    plt.tight_layout()
-    plt.savefig(output_dir / 'prediction_distributions.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # Plot 3: Class Support Analysis for Data Balance Assessment
-    print("📊 Generating class support analysis visualization...")
-    support_counts = test_true_labels.sum(axis=0)
-    total_samples = len(test_true_labels)
-    support_percentages = (support_counts / total_samples) * 100
-    
-    plt.figure(figsize=(12, 7))
-    bars = plt.bar(class_names, support_counts, alpha=0.8, color='lightgreen', 
-                  edgecolor='black', linewidth=1)
-    plt.title('Class Support Distribution - Test Set Balance Analysis', 
-              fontsize=16, fontweight='bold')
-    plt.ylabel('Number of Positive Samples', fontsize=14)
-    plt.xlabel('Voice Type Classes', fontsize=14)
-    plt.xticks(rotation=45, ha='right')
-    plt.grid(True, alpha=0.3, linestyle='--')
-    
-    # Add count and percentage annotations on bars
-    for bar, count, percentage in zip(bars, support_counts, support_percentages):
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2, height + 0.5, 
-                f'{int(count)}\n({percentage:.1f}%)', 
-                ha='center', va='bottom', fontweight='bold')
-    
-    # Add total samples annotation
-    plt.text(0.02, 0.98, f'Total Test Samples: {total_samples}', 
-             transform=plt.gca().transAxes, fontsize=12, 
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / 'class_support.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"📊 Generated evaluation plots saved to: {output_dir}")
-    print(f"   📈 per_class_f1_scores.png - Individual class performance")
-    print(f"   📊 prediction_distributions.png - Model confidence patterns") 
-    print(f"   📋 class_support.png - Test set class distribution")
 
 def main():
     """
@@ -1082,44 +888,20 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = results_dir / f'evaluation_results_{timestamp}'
         
-        print(f"📂 Model path: {model_path}")
-        print(f"📂 Test data: {test_segments_file}")
-        print(f"📂 Output directory: {output_dir}")
-        
         # Stage 2: Load trained model with Lambda layer handling
-        print("\n🤖 Loading trained model and setup...")
         model, mlb = load_model_and_setup(model_path)
-        print(f"✅ Model loaded successfully with {len(mlb.classes_)} classes: {list(mlb.classes_)}")
 
         # Stage 3: Load optimized thresholds from training run
-        print("\n🎯 Loading optimized decision thresholds...")
         thresholds = load_thresholds(results_dir, mlb.classes_)
         
         # Stage 4: Create deterministic test data generator
-        print("\n📊 Setting up test data generator...")
         test_generator = create_evaluation_generator(test_segments_file, mlb)
         
         if len(test_generator) == 0:
             raise ValueError("Test generator is empty. Check test data file and paths.")
-        
+
         # Stage 5: Execute comprehensive model evaluation
-        print(f"\n🔍 Running comprehensive evaluation on {len(test_generator)} batches...")
         evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir)
-        
-        # Stage 6: Final summary and recommendations
-        print("\n" + "=" * 70)
-        print("✅ Evaluation Pipeline Completed Successfully!")
-        print("=" * 70)
-        print(f"📁 Results Location: {output_dir}")
-        print("\n📋 Generated Files:")
-        print("   📊 evaluation_summary.json - Comprehensive metrics summary")
-        print("   📝 detailed_predictions.csv - Per-sample prediction analysis")
-        print("   📈 Visualization plots - Performance and distribution analysis")
-        print("\n💡 Next Steps:")
-        print("   1. Review evaluation_summary.json for overall performance")
-        print("   2. Examine per-class metrics for problem identification") 
-        print("   3. Analyze prediction distributions for confidence patterns")
-        print("   4. Use detailed_predictions.csv for error case analysis")
         
     except FileNotFoundError as e:
         print(f"❌ File not found: {e}")
@@ -1133,7 +915,6 @@ def main():
         
     except Exception as e:
         print(f"❌ Unexpected evaluation error: {e}")
-        print("💡 Check logs above for detailed error information")
         print("💡 Ensure sufficient memory and disk space available")
         raise
 
