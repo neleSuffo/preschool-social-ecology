@@ -696,7 +696,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         'evaluation_metadata': {
             'test_set_size': len(test_true_labels),
             'num_classes': len(class_names),
-            'class_names': class_names,
+            'class_names': list(class_names),
             'evaluation_timestamp': datetime.now().isoformat()
         },
         'overall_metrics': {
@@ -709,7 +709,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
             'micro_f1': float(micro_f1)
         },
         'per_class_metrics': {
-            class_names[i]: {
+            str(class_names[i]): {
                 'precision': float(precision_per_class[i]),
                 'recall': float(recall_per_class[i]),
                 'f1_score': float(f1_per_class[i]),
@@ -721,7 +721,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         'threshold_configuration': {
             'method': 'optimized_from_validation',
             'fallback': 0.5,
-            'per_class_thresholds': {class_names[i]: float(thresholds[i]) for i in range(len(class_names))}
+            'per_class_thresholds': {str(class_names[i]): float(thresholds[i]) for i in range(len(class_names))}
         }
     }
     
@@ -733,22 +733,25 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     # Create detailed per-sample results for error analysis
     # Organize columns for easy analysis: probabilities, predictions, then true labels
     
+    # Convert class_names to list to ensure proper column naming
+    class_names_list = list(class_names)
+    
     # Probability predictions (raw model outputs)
     predictions_df = pd.DataFrame(
         test_predictions, 
-        columns=[f'{name}_prob' for name in class_names]
+        columns=[f'{name}_prob' for name in class_names_list]
     )
     
     # Binary predictions (after threshold application)
     predictions_binary_df = pd.DataFrame(
         test_pred_binary, 
-        columns=[f'{name}_pred' for name in class_names]
+        columns=[f'{name}_pred' for name in class_names_list]
     )
     
     # True labels (ground truth)
     true_labels_df = pd.DataFrame(
         test_true_labels, 
-        columns=[f'{name}_true' for name in class_names]
+        columns=[f'{name}_true' for name in class_names_list]
     )
     
     # Combine all information for comprehensive per-sample analysis
@@ -889,7 +892,6 @@ def main():
         
     except Exception as e:
         print(f"❌ Unexpected evaluation error: {e}")
-        print("💡 Ensure sufficient memory and disk space available")
         raise
 
 if __name__ == "__main__":
