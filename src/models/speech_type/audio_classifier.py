@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 import json
 import os
-from tensorflow.keras.metrics import Precision, Recall
+from tensorflow.keras.metrics import Precision, Recall, Metric
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import *
@@ -297,6 +297,60 @@ class MacroF1Score(tf.keras.metrics.Metric):
         threshold = config.pop('threshold', 0.5)
         return cls(num_classes=num_classes, threshold=threshold, **config)
     
+class MacroPrecision(Metric):
+    def __init__(self, name='macro_precision', threshold=0.5, **kwargs):
+        super(MacroPrecision, self).__init__(name=name, **kwargs)
+        self.threshold = threshold
+        self.per_class_tp = self.add_weight(name='per_class_tp', shape=(1,), initializer='zeros')
+        self.per_class_fp = self.add_weight(name='per_class_fp', shape=(1,), initializer='zeros')
+    def build(self, input_shape):
+        self.num_classes = input_shape[-1]
+        self.per_class_tp.assign(tf.zeros(self.num_classes))
+        self.per_class_fp.assign(tf.zeros(self.num_classes))
+        super().build(input_shape)
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred = tf.cast(y_pred > self.threshold, tf.float32)
+        y_true = tf.cast(y_true, tf.float32)
+        tp = tf.reduce_sum(y_true * y_pred, axis=0)
+        fp = tf.reduce_sum((1 - y_true) * y_pred, axis=0)
+        self.per_class_tp.assign_add(tp)
+        self.per_class_fp.assign_add(fp)
+    def result(self):
+        precision_per_class = tf.where(tf.math.equal(self.per_class_tp + self.per_class_fp, 0), 0.0, self.per_class_tp / (self.per_class_tp + self.per_class_fp))
+        return tf.reduce_mean(precision_per_class)
+    def reset_state(self):
+        if hasattr(self, 'num_classes'):
+            self.per_class_tp.assign(tf.zeros(self.num_classes))
+            self.per_class_fp.assign(tf.zeros(self.num_classes))
+        else: self.per_class_tp.assign(tf.zeros(0)); self.per_class_fn.assign(tf.zeros(0))
+
+class MacroRecall(Metric):
+    def __init__(self, name='macro_recall', threshold=0.5, **kwargs):
+        super(MacroRecall, self).__init__(name=name, **kwargs)
+        self.threshold = threshold
+        self.per_class_tp = self.add_weight(name='per_class_tp', shape=(1,), initializer='zeros')
+        self.per_class_fn = self.add_weight(name='per_class_fn', shape=(1,), initializer='zeros')
+    def build(self, input_shape):
+        self.num_classes = input_shape[-1]
+        self.per_class_tp.assign(tf.zeros(self.num_classes))
+        self.per_class_fn.assign(tf.zeros(self.num_classes))
+        super().build(input_shape)
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred = tf.cast(y_pred > self.threshold, tf.float32)
+        y_true = tf.cast(y_true, tf.float32)
+        tp = tf.reduce_sum(y_true * y_pred, axis=0)
+        fn = tf.reduce_sum(y_true * (1 - y_pred), axis=0)
+        self.per_class_tp.assign_add(tp)
+        self.per_class_fn.assign_add(fn)
+    def result(self):
+        recall_per_class = tf.where(tf.math.equal(self.per_class_tp + self.per_class_fn, 0), 0.0, self.per_class_tp / (self.per_class_tp + self.per_class_fn))
+        return tf.reduce_mean(recall_per_class)
+    def reset_state(self):
+        if hasattr(self, 'num_classes'):
+            self.per_class_tp.assign(tf.zeros(self.num_classes))
+            self.per_class_fn.assign(tf.zeros(self.num_classes))
+        else: self.per_class_tp.assign(tf.zeros(0)); self.per_class_fn.assign(tf.zeros(0))
+        
 # --- Threshold Optimizer ---
 class ThresholdOptimizer(tf.keras.callbacks.Callback):
     """
