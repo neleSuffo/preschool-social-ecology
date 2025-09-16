@@ -72,24 +72,6 @@ if not gpu_available:
     input("   Press Enter to continue with current configuration...")
     print()
 
-# --- Utility Functions ---
-def calculate_fixed_time_steps(window_duration=None, sr=None, hop_length=None):
-    """
-    Calculate consistent time steps for spectrograms.
-    
-    This ensures all spectrograms have the same time dimension for batching.
-    Used consistently across data generators and model architecture.
-    
-    Returns
-    -------
-    int: Fixed number of time steps for spectrogram padding/truncation
-    """
-    window_duration = window_duration or AudioConfig.WINDOW_DURATION
-    sr = sr or AudioConfig.SR  
-    hop_length = hop_length or AudioConfig.HOP_LENGTH
-    
-    return int(np.ceil(window_duration * sr / hop_length))
-
 # --- Feature Extraction ---
 def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=None):
     """
@@ -706,7 +688,7 @@ def create_data_generators(segment_files, mlb):
         (train_generator, val_generator, test_generator)
     """
     # Use centralized time steps calculation to ensure consistency
-    fixed_time_steps = calculate_fixed_time_steps()
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
     
     train_generator = AudioSegmentDataGenerator(
         segment_files['train'], mlb, 
@@ -785,7 +767,7 @@ def create_model_and_setup(unique_labels):
     mlb, num_classes = setup_multilabel_encoder(unique_labels)
     
     # Use centralized calculation for consistent time steps across all components
-    fixed_time_steps = calculate_fixed_time_steps()
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
 
     # Build model architecture
     model = build_model_multi_label(
