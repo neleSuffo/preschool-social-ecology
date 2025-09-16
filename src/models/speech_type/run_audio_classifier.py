@@ -1,77 +1,19 @@
 import argparse
-import time
 import numpy as np
 import tensorflow as tf
 import librosa
-import matplotlib.pyplot as plt
-import sounddevice as sd
+import csv
 from sklearn.preprocessing import MultiLabelBinarizer
-from tensorflow.keras.metrics import Metric
+from tensorflow.keras.layers import *
+from tensorflow.keras.models import Model
 from pathlib import Path
 from constants import AudioClassification
 from config import AudioConfig
 from audio_classifier import build_model_multi_label
 
-# --- Custom Metrics (from your script) ---
-class MacroPrecision(Metric):
-    def __init__(self, name='macro_precision', threshold=0.5, **kwargs):
-        super(MacroPrecision, self).__init__(name=name, **kwargs)
-        self.threshold = threshold
-        self.per_class_tp = self.add_weight(name='per_class_tp', shape=(1,), initializer='zeros')
-        self.per_class_fp = self.add_weight(name='per_class_fp', shape=(1,), initializer='zeros')
-    def build(self, input_shape):
-        self.num_classes = input_shape[-1]
-        self.per_class_tp.assign(tf.zeros(self.num_classes))
-        self.per_class_fp.assign(tf.zeros(self.num_classes))
-        super().build(input_shape)
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_pred = tf.cast(y_pred > self.threshold, tf.float32)
-        y_true = tf.cast(y_true, tf.float32)
-        tp = tf.reduce_sum(y_true * y_pred, axis=0)
-        fp = tf.reduce_sum((1 - y_true) * y_pred, axis=0)
-        self.per_class_tp.assign_add(tp)
-        self.per_class_fp.assign_add(fp)
-    def result(self):
-        precision_per_class = tf.where(tf.math.equal(self.per_class_tp + self.per_class_fp, 0), 0.0, self.per_class_tp / (self.per_class_tp + self.per_class_fp))
-        return tf.reduce_mean(precision_per_class)
-    def reset_state(self):
-        if hasattr(self, 'num_classes'):
-            self.per_class_tp.assign(tf.zeros(self.num_classes))
-            self.per_class_fp.assign(tf.zeros(self.num_classes))
-        else: self.per_class_tp.assign(tf.zeros(0)); self.per_class_fp.assign(tf.zeros(0))
 
-class MacroRecall(Metric):
-    def __init__(self, name='macro_recall', threshold=0.5, **kwargs):
-        super(MacroRecall, self).__init__(name=name, **kwargs)
-        self.threshold = threshold
-        self.per_class_tp = self.add_weight(name='per_class_tp', shape=(1,), initializer='zeros')
-        self.per_class_fn = self.add_weight(name='per_class_fn', shape=(1,), initializer='zeros')
-    def build(self, input_shape):
-        self.num_classes = input_shape[-1]
-        self.per_class_tp.assign(tf.zeros(self.num_classes))
-        self.per_class_fn.assign(tf.zeros(self.num_classes))
-        super().build(input_shape)
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_pred = tf.cast(y_pred > self.threshold, tf.float32)
-        y_true = tf.cast(y_true, tf.float32)
-        tp = tf.reduce_sum(y_true * y_pred, axis=0)
-        fn = tf.reduce_sum(y_true * (1 - y_pred), axis=0)
-        self.per_class_tp.assign_add(tp)
-        self.per_class_fn.assign_add(fn)
-    def result(self):
-        recall_per_class = tf.where(tf.math.equal(self.per_class_tp + self.per_class_fn, 0), 0.0, self.per_class_tp / (self.per_class_tp + self.per_class_fn))
-        return tf.reduce_mean(recall_per_class)
-    def reset_state(self):
-        if hasattr(self, 'num_classes'):
-            self.per_class_tp.assign(tf.zeros(self.num_classes))
-            self.per_class_fn.assign(tf.zeros(self.num_classes))
-        else: self.per_class_tp.assign(tf.zeros(0)); self.per_class_fn.assign(tf.zeros(0))
-
-# --- Model Architecture (copied from your training script) ---
+# --- Model Architecture (from your training script) ---
 def multi_head_attention(x, num_heads):
-    """
-    Implements a simplified multi-head attention mechanism.
-    """
     heads = []
     for i in range(num_heads):
         head = Conv1D(filters=128, kernel_size=1, activation='relu')(x)
@@ -111,25 +53,8 @@ def extract_mel_spectrogram_fixed_window(audio_path, start_time, duration, sr, n
         return np.zeros((n_mels, int(np.ceil(duration * sr / hop_length))), dtype=np.float32)
 
 def load_inference_model(model_path):
-    """
-    Rebuilds the model and loads weights to bypass Lambda layer serialization issues.
-    
-    Parameters:
-    ----------
-    model_path : str or Path
-        Path to the saved model weights file.
-        
-    Returns:
-    -------
-    model : tf.keras.Model
-        The reconstructed model with loaded weights.
-    mlb : MultiLabelBinarizer
-        The MultiLabelBinarizer fitted on the training classes.
-    """
     try:
-        training_classes = sorted([
-            'key_child', 'child_directed_speech', 'overheard_speech'
-        ])
+        training_classes = AudioConfig.VALID_RTTM_CLASSES
         mlb = MultiLabelBinarizer(classes=training_classes)
         mlb.fit([[]])
         num_classes = len(mlb.classes_)
@@ -148,25 +73,25 @@ def load_inference_model(model_path):
 
 def classify_audio_windows(audio_path, model, mlb, batch_size=32):
     """
-    Classifies a raw audio file using a sliding window approach.
-    
-    Parameters:
+    Classifies audio windows using the trained model.
+
+    Parameters
     ----------
-    audio_path : str or Path
-        Path to the audio file to classify.
+    audio_path : Path
+        Path to the audio file to be classified.
     model : tf.keras.Model
         The trained audio classification model.
-    mlb : MultiLabelBinarizer
-        The MultiLabelBinarizer fitted on the training classes.
-    batch_size : int
-        Batch size for model prediction.
-        
-    Returns:
+    mlb : sklearn.preprocessing.MultiLabelBinarizer
+        MultiLabelBinarizer fitted on the training data.
+    batch_size : int, optional
+        Batch size for prediction, by default 32
+
+    Returns
     -------
     results : list of dict
-        List of dictionaries containing start_time, end_time, and class probabilities for each window.
-    class_names : list of str
-        List of class names corresponding to the probabilities.
+        List of dictionaries containing start_time, end_time, and probabilities for each window.
+    class_names : list
+        List of class names corresponding to the model outputs.
     audio_duration : float
         Duration of the audio file in seconds.
     """
@@ -203,12 +128,67 @@ def classify_audio_windows(audio_path, model, mlb, batch_size=32):
         })
     return results, mlb.classes_, audio_duration
 
-# --- Main Execution to Process Folder ---
-def process_audio_folder(folder_path, model, mlb):
+def aggregate_and_save_results(audio_file, predictions, class_names, output_writer, threshold=0.5):
+    """
+    Aggregates overlapping window predictions and writes the final results to a CSV file.
+    For each second of audio, averages the probabilities from all overlapping windows
+    and assigns binary labels based on the specified threshold.
+    
+    Parameters
+    ----------
+    audio_file : str
+        Path to the audio file being processed.
+    predictions : list of dict
+        List of dictionaries containing start_time, end_time, and probabilities for each window.
+    class_names : list
+        List of class names corresponding to the model outputs.
+    output_writer : csv.DictWriter
+        CSV writer object to write the results.
+    threshold : float, optional
+        Probability threshold for class assignment, by default 0.5
+    """
+    video_id = Path(audio_file).stem
+    
+    # Organize predictions by second
+    second_predictions = {}
+    for p in predictions:
+        start_second = int(np.floor(p['start_time']))
+        end_second = int(np.ceil(p['end_time']))
+        
+        for second in range(start_second, end_second):
+            if second not in second_predictions:
+                second_predictions[second] = {'probabilities': [], 'count': 0}
+            second_predictions[second]['probabilities'].append(p['probabilities'])
+            second_predictions[second]['count'] += 1
+
+    # Aggregate and write results
+    for second in sorted(second_predictions.keys()):
+        avg_probs = np.mean(second_predictions[second]['probabilities'], axis=0)
+        binary_labels = (avg_probs > threshold).astype(int)
+        
+        row = {'video_id': video_id, 'second': second}
+        for i, class_name in enumerate(class_names):
+            row[class_name] = binary_labels[i]
+        
+        output_writer.writerow(row)
+
+def process_audio_folder(folder_path, model, mlb, output_dir):
+    """
+    Process a folder of audio files and save classification results.
+
+    Parameters
+    ----------
+    folder_path : str
+        Path to the folder containing audio files.
+    model : tf.keras.Model
+        The trained audio classification model.
+    mlb : sklearn.preprocessing.MultiLabelBinarizer
+        MultiLabelBinarizer fitted on the training data.
+    output_dir : str
+        Path to the directory where output files will be saved.
+    """
     folder_path = Path(folder_path)
-    if not folder_path.is_dir():
-        print(f"❌ Error: Folder not found at {folder_path}")
-        return
+    output_file = output_dir / 'classification_results.csv'
     
     audio_files = list(folder_path.glob('*.wav'))
     if not audio_files:
@@ -217,28 +197,43 @@ def process_audio_folder(folder_path, model, mlb):
     
     print(f"✅ Found {len(audio_files)} audio files to process.")
     
-    for i, audio_file in enumerate(audio_files):
-        print("\n" + "="*50)
-        print(f"Processing file {i+1}/{len(audio_files)}: {audio_file.name}")
-        print("="*50)
+    # Prepare CSV file
+    class_names = mlb.classes_
+    fieldnames = ['video_id', 'second'] + list(class_names)
+    
+    with open(output_file, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
         
-        try:
-            prediction_results, class_names, full_audio_duration = \
-                classify_audio_windows(str(audio_file), model, mlb)
-        except Exception as e:
-            print(f"❌ An error occurred while processing {audio_file.name}: {e}")
+        for i, audio_file in enumerate(audio_files):
+            print("\n" + "="*50)
+            print(f"Processing file {i+1}/{len(audio_files)}: {audio_file.name}")
+            print("="*50)
+            
+            try:
+                prediction_results, _, _ = classify_audio_windows(str(audio_file), model, mlb)
+                
+                if prediction_results:
+                    aggregate_and_save_results(str(audio_file), prediction_results, class_names, writer)
+                else:
+                    print(f"No prediction results for {audio_file.name}")
+            except Exception as e:
+                print(f"❌ An error occurred while processing {audio_file.name}: {e}")
+
+    print(f"\n✅ All processing complete. Results saved to {output_file}")
+
 
 if __name__ == "__main__":
-    # add audio folder path as argparse argument
     parser = argparse.ArgumentParser(description="Run audio classifier on a folder of audio files.")
     parser.add_argument('--audio_folder', type=str, required=True, help="Path to folder containing WAV audio files.")
     args = parser.parse_args()
     
-    AUDIO_FOLDER_PATH = args.audio_folder
     # Load the trained model and MultiLabelBinarizer once
-    model, mlb = load_inference_model(AudioClassification.TRAINED_WEIGHTS_PATH)
+    model, mlb = load_inference_model()
     if model is None:
         exit()
+    
+    output_dir = AudioClassification.OUTPUT_DIR
 
-    # Process all audio files in the specified folder
-    process_audio_folder(AUDIO_FOLDER_PATH, model, mlb)
+    # Process all audio files in the specified folder and save results
+    process_audio_folder(args.audio_folder, model, mlb, output_dir)
