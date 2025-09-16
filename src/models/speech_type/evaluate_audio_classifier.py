@@ -52,7 +52,7 @@ from sklearn.metrics import precision_recall_fscore_support, precision_score, re
 from tqdm import tqdm
 from constants import AudioClassification
 from config import AudioConfig
-from audio_classifier import build_model_multi_label
+from audio_classifier import build_model_multi_label, load_thresholds
 
 def create_empty_feature_matrix(n_mels, fixed_time_steps):
     """
@@ -388,74 +388,6 @@ def load_model_and_setup(model_path):
         raise ValueError(f"Failed to load model: {e}")
     
     return model, mlb
-
-def load_thresholds(run_dir, mlb_classes):
-    """
-    Load class-specific optimized thresholds from training run output.
-    
-    During training, the ThresholdOptimizer callback searches for optimal 
-    decision thresholds per class to maximize macro F1-score. These thresholds
-    are typically different from the default 0.5 due to class imbalance and
-    varying prediction confidence distributions.
-    
-    Threshold Optimization Process:
-    1. During training, validation set predictions are analyzed
-    2. For each class, thresholds from 0.1 to 0.9 are tested
-    3. The threshold maximizing F1-score per class is selected
-    4. Results are saved to thresholds.json in the training run directory
-    
-    Fallback Strategy:
-    If optimized thresholds are not available (e.g., interrupted training),
-    the function defaults to 0.5 for all classes with appropriate warnings.
-    
-    Parameters:
-    ----------
-    run_dir (str or Path): 
-        Training run directory containing threshold optimization results
-    mlb_classes (list): 
-        List of class names in the same order as model outputs
-    
-    Returns:
-    -------
-    list: 
-        Per-class thresholds in the same order as mlb_classes
-        
-    File Format:
-    -----------
-    thresholds.json contains:
-    {
-        "class_name_1": 0.3,
-        "class_name_2": 0.7,
-        ...
-    }
-    """
-    run_dir = Path(run_dir)
-    thresholds_file = run_dir / 'thresholds.json'
-    
-    if thresholds_file.exists():
-        try:
-            with open(thresholds_file, 'r') as f:
-                thresholds_dict = json.load(f)
-            
-            # Map class names to thresholds, using 0.5 as fallback for missing classes
-            thresholds = [thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes]
-            
-            print(f"📊 Class thresholds: {dict(zip(mlb_classes, thresholds))}")
-            
-            # Validate threshold ranges
-            if any(t < 0.1 or t > 0.9 for t in thresholds):
-                print("⚠️ Warning: Some thresholds are outside typical range [0.1, 0.9]")
-                
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"⚠️ Warning: Error reading thresholds file: {e}")
-            print("🔄 Falling back to default thresholds (0.5)")
-            thresholds = [0.5] * len(mlb_classes)
-    else:
-        thresholds = [0.5] * len(mlb_classes)
-        print(f"⚠️ Optimized thresholds not found at: {thresholds_file}")
-        print("🔄 Using default thresholds (0.5 for all classes)")
-    
-    return thresholds
 
 def create_evaluation_generator(test_segments_file, mlb):
     """
