@@ -81,7 +81,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
             run_person.main(selected_videos)
         
         if 'face_proximity' in models_to_run:
-            logging.info("Running face proximity model")
+            logging.info("Running face model with proximity heuristic")
             run_face_proximity.main(selected_videos, frame_step)
         
         if 'speech_type' in models_to_run:
