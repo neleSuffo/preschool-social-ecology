@@ -1,22 +1,17 @@
-import os
 import argparse
 import logging
 import sqlite3
 import torch
-import torch.nn as nn
 import numpy as np
 from PIL import Image
-import re
 from torchvision import transforms
-from typing import List, Tuple, Dict
 from pathlib import Path
-from tqdm import tqdm
 
 # Import model classes and constants
 from constants import DataPaths, PersonClassification
 from config import PersonConfig, PersonConfig
 from models.person.person_classifier import load_model, CNNEncoder, FrameRNNClassifier
-from inference import get_video_id, get_frame_paths
+from utils import get_video_id, get_frame_paths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
