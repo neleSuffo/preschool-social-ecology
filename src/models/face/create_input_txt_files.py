@@ -2,18 +2,15 @@ import json
 import logging
 import sqlite3
 import cv2
-import os
 import re
 import shutil
 import random
-import argparse
-import numpy as np
 import pandas as pd
+import argparse
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple
 from collections import defaultdict
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from constants import DataPaths, BasePaths, FaceDetection
@@ -61,8 +58,7 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
         cursor.execute(query, category_ids)
         results = cursor.fetchall()
         
-    logging.info(f"Excluded {len(excluded_videos)} videos from query")
-    logging.info(f"Excluded videos: {excluded_videos}")
+    logging.info(f"Excluded {len(DataConfig.EXCLUDED_VIDEOS)} videos from query")
     
     return results
 
@@ -356,6 +352,93 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
     
     return df
 
+def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes: int = 5) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    """
+    Get frames from the first N minutes of recordings for specified child IDs.
+    Splits them between training (first 80%) and validation (remaining 20%).
+
+    Parameters
+    ----------
+    child_ids : List[str]
+        List of child IDs to get frames for
+    image_folder : Path
+        Path to the image folder
+    minutes : int
+        Number of minutes from the beginning to extract (default: 5)
+        
+    Returns
+    -------
+    Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]
+        Two lists of tuples: (train_frames, val_frames) containing (image_path, image_id)
+    """
+    train_frames = []
+    val_frames = []
+    
+    total_frames_for_minutes = minutes * 60 * DataConfig.FPS
+
+    # Split: first 80% to training, remaining 20% to validation
+    train_frame_limit = int(total_frames_for_minutes * 0.8)  # First ~4 minutes
+    val_frame_limit = total_frames_for_minutes - train_frame_limit  # Next ~1 minute
+
+    logging.info(f"Extracting first {minutes} minutes ({total_frames_for_minutes} frames at {DataConfig.FPS} FPS) for test children")
+    logging.info(f"Split: {train_frame_limit} frames to training, {val_frame_limit} frames to validation")
+    
+    for child_id in child_ids:
+        child_train_frames = []
+        child_val_frames = []
+        
+        # Find all video folders for this child
+        for video_folder in sorted(image_folder.iterdir()):
+            if video_folder.is_dir() and child_id in video_folder.name:
+                # Get all frames from this video folder and sort them by frame number
+                video_frames = []
+                for frame in video_folder.iterdir():
+                    if frame.is_file() and frame.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                        # Extract frame number from filename
+                        # Example: quantex_at_home_id255237_2022_05_08_04_000240.jpg -> frame 240
+                        parts = frame.stem.split("_")
+                        if len(parts) >= 9:
+                            try:
+                                frame_number = int(parts[-1])  # Last part should be frame number
+                                video_frames.append((frame, frame_number))
+                            except ValueError:
+                                logging.warning(f"Could not extract frame number from {frame.name}")
+                                continue
+                
+                # Sort by frame number to ensure we get the FIRST frames chronologically
+                video_frames.sort(key=lambda x: x[1])
+                
+                current_train_count = len(child_train_frames)
+                current_val_count = len(child_val_frames)
+                
+                for frame_path, frame_number in video_frames:
+                    # Stop if we've collected enough frames for both sets
+                    if current_train_count >= train_frame_limit and current_val_count >= val_frame_limit:
+                        break
+                    
+                    # Extract image ID
+                    parts = frame_path.name.split("_")
+                    if len(parts) > 3 and parts[3].startswith('id'):
+                        image_id = parts[3].replace("id", "")
+                    else:
+                        image_id = frame_path.stem
+                    
+                    # First assign to training, then to validation
+                    if current_train_count < train_frame_limit:
+                        child_train_frames.append((str(frame_path.resolve()), image_id))
+                        current_train_count += 1
+                    elif current_val_count < val_frame_limit:
+                        child_val_frames.append((str(frame_path.resolve()), image_id))
+                        current_val_count += 1
+        
+        train_frames.extend(child_train_frames)
+        val_frames.extend(child_val_frames)
+        
+        logging.info(f"Child {child_id}: {len(child_train_frames)} frames to training, {len(child_val_frames)} frames to validation")
+    
+    logging.info(f"Total first {minutes} minutes: {len(train_frames)} frames to training, {len(val_frames)} frames to validation")
+    return train_frames, val_frames
+
 def get_all_frames_for_children(child_ids: List[str], image_folder: Path) -> List[Tuple[str, str]]:
     """
     Get ALL frames (not just annotated ones) for specified child IDs from all their videos.
@@ -393,12 +476,23 @@ def get_all_frames_for_children(child_ids: List[str], image_folder: Path) -> Lis
     logging.info(f"Found {len(all_frames)} total frames for test children: {child_ids}")
     return all_frames
 
-def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO):
+def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, add_first_minutes: bool = False, minutes: int = 5):
     """
     Splits the DataFrame into training, validation, and test sets using child IDs as the unit,
     while keeping each split's class ratio close to the global dataset ratio.
     
     For test set: Keeps ALL frames from test children (not just annotated ones) to reflect real-world scenarios.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with image data and annotations
+    train_ratio : float
+        Ratio for training split
+    add_first_minutes : bool
+        If True, adds first N minutes of test children to training/validation
+    minutes : int
+        Number of minutes to add from beginning of test children recordings
     """
    
     # Check if 'filename' column exists, if not, return empty splits
@@ -534,17 +628,117 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
     val_face_coverage = len(val_df[val_df['has_annotation'] == True]) / len(val_df) if len(val_df) > 0 else 0
     logging.info(f"Pre-test enhancement - Train face coverage: {train_face_coverage:.2%}, Val face coverage: {val_face_coverage:.2%}")
     
+    # Handle first N minutes addition if requested
+    first_minutes_train_frames = []
+    first_minutes_val_frames = []
+    
+    if add_first_minutes:
+        logging.info(f"Adding first {minutes} minutes from test children to training/validation sets")
+        first_minutes_train_frames, first_minutes_val_frames = get_first_n_minutes_frames(
+            test_ids, FaceDetection.IMAGES_INPUT_DIR, minutes
+        )
+        
+        # Add first minutes frames to training set
+        if first_minutes_train_frames:
+            additional_train_entries = []
+            for image_path, image_id in first_minutes_train_frames:
+                image_file = Path(image_path)
+                if image_file.stem not in train_df['filename'].values:
+                    # Check if this frame has annotations
+                    annotation_file = FaceDetection.LABELS_INPUT_DIR / f"{image_file.stem}.txt"
+                    has_annotation = annotation_file.exists() and annotation_file.stat().st_size > 0
+                    
+                    entry = {
+                        "filename": image_file.stem,
+                        "id": image_id,
+                        "has_annotation": has_annotation,
+                        "child_id": get_child_id_from_filename(image_file.stem)
+                    }
+                    
+                    # Get annotation labels if they exist
+                    labels = []
+                    if has_annotation:
+                        try:
+                            with open(annotation_file, 'r') as f:
+                                content = f.read().strip()
+                                if content:
+                                    lines = content.split('\n')
+                                    class_ids = {int(line.split()[0]) for line in lines if line.strip()}
+                                    labels = [FaceConfig.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceConfig.MODEL_CLASS_ID_TO_LABEL]
+                        except Exception as e:
+                            logging.warning(f"Error reading annotation file {annotation_file}: {e}")
+                    
+                    # Add class labels
+                    for class_name in class_columns:
+                        entry[class_name] = 1 if class_name in labels else 0
+                    
+                    additional_train_entries.append(entry)
+            
+            if additional_train_entries:
+                additional_train_df = pd.DataFrame(additional_train_entries)
+                train_df = pd.concat([train_df, additional_train_df], ignore_index=True)
+                logging.info(f"Added {len(additional_train_entries)} first-minutes frames to training set")
+        
+        # Add first minutes frames to validation set
+        if first_minutes_val_frames:
+            additional_val_entries = []
+            for image_path, image_id in first_minutes_val_frames:
+                image_file = Path(image_path)
+                if image_file.stem not in val_df['filename'].values:
+                    # Check if this frame has annotations
+                    annotation_file = FaceDetection.LABELS_INPUT_DIR / f"{image_file.stem}.txt"
+                    has_annotation = annotation_file.exists() and annotation_file.stat().st_size > 0
+                    
+                    entry = {
+                        "filename": image_file.stem,
+                        "id": image_id,
+                        "has_annotation": has_annotation,
+                        "child_id": get_child_id_from_filename(image_file.stem)
+                    }
+                    
+                    # Get annotation labels if they exist
+                    labels = []
+                    if has_annotation:
+                        try:
+                            with open(annotation_file, 'r') as f:
+                                content = f.read().strip()
+                                if content:
+                                    lines = content.split('\n')
+                                    class_ids = {int(line.split()[0]) for line in lines if line.strip()}
+                                    labels = [FaceConfig.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceConfig.MODEL_CLASS_ID_TO_LABEL]
+                        except Exception as e:
+                            logging.warning(f"Error reading annotation file {annotation_file}: {e}")
+                    
+                    # Add class labels
+                    for class_name in class_columns:
+                        entry[class_name] = 1 if class_name in labels else 0
+                    
+                    additional_val_entries.append(entry)
+            
+            if additional_val_entries:
+                additional_val_df = pd.DataFrame(additional_val_entries)
+                val_df = pd.concat([val_df, additional_val_df], ignore_index=True)
+                logging.info(f"Added {len(additional_val_entries)} first-minutes frames to validation set")
+
     # For test set: Add ALL frames from test child videos (not just annotated ones)
+    # But EXCLUDE the first N minutes if they were added to train/val
     logging.info(f"Adding all frames from test children: {test_ids}")
     additional_test_frames = get_all_frames_for_children(test_ids, FaceDetection.IMAGES_INPUT_DIR)
     
-    # Add these additional frames to test_df
+    # Create set of first-minutes frame names to exclude from test set
+    first_minutes_frame_names = set()
+    if add_first_minutes:
+        for image_path, _ in first_minutes_train_frames + first_minutes_val_frames:
+            first_minutes_frame_names.add(Path(image_path).stem)
+    
+    # Add these additional frames to test_df (excluding first minutes if applicable)
     if additional_test_frames:
         additional_entries = []
         for image_path, image_id in additional_test_frames:
             image_file = Path(image_path)
-            # Check if this frame is already in our DataFrame
-            if image_file.stem not in test_df['filename'].values:
+            # Skip if this frame is already in our DataFrame or is part of first minutes
+            if (image_file.stem not in test_df['filename'].values and 
+                image_file.stem not in first_minutes_frame_names):
                 # Create entry for this additional frame
                 entry = {
                     "filename": image_file.stem,
@@ -561,6 +755,8 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
             additional_df = pd.DataFrame(additional_entries)
             test_df = pd.concat([test_df, additional_df], ignore_index=True)
             logging.info(f"Added {len(additional_entries)} additional frames to test set")
+            if add_first_minutes:
+                logging.info(f"Excluded {len(first_minutes_frame_names)} first-minutes frames from test set")
 
     # Log final split information
     for split_name, split_df in zip(["Train", "Val", "Test"], [train_df, val_df, test_df]):
@@ -668,7 +864,7 @@ def move_images(image_names: list,
     logging.info(f"\nCompleted moving {split_type} images:")    
     return successful, failed
     
-def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List):
+def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, add_first_minutes: bool = False, minutes: int = 5):
     """
     Generates a statistics file with dataset split information, including percentages.
     """
@@ -679,7 +875,11 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
     original_total = len(df_train) + len(df_val) + len(df_test[df_test['has_annotation'] == True])
     
     with open(file_path, "w") as f:
-        f.write(f"Dataset Split Information - {timestamp}\n\n")
+        f.write(f"Dataset Split Information - {timestamp}\n")
+        if add_first_minutes:
+            f.write(f"*** FIRST {minutes} MINUTES MODE ENABLED ***\n")
+            f.write(f"First {minutes} minutes of test children added to train/val\n")
+        f.write("\n")
         
         class_0, class_1 = FaceConfig.TARGET_LABELS
         
@@ -744,7 +944,7 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
     logging.info(f"Face Coverage - Train: {train_face_coverage:.2%}, Val: {val_face_coverage:.2%}, Test: {test_face_coverage:.2%}")
     logging.info(f"Train images: {len(df_train)}, Val images: {len(df_val)}, Test images: {len(df_test)}")
 
-def split_yolo_data(annotation_folder: Path):
+def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, minutes: int = 5):
     """
     This function prepares the dataset for face detection YOLO training by splitting the images into train, val, and test sets.
     
@@ -752,6 +952,10 @@ def split_yolo_data(annotation_folder: Path):
     ----------
     annotation_folder: Path
         Path to the directory containing label files.
+    add_first_minutes : bool
+        If True, adds first N minutes of test children to training/validation
+    minutes : int
+        Number of minutes to add from beginning of test children recordings
     """
     logging.info("Starting dataset preparation for face detection")
 
@@ -771,7 +975,7 @@ def split_yolo_data(annotation_folder: Path):
             return
                 
         # Split data grouped by child id 
-        train, val, test, df_train, df_val, df_test = split_by_child_id(df)
+        train, val, test, df_train, df_val, df_test = split_by_child_id(df, add_first_minutes=add_first_minutes, minutes=minutes)
 
         # Get the IDs for logging
         train_ids = df_train['child_id'].unique().tolist() if 'child_id' in df_train.columns else []
@@ -779,7 +983,8 @@ def split_yolo_data(annotation_folder: Path):
         test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
         
         # Use the original balanced DataFrame (df) for statistics, not the enhanced test set
-        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
+        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids, 
+                                add_first_minutes=add_first_minutes, minutes=minutes)
         
         # Move images for each split
         for split_name, split_set in [("train", train), 
@@ -806,12 +1011,29 @@ def split_yolo_data(annotation_folder: Path):
 # Main
 # ==============================
 
-def main():       
+def main():
+    parser = argparse.ArgumentParser(description='Create input files for face detection YOLO training')
+    parser.add_argument('--add-first-minutes', action='store_true', 
+                       help='Add first N minutes of test children recordings to training/validation sets')
+    parser.add_argument('--minutes', type=int, default=5,
+                       help='Number of minutes from the beginning to add to train/val (default: 5)')
+    parser.add_argument('--fetch-annotations', action='store_true',
+                       help='Fetch and save annotations from database (default: False)')
+    
+    args = parser.parse_args()
+    
+    if args.add_first_minutes:
+        logging.info(f"First minutes mode enabled: adding first {args.minutes} minutes of test children to train/val")
+    
     try:
-        #anns = fetch_all_annotations(FaceConfig.DATABASE_CATEGORY_IDS)
-        #logging.info(f"Fetched {len(anns)} annotations.")
-        #save_annotations(anns)
-        split_yolo_data(FaceDetection.LABELS_INPUT_DIR)
+        if args.fetch_annotations:
+            anns = fetch_all_annotations(FaceConfig.DATABASE_CATEGORY_IDS)
+            logging.info(f"Fetched {len(anns)} annotations.")
+            save_annotations(anns)
+        
+        split_yolo_data(FaceDetection.LABELS_INPUT_DIR, 
+                       add_first_minutes=args.add_first_minutes, 
+                       minutes=args.minutes)
         logging.info("Conversion completed successfully.")
     except Exception as e:
         logging.error(f"Failed: {e}")
