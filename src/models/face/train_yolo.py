@@ -11,7 +11,7 @@ from config import FaceConfig
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train YOLO model for different detection tasks')
-    parser.add_argument('--device', type=str, default='0,1',
+    parser.add_argument('--device', type=str, default='1',
                       help='Device to use (e.g., "0" for GPU, "cpu" for CPU)')
     return parser.parse_args()
 
@@ -20,8 +20,8 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Set thread limits
-    os.environ['OMP_NUM_THREADS'] = '24'
-    torch.set_num_threads(24)
+    os.environ['OMP_NUM_THREADS'] = '12'
+    torch.set_num_threads(12)
 
     base_output_dir = FaceDetection.OUTPUT_DIR
 
