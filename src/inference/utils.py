@@ -1,9 +1,6 @@
 import logging
 import sqlite3
-import pandas as pd
-import numpy as np
 import re
-from typing import List, Callable
 from pathlib import Path
 from config import DataConfig
 
