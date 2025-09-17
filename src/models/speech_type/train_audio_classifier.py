@@ -1,5 +1,21 @@
 import sys
 import os
+import tensorflow as tf
+
+# Use ~half of 48 cores (say 24) for this process
+num_threads = 24
+
+os.environ["OMP_NUM_THREADS"] = str(num_threads)
+os.environ["MKL_NUM_THREADS"] = str(num_threads)
+os.environ["NUMEXPR_NUM_THREADS"] = str(num_threads)
+os.environ["OPENBLAS_NUM_THREADS"] = str(num_threads)
+
+# TensorFlow threading config
+tf.config.threading.set_intra_op_parallelism_threads(num_threads)
+tf.config.threading.set_inter_op_parallelism_threads(2)  # few parallel ops at once
+
+# GPU: select only GPU 0
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Use first GPU
 
 # Check if we need to restart with correct LD_LIBRARY_PATH
 lib_path = "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cublas/lib/"
@@ -12,6 +28,7 @@ if lib_path not in current_ld_path:
     os.environ['LD_LIBRARY_PATH'] = new_ld_path
     os.execv(sys.executable, ['python'] + sys.argv)
     
+    
 import librosa
 import numpy as np
 import datetime
@@ -21,16 +38,6 @@ import time
 import shutil
 import matplotlib.pyplot as plt
 from pathlib import Path
-
-os.environ["OMP_NUM_THREADS"] = "6"
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-# GPU Configuration - Try GPU first, fallback to CPU if needed
-print("� Configuring GPU mode...")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Use first GPU
-
-import tensorflow as tf
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
 from constants import AudioClassification
