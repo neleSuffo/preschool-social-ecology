@@ -1,6 +1,8 @@
-import argparse
 import logging
+import argparse
 import run_face_proximity
+import run_speech_type
+import run_person
 from pathlib import Path
 from setup_interaction_db import setup_interaction_db
 from constants import DataPaths
@@ -9,7 +11,7 @@ from config import InferenceConfig
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def main(video_path: Path , db_path: Path, frame_step: int):
+def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
     """
     This function runs the detection pipeline. It first sets up the detection database and then runs the detection pipeline.
     
@@ -21,6 +23,9 @@ def main(video_path: Path , db_path: Path, frame_step: int):
         Path to the database where results will be stored
     frame_step : int
         The step size for processing frames in the videos, default is 10
+    models : list, optional
+        List of models to run. Options: 'person', 'face_proximity', 'speech_type', 'all'
+        If None or 'all', all models will be run.
         
     Returns:
     -------
@@ -63,9 +68,25 @@ def main(video_path: Path , db_path: Path, frame_step: int):
 
         # Run the detection pipeline
         logging.info(f"Starting detection pipeline for {len(selected_videos)} videos")
-        #run_person.main(selected_videos)
-        run_face_proximity.main(selected_videos, frame_step)
-        #run_audio_classification.main(selected_videos)
+        
+        # Determine which models to run
+        if models is None or 'all' in models:
+            models_to_run = ['person', 'face_proximity', 'speech_type']
+        else:
+            models_to_run = models
+        
+        # Run selected models
+        if 'person' in models_to_run:
+            logging.info("Running person detection model")
+            run_person.main(selected_videos)
+        
+        if 'face_proximity' in models_to_run:
+            logging.info("Running face proximity model")
+            run_face_proximity.main(selected_videos, frame_step)
+        
+        if 'speech_type' in models_to_run:
+            logging.info("Running speech type classification model")
+            run_speech_type.main(selected_videos)
         
         logging.info("Inference pipeline completed successfully")
         return True
@@ -75,4 +96,17 @@ def main(video_path: Path , db_path: Path, frame_step: int):
         return False
 
 if __name__ == "__main__":
-    main(video_path=DataPaths.VIDEOS_INPUT_DIR, db_path=DataPaths.INFERENCE_DB_PATH, frame_step=InferenceConfig.SAMPLE_RATE)
+    parser = argparse.ArgumentParser(description="Run inference pipeline with selectable models")
+
+    parser.add_argument("--video_path", type=Path, default=DataPaths.VIDEOS_INPUT_DIR, help="Path to video file or directory containing videos")
+    parser.add_argument("--db_path", type=Path, default=DataPaths.INFERENCE_DB_PATH, help="Path to the database where results will be stored")
+    parser.add_argument("--frame_step", type=int, default=InferenceConfig.SAMPLE_RATE, help="Frame step size for processing videos")
+    parser.add_argument("--models", nargs='+', choices=['person', 'face_proximity', 'speech_type', 'all'], default=['all'],  help="Select which models to run. Options: person, face_proximity, speech_type, all")
+    args = parser.parse_args()
+    
+    main(
+        video_path=args.video_path, 
+        models=args.models,
+        db_path=args.db_path, 
+        frame_step=args.frame_step,
+    )
