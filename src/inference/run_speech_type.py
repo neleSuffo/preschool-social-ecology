@@ -2,20 +2,19 @@ import argparse
 import numpy as np
 import librosa
 import sqlite3
+import logging
+from typing import List
 from sklearn.preprocessing import MultiLabelBinarizer
-from pathlib import Path
 from constants import AudioClassification, DataPaths
 from config import AudioConfig
 from models.speech_type.audio_classifier import build_model_multi_label, load_thresholds, extract_features
+from utils import get_video_id
 
-def load_inference_model(model_path):
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def load_inference_model():
     """
     Loads the trained model for inference by rebuilding the architecture and loading weights.
-
-    Parameters
-    ----------
-    model_path : Path
-        The path to the saved model file.
 
     Returns
     -------
@@ -35,7 +34,7 @@ def load_inference_model(model_path):
             fixed_time_steps=fixed_time_steps,
             num_classes=num_classes
         )
-        model.load_weights(model_path)
+        model.load_weights(AudioClassification.TRAINED_WEIGHTS_PATH)
         print("✅ Model loaded successfully by rebuilding architecture and loading weights.")
         return model, mlb
     except Exception as e:
@@ -99,7 +98,7 @@ def classify_audio_windows(audio_path, model, mlb, batch_size=32):
         })
     return results, mlb.classes_, audio_duration
 
-def aggregate_and_save_results(audio_file, predictions, class_names, db_cursor, thresholds, model_id):
+def aggregate_and_save_results(audio_file, predictions, class_names, db_cursor, thresholds, model_id, video_id):
     """
     Aggregates overlapping window predictions and saves the results to the database.
     For each second of audio, averages the probabilities from all overlapping windows
@@ -119,17 +118,9 @@ def aggregate_and_save_results(audio_file, predictions, class_names, db_cursor, 
         Dictionary mapping class names to optimal thresholds
     model_id : int
         ID of the model used for classification
+    video_id : int
+        ID of the video in the database
     """
-    # Extract video_id from filename (assuming format like "123456.MP4.wav" -> video_id = 123456)
-    video_filename = Path(audio_file).stem
-    if video_filename.endswith('.MP4'):
-        video_id = int(video_filename.replace('.MP4', ''))
-    else:
-        # Try to extract numeric part from filename
-        import re
-        numeric_match = re.search(r'(\d+)', video_filename)
-        video_id = int(numeric_match.group(1)) if numeric_match else 0
-    
     # Organize predictions by second
     second_predictions = {}
     for p in predictions:
@@ -175,81 +166,98 @@ def aggregate_and_save_results(audio_file, predictions, class_names, db_cursor, 
             has_ohs, ohs_confidence
         ))
 
-def process_audio_folder(folder_path, model, mlb, db_path, thresholds, model_id):
+def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor, thresholds: dict, model_id: int):
     """
-    Process a folder of audio files and save classification results to database using optimized thresholds.
+    Process a single audio file and save classification results to database.
 
     Parameters
     ----------
-    folder_path : str
-        Path to the folder containing audio files.
+    video_name : str
+        Name of the video (without extension) to process.
     model : tf.keras.Model
         The trained audio classification model.
     mlb : sklearn.preprocessing.MultiLabelBinarizer
         MultiLabelBinarizer fitted on the training data.
-    db_path : str
-        Path to the SQLite database file.
+    cursor : sqlite3.Cursor
+        Database cursor for executing SQL commands.
     thresholds : dict
         Dictionary mapping class names to optimal thresholds
-    model_id : int, optional
+    model_id : int
         ID of the model used for classification
     """
-    folder_path = Path(folder_path)
+    logging.info(f"Processing audio for video: {video_name}")
     
-    audio_files = list(folder_path.glob('*.wav'))
-    if not audio_files:
-        print(f"⚠️ No WAV audio files found in {folder_path}")
+    # Get video_id from database
+    video_id = get_video_id(video_name, cursor)
+    if video_id is None:
+        logging.error(f"Video ID not found for {video_name}")
         return
     
-    print(f"✅ Found {len(audio_files)} audio files to process.")
+    # Look for audio file in the audio input directory
+    audio_file = list(DataPaths.AUDIO_INPUT_DIR.glob(f"{video_name}*.wav"))
     
-    # Process files and save to database
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
+    if not audio_file:
+        logging.error(f"Audio file not found for {video_name}")
+        return
+
+    try:
+        # Classify audio windows
+        prediction_results, _, _ = classify_audio_windows(str(audio_file), model, mlb)
         
-        for i, audio_file in enumerate(audio_files):
-            print("\n" + "="*50)
-            print(f"Processing file {i+1}/{len(audio_files)}: {audio_file.name}")
-            print("="*50)
+        if prediction_results:
+            aggregate_and_save_results(
+                str(audio_file), prediction_results, mlb.classes_, 
+                cursor, thresholds, model_id, video_id
+            )
+            logging.info(f"✅ Saved audio classification results for {video_name}")
+        else:
+            logging.warning(f"No prediction results for {video_name}")
             
-            try:
-                prediction_results, _, _ = classify_audio_windows(str(audio_file), model, mlb)
-                
-                if prediction_results:
-                    aggregate_and_save_results(
-                        str(audio_file), prediction_results, mlb.classes_, 
-                        cursor, thresholds, model_id
-                    )
-                    conn.commit()  # Commit after each file
-                    print(f"✅ Saved results for {audio_file.name}")
-                else:
-                    print(f"No prediction results for {audio_file.name}")
-            except Exception as e:
-                print(f"❌ An error occurred while processing {audio_file.name}: {e}")
+    except Exception as e:
+        logging.error(f"❌ Error processing audio for {video_name}: {e}")
 
-    print(f"\n✅ All processing complete. Results saved to database: {db_path}")
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run audio classifier on a folder of audio files.")
-    parser.add_argument('--audio_folder', type=str, required=True, help="Path to folder containing WAV audio files.")
-    parser.add_argument('--db_path', type=str, default=DataPaths.INFERENCE_DB_PATH, help="Path to SQLite database file (default: inference.db)")
-    args = parser.parse_args()
+def main(video_list: List[str]):
+    """
+    Main function to process videos for audio classification
     
-    # Load the trained model and MultiLabelBinarizer once
-    results_dir = Path(AudioClassification.RESULTS_DIR)
-    model_path = results_dir / "best_model.keras"
+    Parameters:
+    ----------
+    video_list : List[str]
+        List of video names to process
+    """
+    # Connect to database
+    conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
+    cursor = conn.cursor()
+    
+    # Load the trained model and MultiLabelBinarizer
     model_id = AudioConfig.MODEL_ID
     
-    model, mlb = load_inference_model(model_path)
+    model, mlb = load_inference_model()
     if model is None:
-        exit()
+        logging.error("Failed to load model")
+        conn.close()
+        return
     
     # Load optimized thresholds from training
-    thresholds = load_thresholds(results_dir, mlb.classes_)
+    thresholds = load_thresholds(AudioClassification.RESULTS_DIR, mlb.classes_)
+    logging.info(f"Using thresholds: {thresholds}")
     
-    print(f"📊 Using thresholds: {thresholds}")
-    print(f"💾 Database path: {args.db_path}")
+    # Process each video
+    for video_name in video_list:
+        try:
+            process_audio_file(video_name, model, mlb, cursor, thresholds, model_id)
+            conn.commit()  # Commit after each video
+        except Exception as e:
+            logging.error(f"Error processing video {video_name}: {e}")
+            continue
+    
+    conn.close()
+    logging.info("Audio classification processing completed")
 
-    # Process all audio files in the specified folder and save results to database
-    process_audio_folder(args.audio_folder, model, mlb, args.db_path, thresholds, model_id)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run audio classifier on video list")
+    parser.add_argument("--video_list", nargs='+', required=True, 
+                    help="List of video names to process")
+    
+    args = parser.parse_args()
+    main(args.video_list)
