@@ -2,8 +2,6 @@ import cv2
 import logging
 import argparse
 import sqlite3
-import pandas as pd
-import numpy as np
 from typing import List, Callable
 from pathlib import Path
 from ultralytics import YOLO
@@ -11,7 +9,7 @@ from tqdm import tqdm
 from constants import DataPaths, FaceDetection
 from config import FaceConfig
 from models.proximity.estimate_proximity import calculate_proximity
-from inference import get_video_id, extract_frame_number, get_frame_paths
+from utils import get_video_id, extract_frame_number, get_frame_paths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
