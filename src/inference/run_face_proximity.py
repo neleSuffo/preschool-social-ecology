@@ -130,10 +130,10 @@ def process_frame(frame_path: Path, video_id: int, frame_number: int,
                 cursor.execute('''
                     INSERT INTO FaceDetections 
                     (video_id, frame_number, model_id, confidence_score, 
-                     x_min, y_min, x_max, y_max, age_class, proximity)
+                    x_min, y_min, x_max, y_max, age_class, proximity)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (video_id, frame_number, FaceConfig.MODEL_ID, float(confidence), 
-                      float(x1), float(y1), float(x2), float(y2), class_id, proximity))
+                    float(x1), float(y1), float(x2), float(y2), class_id, proximity))
                 
                 face_count += 1
     
@@ -171,9 +171,9 @@ def main(video_list: List[str], frame_step: int = 10):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run YOLO face detection on extracted frames")
     parser.add_argument("--video_list", nargs='+', required=True, 
-                       help="List of video names to process")
+                    help="List of video names to process")
     parser.add_argument("--frame_step", type=int, default=10, 
-                       help="Frame step for processing (default: 10)")
+                    help="Frame step for processing (default: 10)")
     
     args = parser.parse_args()
     main(args.video_list, args.frame_step)
