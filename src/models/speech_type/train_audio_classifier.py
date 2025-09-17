@@ -1,3 +1,17 @@
+import sys
+import os
+
+# Check if we need to restart with correct LD_LIBRARY_PATH
+lib_path = "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cublas/lib/"
+
+# If LD_LIBRARY_PATH doesn't contain our path, restart the script
+current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+if lib_path not in current_ld_path:
+    print("Setting LD_LIBRARY_PATH and restarting...")
+    new_ld_path = f"{lib_path}:{current_ld_path}" if current_ld_path else lib_path
+    os.environ['LD_LIBRARY_PATH'] = new_ld_path
+    os.execv(sys.executable, ['python'] + sys.argv)
+    
 import librosa
 import numpy as np
 import datetime
@@ -6,7 +20,6 @@ import csv
 import time
 import shutil
 import matplotlib.pyplot as plt
-import os
 from pathlib import Path
 
 os.environ["OMP_NUM_THREADS"] = "6"
