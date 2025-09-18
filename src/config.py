@@ -99,8 +99,6 @@ class PersonConfig:
     NUM_EPOCHS = 100
     # number of videos per batch
     BATCH_SIZE = 32
-    # maximum sequence length for RNN
-    MAX_SEQ_LEN = 10
     LR = 1e-4
     FREEZE_CNN = True
     PATIENCE = 15
