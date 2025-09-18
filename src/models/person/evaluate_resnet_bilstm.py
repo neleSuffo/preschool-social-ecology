@@ -47,9 +47,6 @@ def evaluate_model(models, dataloader, device, output_dir):
     all_probs = []
     video_results = []
     
-    criterion = nn.BCEWithLogitsLoss()
-    total_loss = 0.0
-    
     print("Running evaluation on test set...")
     progress_bar = tqdm(dataloader, desc="Evaluating", unit="batch")
     
@@ -64,27 +61,16 @@ def evaluate_model(models, dataloader, device, output_dir):
             feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
             logits = rnn(feats, lengths)
             
-            # Calculate loss
-            mask_flat = mask.view(-1, 2)
-            logits_flat = logits.view(-1, 2)[mask_flat[:, 0] != -100]
-            labels_flat = labels_padded.view(-1, 2)[mask_flat[:, 0] != -100]
-            
-            if len(logits_flat) > 0:  # Only calculate loss if we have valid samples
-                loss = criterion(logits_flat, labels_flat)
-                total_loss += loss.item() * images_padded.size(0)
-            
             # Get predictions and probabilities
             probs = torch.sigmoid(logits)
             preds = (probs > 0.5).float()
             
-            # Collect results per video
+            # Collect results per video (minimal processing)
             for i, video_id in enumerate(video_ids):
                 seq_len = lengths[i].item()
-                video_preds = preds[i, :seq_len].cpu().numpy()
                 video_labels = labels_padded[i, :seq_len].cpu().numpy()
-                video_probs = probs[i, :seq_len].cpu().numpy()
                 
-                # Store basic video information for reference
+                # Store basic video information only
                 video_results.append({
                     'video_id': video_id,
                     'num_frames': seq_len,
@@ -93,31 +79,33 @@ def evaluate_model(models, dataloader, device, output_dir):
                     'no_face_frames': seq_len - int(video_labels[:, 0].sum()) - int(video_labels[:, 1].sum())
                 })
             
-            # Only keep valid predictions (not masked)
+            # Only keep valid predictions (not masked) - optimized
             valid_mask = mask.view(-1, 2)[:, 0]
-            valid_preds = preds.view(-1, 2)[valid_mask].cpu()
-            valid_labels = labels_padded.view(-1, 2)[valid_mask].cpu()
-            valid_probs = probs.view(-1, 2)[valid_mask].cpu()
+            if valid_mask.sum() > 0:  # Only process if there are valid samples
+                valid_preds = preds.view(-1, 2)[valid_mask]
+                valid_labels = labels_padded.view(-1, 2)[valid_mask]
+                valid_probs = probs.view(-1, 2)[valid_mask]
+                
+                all_preds.append(valid_preds.cpu())
+                all_labels.append(valid_labels.cpu())
+                all_probs.append(valid_probs.cpu())
             
-            all_preds.append(valid_preds)
-            all_labels.append(valid_labels)
-            all_probs.append(valid_probs)
-            
-            # Update progress bar
-            progress_bar.set_postfix({
-                'samples_processed': len(all_preds) * dataloader.batch_size
-            })
+            # Update progress bar less frequently for better performance
+            if len(all_preds) % 10 == 0:  # Update every 10 batches
+                progress_bar.set_postfix({
+                    'batches_processed': len(all_preds)
+                })
     
     # Concatenate all results
     all_preds = torch.cat(all_preds, dim=0).numpy()
     all_labels = torch.cat(all_labels, dim=0).numpy()
     all_probs = torch.cat(all_probs, dim=0).numpy()
     
-    avg_loss = total_loss / len(dataloader.dataset)
+    # avg_loss = total_loss / len(dataloader.dataset)
     
     # Calculate comprehensive metrics
     metrics = calculate_metrics(all_labels, all_preds)
-    metrics['test_loss'] = avg_loss
+    # metrics['test_loss'] = avg_loss
     
     # Add additional metrics
     metrics['total_samples'] = len(all_labels)
