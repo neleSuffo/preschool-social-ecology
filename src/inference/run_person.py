@@ -118,20 +118,23 @@ def process_video(
                     probs = torch.sigmoid(logits)
                     preds = (probs > confidence_threshold).float()
 
-                    # Store only the last frame's prediction in the window
-                    stride_offset = min(stride, actual_window_size) - 1
-                    last_idx = frame_numbers[stride_offset]
-
-                    last_prob = probs[0, stride_offset].cpu().numpy()   # (2,)
-                    last_pred = preds[0, stride_offset].cpu().numpy()   # (2,)
-
-                    # Store in all_predictions
-                    all_predictions[last_idx] = {
-                        'child_confidence': float(last_prob[0]),
-                        'adult_confidence': float(last_prob[1]),
-                        'child_person': int(last_pred[0]),
-                        'adult_person': int(last_pred[1])
-                    }
+                    # Store predictions only for frames that are multiples of stride
+                    # This gives us every 30th frame when stride=30
+                    for i in range(actual_window_size):
+                        frame_idx_in_video = window_start + i
+                        frame_number = frame_numbers[i]
+                        
+                        # Only store if this frame index is a multiple of stride
+                        if frame_idx_in_video % stride == 0:
+                            frame_prob = probs[0, i].cpu().numpy()   # (2,)
+                            frame_pred = preds[0, i].cpu().numpy()   # (2,)
+                            
+                            all_predictions[frame_number] = {
+                                'child_confidence': float(frame_prob[0]),
+                                'adult_confidence': float(frame_prob[1]),
+                                'child_person': int(frame_pred[0]),
+                                'adult_person': int(frame_pred[1])
+                            }
 
                     processed_frames += 1
 
@@ -164,7 +167,6 @@ def process_video(
             logging.error(f"DB insert error for frame {frame_number}: {e}")
 
     conn.commit()
-    logging.info(f"Processed video {video_name}: {len(all_predictions)} stride-aligned frames classified")
 
 def main(video_list: List[str]):
     """
