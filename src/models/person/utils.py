@@ -244,3 +244,89 @@ def save_script_and_hparams(out_dir):
     hparams_path = os.path.join(out_dir, "hyperparameters.json")
     with open(hparams_path, "w") as f:
         json.dump(hparams, f, indent=4)
+      
+def setup_evaluation():
+    """Setup output directory, device, and data loader."""   
+    # Create timestamped evaluation directory
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    eval_dir = os.path.join(PersonClassification.OUTPUT_DIR, f"{PersonConfig.MODEL_NAME}_evaluation_{timestamp}")
+    os.makedirs(eval_dir, exist_ok=True)
+    
+    print(f"Results will be saved to: {eval_dir}")
+    
+    # use cuda if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Load test dataset with same transforms as training (but without augmentation)
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    print("Loading test dataset...")
+    test_ds = VideoFrameDataset(
+        PersonClassification.TEST_CSV_PATH, 
+        transform=transform,
+        sequence_length=PersonConfig.MAX_SEQ_LEN,
+        log_dir=eval_dir
+    )
+    
+    test_loader = DataLoader(
+        test_ds, 
+        batch_size=PersonConfig.BATCH_SIZE, 
+        shuffle=False, 
+        num_workers=4,
+        collate_fn=collate_fn, 
+        pin_memory=True
+    )
+    
+    print(f"Test dataset loaded: {len(test_ds)} sequences")
+    return device, test_loader, test_ds, eval_dir
+  
+def load_model(device):
+    """Load trained model from checkpoint.
+    
+    Parameters
+    ----------
+    device : torch.device
+        Device to load the model on.
+        
+    Returns
+    -------
+    Tuple[nn.Module, nn.Module]
+        Loaded CNN and RNN models.
+    """
+    print(f"Loading model from {PersonClassification.TRAINED_WEIGHTS_PATH}")
+    checkpoint = torch.load(PersonClassification.TRAINED_WEIGHTS_PATH, map_location=device)
+    
+    # Initialize models with same architecture as training
+    cnn = CNNEncoder(backbone=PersonConfig.BACKBONE, pretrained=False, feat_dim=PersonConfig.FEAT_DIM).to(device)
+    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim).to(device)
+    
+    # Handle compiled models (strip _orig_mod prefix if present)
+    def clean_state_dict(state_dict):
+        cleaned = {}
+        for k, v in state_dict.items():
+            if k.startswith('_orig_mod.'):
+                cleaned[k[10:]] = v  # Remove '_orig_mod.' prefix
+            else:
+                cleaned[k] = v
+        return cleaned
+    
+    # Load state dicts
+    cnn.load_state_dict(clean_state_dict(checkpoint['cnn_state']))
+    rnn_model.load_state_dict(clean_state_dict(checkpoint['rnn_state']))
+    
+    print(f"Model loaded successfully from epoch {checkpoint['epoch']}")
+    
+    # Print loaded model metrics if available
+    if 'val_metrics' in checkpoint:
+        val_metrics = checkpoint['val_metrics']
+        print(f"Loaded model validation performance:")
+        print(f"  Macro F1: {val_metrics.get('macro_f1', 'N/A'):.3f}")
+        print(f"  Adult F1: {val_metrics.get('adult_f1', 'N/A'):.3f}")
+        print(f"  Child F1: {val_metrics.get('child_f1', 'N/A'):.3f}")
+    
+    return cnn, rnn_model
