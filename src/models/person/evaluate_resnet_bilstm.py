@@ -20,12 +20,9 @@ from torchvision import transforms
 from tqdm import tqdm
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix, classification_report
 import matplotlib.pyplot as plt
-from constants import PersonClassification, DataPaths
+from constants import PersonClassification
 from config import PersonConfig
-
-# Import classes from training script
-from train_rnn_cnn import collate_fn, sequence_features_from_cnn, calculate_metrics
-from person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier, load_model
+from utils import load_model, setup_evaluation, calculate_metrics, sequence_features_from_cnn
 
 def plot_confusion_matrices(y_true, y_pred, class_names, output_dir):
     """Plot confusion matrices for each class.
@@ -123,40 +120,6 @@ def plot_metrics_comparison(metrics, output_dir):
     
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'metrics_comparison.png'), dpi=300, bbox_inches='tight')
-    plt.close()
-
-def plot_probability_distributions(all_probs, all_labels, output_dir):
-    """Plot probability distributions for each class.
-    
-    Parameters
-    ----------
-    all_probs : np.ndarray
-        Predicted probabilities of shape (n_samples, n_classes).
-    all_labels : np.ndarray
-        Ground truth labels of shape (n_samples, n_classes).
-    output_dir : str
-        Directory to save plots.
-    """
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-    class_names = PersonConfig.TARGET_LABELS
-    
-    for i, class_name in enumerate(class_names):
-        # Separate probabilities by true label
-        pos_probs = all_probs[all_labels[:, i] == 1, i]
-        neg_probs = all_probs[all_labels[:, i] == 0, i]
-        
-        axes[i].hist(neg_probs, bins=50, alpha=0.7, label=f'True Negative (n={len(neg_probs)})', color='red')
-        axes[i].hist(pos_probs, bins=50, alpha=0.7, label=f'True Positive (n={len(pos_probs)})', color='blue')
-        axes[i].axvline(x=0.5, color='black', linestyle='--', label='Decision Threshold')
-        
-        axes[i].set_title(f'{class_name.capitalize()} Probability Distribution')
-        axes[i].set_xlabel('Predicted Probability')
-        axes[i].set_ylabel('Frequency')
-        axes[i].legend()
-        axes[i].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'probability_distributions.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
 def evaluate_model(models, dataloader, device, output_dir):
@@ -269,7 +232,7 @@ def evaluate_model(models, dataloader, device, output_dir):
     avg_loss = total_loss / len(dataloader.dataset)
     
     # Calculate comprehensive metrics
-    metrics = calculate_metrics(all_labels, all_preds, class_names=PersonConfig.TARGET_LABELS)
+    metrics = calculate_metrics(all_labels, all_preds)
     metrics['test_loss'] = avg_loss
     
     # Add additional metrics
@@ -281,10 +244,6 @@ def evaluate_model(models, dataloader, device, output_dir):
     
     # Save detailed results
     print(f"\nSaving results to {output_dir}")
-    
-    # Save video-level results
-    video_df = pd.DataFrame(video_results)
-    video_df.to_csv(os.path.join(output_dir, 'video_level_results.csv'), index=False)
     
     # Save frame-level predictions
     frame_results = pd.DataFrame({
@@ -300,21 +259,6 @@ def evaluate_model(models, dataloader, device, output_dir):
     # Generate plots
     plot_confusion_matrices(all_labels, all_preds, PersonConfig.TARGET_LABELS, output_dir)
     plot_metrics_comparison(metrics, output_dir)
-    plot_probability_distributions(all_probs, all_labels, output_dir)
-    
-    # Save metrics as JSON
-    with open(os.path.join(output_dir, 'test_metrics.json'), 'w') as f:
-        json.dump(metrics, f, indent=4)
-    
-    # Generate and save classification report
-    report_dict = {}
-    for i, class_name in enumerate(PersonConfig.TARGET_LABELS):
-        report_dict[class_name] = classification_report(
-            all_labels[:, i], all_preds[:, i], output_dict=True, zero_division=0
-        )
-    
-    with open(os.path.join(output_dir, 'classification_report.json'), 'w') as f:
-        json.dump(report_dict, f, indent=4)
     
     # Save summary statistics
     summary_stats = {
@@ -349,98 +293,21 @@ def evaluate_model(models, dataloader, device, output_dir):
     
     return metrics
 
-def setup_evaluation(args):
-    """Setup output directory, device, and data loader."""   
-    # Create timestamped evaluation directory
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    eval_dir = os.path.join(args.output_dir, f"{PersonConfig.MODEL_NAME}_evaluation_{timestamp}")
-    os.makedirs(eval_dir, exist_ok=True)
-    
-    print(f"Results will be saved to: {eval_dir}")
-    
-    # Set up device
-    device = torch.device(args.device)
-    print(f"Using device: {device}")
-    
-    # Load test dataset with same transforms as training (but without augmentation)
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    print("Loading test dataset...")
-    test_ds = VideoFrameDataset(
-        PersonClassification.TEST_CSV_PATH, 
-        transform=transform,
-        sequence_length=PersonConfig.MAX_SEQ_LEN,
-        log_dir=eval_dir
-    )
-    
-    test_loader = DataLoader(
-        test_ds, 
-        batch_size=args.batch_size, 
-        shuffle=False, 
-        num_workers=4,
-        collate_fn=collate_fn, 
-        pin_memory=True
-    )
-    
-    print(f"Test dataset loaded: {len(test_ds)} sequences")
-    return device, test_loader, test_ds, eval_dir
-
-def print_results(metrics):
-    """Print formatted evaluation results."""
-    print("\n" + "="*70)
-    print("TEST RESULTS")
-    print("="*70)
-    print(f"Test Loss: {metrics['test_loss']:.4f}")
-    print(f"Total Samples: {metrics['total_samples']:,}")
-    print(f"Adult Samples: {metrics['adult_samples']:,} ({metrics['adult_prevalence']:.1%})")
-    print(f"Child Samples: {metrics['child_samples']:,} ({metrics['child_prevalence']:.1%})")
-    
-    print(f"\nPer-Class Results:")
-    print(f"  Adult    - P: {metrics['adult_precision']:.3f}, R: {metrics['adult_recall']:.3f}, F1: {metrics['adult_f1']:.3f}")
-    print(f"  Child    - P: {metrics['child_precision']:.3f}, R: {metrics['child_recall']:.3f}, F1: {metrics['child_f1']:.3f}")
-    
-    print(f"\nMacro Averages:")
-    print(f"  Precision: {metrics['macro_precision']:.3f}")
-    print(f"  Recall:    {metrics['macro_recall']:.3f}")
-    print(f"  F1:        {metrics['macro_f1']:.3f}")
-    print("="*70)
-
 def main():
     """Main evaluation function."""
-    parser = argparse.ArgumentParser(description="Evaluate CNN-RNN person classification model on test set")
-    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', help='Device to use')
-    parser.add_argument('--output_dir', type=str, default=PersonClassification.OUTPUT_DIR, help='Directory to save evaluation results')
-    parser.add_argument('--model_path', type=str, default=PersonClassification.TRAINED_WEIGHTS_PATH, help='Path to the trained model weights')
-    parser.add_argument('--batch_size', type=int, default=PersonConfig.BATCH_SIZE, help='Batch size for evaluation')
-    
-    args = parser.parse_args()
-    
     # Setup evaluation components
-    device, test_loader, test_ds, eval_dir = setup_evaluation(args)
+    device, test_loader, test_ds, eval_dir = setup_evaluation()
     
     # Load model
-    cnn, rnn_model = load_model(device, args.model_path)
+    cnn, rnn_model = load_model(device)
     
     # Run evaluation
     metrics = evaluate_model((cnn, rnn_model), test_loader, device, eval_dir)
     
     # Print and log results
-    print_results(metrics)
     test_ds.log_skipped_files()
     
     print(f"\nEvaluation complete! Results saved to: {eval_dir}")
-    print(f"Key files generated:")
-    print(f"  • test_metrics.json - Overall performance metrics")
-    print(f"  • video_level_results.csv - Per-video detailed results")
-    print(f"  • frame_level_results.csv - Per-frame predictions and probabilities")
-    print(f"  • confusion_matrices.png - Confusion matrix visualization")
-    print(f"  • metrics_comparison.png - Performance comparison chart")
-    print(f"  • probability_distributions.png - Prediction probability distributions")
-    print(f"  • summary_stats.json - Complete summary statistics")
 
 if __name__ == '__main__':
     main()
