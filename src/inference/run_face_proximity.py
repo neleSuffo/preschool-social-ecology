@@ -16,25 +16,28 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def process_video(
     video_name: str,
     frame_step: int,
-    model,
+    model: YOLO,
     cursor: sqlite3.Cursor,
     conn: sqlite3.Connection,
-    task: str,
     process_frame_func: Callable
 ):
     """
-    Generic video processing function.
+    Process a video for face detection and proximity estimation.
     
-    Args:
-        video_name: Name of the video.
-        frame_step: Process every nth frame.
-        model: Model to use (CNNEncoder+RNN or YOLO).
-        cursor: SQLite cursor.
-        conn: SQLite connection.
-        task: String to show in progress bar (e.g., "Classifying" or "Detecting Faces").
-        process_frame_func: Function that processes a single frame and returns a metric.
-                            For classification: returns bool (success).
-                            For detection: returns int (number of faces).
+    Parameters
+    ----------
+    video_name: str
+        Name of the video.
+    frame_step: int
+        Step size for frame processing.
+    model: YOLO
+        Model to use (CNNEncoder+RNN or YOLO).
+    cursor: sqlite3.Cursor
+        SQLite cursor.
+    conn: sqlite3.Connection
+        SQLite connection.
+    process_frame_func: Callable[[Path, int, int, YOLO, sqlite3.Cursor], int]
+        Function that processes a single frame and returns an int (number of faces detected).
     """
     logging.info(f"Processing video: {video_name}")
 
@@ -71,9 +74,9 @@ def process_video(
     metric_sum = 0  # success count for classification, face count for detection
 
     # Process frames with progress bar
-    with tqdm(frames_to_process, desc=f"{task} {video_name}", unit="frames") as pbar:
+    with tqdm(frames_to_process, desc=f"Processing {video_name}", unit="frames") as pbar:
         for frame_file, frame_number in pbar:
-            # Task-specific frame processing
+            # Process frame
             result = process_frame_func(frame_file, video_id, frame_number, model, cursor)
             if isinstance(result, bool):  # classification success
                 metric_sum += int(result)
@@ -96,7 +99,7 @@ def process_video(
     logging.info(f"Processed video {video_name}: {processed_frames} frames classified")
 
 def process_frame(frame_path: Path, video_id: int, frame_number: int, 
-                 model: YOLO, cursor: sqlite3.Cursor) -> int:
+                model: YOLO, cursor: sqlite3.Cursor) -> int:
     """
     Process a single frame for face detection
     
@@ -161,12 +164,13 @@ def main(video_list: List[str], frame_step: int = 10):
     # Process each video
     for video_name in video_list:
         try:
-            process_video(video_name, frame_step, model, cursor, conn, task="Detecting Faces", process_frame_func=process_frame)
+            process_video(video_name, frame_step, model, cursor, conn, process_frame_func=process_frame)
         except Exception as e:
             logging.error(f"Error processing video {video_name}: {e}")
             continue
     
     conn.close()
+    logging.info("Face detection processing completed.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run YOLO face detection on extracted frames")
