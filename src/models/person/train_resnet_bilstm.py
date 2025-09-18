@@ -9,14 +9,18 @@ and environment setup) were moved to `utils.py` to improve readability.
 Usage:
   python train_cnn_rnn.py
 """
+import os
+# Set thread limits
+os.environ['OMP_NUM_THREADS'] = '12'
+
+import torch
+torch.set_num_threads(12)
 
 import argparse
-import os
-import torch
 import torch.nn as nn
 from tqdm import tqdm
 from config import PersonConfig
-from person_classifier import CNNEncoder, FrameRNNClassifier, VideoFrameDataset
+from person_classifier import CNNEncoder, FrameRNNClassifier
 from utils import (
     calculate_metrics,
     sequence_features_from_cnn,
