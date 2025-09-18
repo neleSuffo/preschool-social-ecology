@@ -118,10 +118,12 @@ def process_video(
                     probs = torch.sigmoid(logits)
                     preds = (probs > confidence_threshold).float()
 
-                    # >>> NEW LOGIC: only keep last frame of this window
-                    last_idx = frame_numbers[-1]
-                    last_prob = probs[0, actual_window_size - 1].cpu().numpy()  # (2,)
-                    last_pred = preds[0, actual_window_size - 1].cpu().numpy()  # (2,)
+                    # Store only the last frame's prediction in the window
+                    stride_offset = min(stride, actual_window_size) - 1
+                    last_idx = frame_numbers[stride_offset]
+
+                    last_prob = probs[0, stride_offset].cpu().numpy()   # (2,)
+                    last_pred = preds[0, stride_offset].cpu().numpy()   # (2,)
 
                     # Store in all_predictions
                     all_predictions[last_idx] = {
