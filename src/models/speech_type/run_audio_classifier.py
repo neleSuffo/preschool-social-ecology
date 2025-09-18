@@ -8,7 +8,8 @@ from tensorflow.keras.layers import *
 from pathlib import Path
 from constants import AudioClassification
 from config import AudioConfig
-from audio_classifier import build_model_multi_label, load_thresholds, extract_features
+from audio_classifier import build_model_multi_label
+from utils import load_thresholds, extract_features
 
 def load_inference_model(model_path):
     try:

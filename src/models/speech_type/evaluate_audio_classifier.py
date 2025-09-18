@@ -52,7 +52,8 @@ from sklearn.metrics import precision_recall_fscore_support, precision_score, re
 from tqdm import tqdm
 from constants import AudioClassification
 from config import AudioConfig
-from audio_classifier import build_model_multi_label, load_thresholds
+from audio_classifier import build_model_multi_label
+from utils import load_thresholds
 
 def create_empty_feature_matrix(n_mels, fixed_time_steps):
     """

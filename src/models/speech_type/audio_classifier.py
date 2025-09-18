@@ -1,6 +1,4 @@
-import os
 import json
-import librosa
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
@@ -166,6 +164,7 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     )
     model.log_dir = None  # For ThresholdOptimizer
     return model
+
 class FocalLoss(tf.keras.losses.Loss):
     """
     Custom Focal Loss implementation for handling class imbalance in multi-label classification.
@@ -218,7 +217,6 @@ class FocalLoss(tf.keras.losses.Loss):
         config.update({'gamma': self.gamma, 'alpha': self.alpha})
         return config
     
-# --- Custom Macro F1 Metric ---
 class MacroF1Score(tf.keras.metrics.Metric):
     """
     Custom Keras metric for computing macro-averaged F1-score in multi-label classification.
@@ -298,61 +296,6 @@ class MacroF1Score(tf.keras.metrics.Metric):
         threshold = config.pop('threshold', 0.5)
         return cls(num_classes=num_classes, threshold=threshold, **config)
     
-class MacroPrecision(Metric):
-    def __init__(self, name='macro_precision', threshold=0.5, **kwargs):
-        super(MacroPrecision, self).__init__(name=name, **kwargs)
-        self.threshold = threshold
-        self.per_class_tp = self.add_weight(name='per_class_tp', shape=(1,), initializer='zeros')
-        self.per_class_fp = self.add_weight(name='per_class_fp', shape=(1,), initializer='zeros')
-    def build(self, input_shape):
-        self.num_classes = input_shape[-1]
-        self.per_class_tp.assign(tf.zeros(self.num_classes))
-        self.per_class_fp.assign(tf.zeros(self.num_classes))
-        super().build(input_shape)
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_pred = tf.cast(y_pred > self.threshold, tf.float32)
-        y_true = tf.cast(y_true, tf.float32)
-        tp = tf.reduce_sum(y_true * y_pred, axis=0)
-        fp = tf.reduce_sum((1 - y_true) * y_pred, axis=0)
-        self.per_class_tp.assign_add(tp)
-        self.per_class_fp.assign_add(fp)
-    def result(self):
-        precision_per_class = tf.where(tf.math.equal(self.per_class_tp + self.per_class_fp, 0), 0.0, self.per_class_tp / (self.per_class_tp + self.per_class_fp))
-        return tf.reduce_mean(precision_per_class)
-    def reset_state(self):
-        if hasattr(self, 'num_classes'):
-            self.per_class_tp.assign(tf.zeros(self.num_classes))
-            self.per_class_fp.assign(tf.zeros(self.num_classes))
-        else: self.per_class_tp.assign(tf.zeros(0)); self.per_class_fn.assign(tf.zeros(0))
-
-class MacroRecall(Metric):
-    def __init__(self, name='macro_recall', threshold=0.5, **kwargs):
-        super(MacroRecall, self).__init__(name=name, **kwargs)
-        self.threshold = threshold
-        self.per_class_tp = self.add_weight(name='per_class_tp', shape=(1,), initializer='zeros')
-        self.per_class_fn = self.add_weight(name='per_class_fn', shape=(1,), initializer='zeros')
-    def build(self, input_shape):
-        self.num_classes = input_shape[-1]
-        self.per_class_tp.assign(tf.zeros(self.num_classes))
-        self.per_class_fn.assign(tf.zeros(self.num_classes))
-        super().build(input_shape)
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_pred = tf.cast(y_pred > self.threshold, tf.float32)
-        y_true = tf.cast(y_true, tf.float32)
-        tp = tf.reduce_sum(y_true * y_pred, axis=0)
-        fn = tf.reduce_sum(y_true * (1 - y_pred), axis=0)
-        self.per_class_tp.assign_add(tp)
-        self.per_class_fn.assign_add(fn)
-    def result(self):
-        recall_per_class = tf.where(tf.math.equal(self.per_class_tp + self.per_class_fn, 0), 0.0, self.per_class_tp / (self.per_class_tp + self.per_class_fn))
-        return tf.reduce_mean(recall_per_class)
-    def reset_state(self):
-        if hasattr(self, 'num_classes'):
-            self.per_class_tp.assign(tf.zeros(self.num_classes))
-            self.per_class_fn.assign(tf.zeros(self.num_classes))
-        else: self.per_class_tp.assign(tf.zeros(0)); self.per_class_fn.assign(tf.zeros(0))
-        
-# --- Threshold Optimizer ---
 class ThresholdOptimizer(tf.keras.callbacks.Callback):
     """
     Keras callback for optimizing classification thresholds during training.
@@ -438,9 +381,11 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         threshold_dict = dict(zip(self.mlb_classes, best_thresholds))
         threshold_dict['macro_f1'] = float(macro_f1)
         
-        with open(os.path.join(self.model.log_dir, 'thresholds.json'), 'w') as f:
-            json.dump(threshold_dict, f, indent=2)
-    
+        # use path instead of os
+        with self.model.log_dir is not None and Path(self.model.log_dir).exists():
+            with open(Path(self.model.log_dir) / 'thresholds.json', 'w') as f:
+                json.dump(threshold_dict, f, indent=2)
+
     def _compute_macro_f1(self, predictions, true_labels, thresholds):
         """Compute macro F1-score with given thresholds.
         
@@ -454,171 +399,3 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
             f1 = f1_score(y_true, y_pred, zero_division=0)
             f1_scores.append(f1)
         return np.mean(f1_scores)  # Equal weight to each class
-    
-def load_thresholds(run_dir, mlb_classes):
-    """
-    Load class-specific optimized thresholds from training run output.
-    
-    During training, the ThresholdOptimizer callback searches for optimal 
-    decision thresholds per class to maximize macro F1-score. These thresholds
-    are typically different from the default 0.5 due to class imbalance and
-    varying prediction confidence distributions.
-    
-    Threshold Optimization Process:
-    1. During training, validation set predictions are analyzed
-    2. For each class, thresholds from 0.1 to 0.9 are tested
-    3. The threshold maximizing F1-score per class is selected
-    4. Results are saved to thresholds.json in the training run directory
-    
-    Fallback Strategy:
-    If optimized thresholds are not available (e.g., interrupted training),
-    the function defaults to 0.5 for all classes with appropriate warnings.
-    
-    Parameters:
-    ----------
-    run_dir (str or Path): 
-        Training run directory containing threshold optimization results
-    mlb_classes (list): 
-        List of class names in the same order as model outputs
-    
-    Returns:
-    -------
-    dict: 
-        Dictionary mapping class names to their optimal thresholds
-        
-    File Format:
-    -----------
-    thresholds.json contains:
-    {
-        "class_name_1": 0.3,
-        "class_name_2": 0.7,
-        ...
-    }
-    """
-    run_dir = Path(run_dir)
-    thresholds_file = run_dir / 'thresholds.json'
-    
-    if thresholds_file.exists():
-        try:
-            with open(thresholds_file, 'r') as f:
-                thresholds_dict = json.load(f)
-            
-            # Return the dictionary directly, filtering out non-class keys
-            thresholds = {class_name: thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes}
-            
-            print(f"📊 Class thresholds: {thresholds}")
-            
-            # Validate threshold ranges
-            if any(t < 0.1 or t > 0.9 for t in thresholds.values()):
-                print("⚠️ Warning: Some thresholds are outside typical range [0.1, 0.9]")
-                
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"⚠️ Warning: Error reading thresholds file: {e}")
-            print("🔄 Falling back to default thresholds (0.5)")
-            thresholds = {class_name: 0.5 for class_name in mlb_classes}
-    else:
-        thresholds = {class_name: 0.5 for class_name in mlb_classes}
-        print(f"⚠️ Optimized thresholds not found at: {thresholds_file}")
-        print("🔄 Using default thresholds (0.5 for all classes)")
-    
-    return thresholds
-
-# --- Feature Extraction ---
-def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=None):
-    """
-    Extract audio features (mel-spectrogram + MFCC) from audio segment.
-
-    Processes audio segments to create combined feature representations suitable
-    for deep learning models. Applies preprocessing, normalization, and padding
-    to ensure consistent output dimensions.
-    
-    Parameters
-    ----------
-    audio_path (str):
-        Path to audio file (.wav format)
-    start_time (float): 
-        Start time of segment in seconds
-    duration (float): 
-        Duration of segment in seconds
-    sr (int): 
-        Target sample rate for audio loading (default: 16000)
-    n_mels (int): 
-        Number of mel filter banks (default: 256)
-    hop_length (int): 
-        Hop length for STFT computation (default: 512)
-    fixed_time_steps (int): 
-        Fixed number of time steps for output padding
-
-    Returns
-    -------
-    np.ndarray: 
-        Combined feature matrix of shape (n_mels + 13, fixed_time_steps) where 13 is the number of MFCC coefficients
-
-    Features extracted
-    -----------------
-    Mel-spectrogram: 
-        Perceptually-relevant frequency representation
-    MFCC: 
-        Compact spectral features for speech/audio
-    Preprocessing: 
-        Normalization, pre-emphasis filtering
-    Post-processing: 
-        Padding/truncation to fixed dimensions
-    """
-    if fixed_time_steps is None:
-        fixed_time_steps = int(np.ceil(duration * sr / hop_length))
-    
-    try:
-        # Load audio segment with resampling if needed
-        y, sr_loaded = librosa.load(audio_path, sr=sr, offset=start_time, duration=duration)
-        if sr_loaded != sr:
-            y = librosa.resample(y, orig_sr=sr_loaded, target_sr=sr)
-        
-        # Ensure consistent audio length through padding/truncation
-        expected_samples = int(duration * sr)
-        if len(y) < expected_samples:
-            y = np.pad(y, (0, expected_samples - len(y)), 'constant')  # Zero-padding
-        elif len(y) > expected_samples:
-            y = y[:expected_samples]  # Truncation
-        
-        # Handle empty audio segments
-        if len(y) == 0:
-            effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
-            return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)  # +13 for MFCC
-        
-        # Audio preprocessing: normalization and pre-emphasis filtering
-        y = y / (np.max(np.abs(y)) + 1e-6)  # Amplitude normalization
-        y = np.append(y[0], y[1:] - 0.97 * y[:-1])  # Pre-emphasis filter (removes DC bias)
-        
-        # Mel-spectrogram computation with frequency limits for 16kHz audio
-        effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
-        fmax_safe = min(sr // 2, 8000)  # Use Nyquist frequency or 8kHz, whichever is lower
-        
-        mel_spectrogram = librosa.feature.melspectrogram(
-            y=y, sr=sr, n_mels=effective_n_mels, hop_length=hop_length, n_fft=2048, 
-            fmin=80, fmax=fmax_safe  # Focus on speech-relevant frequencies
-        )
-        # Convert to dB scale and normalize to [-1, 1] range
-        mel_spectrogram_db = librosa.power_to_db(mel_spectrogram, ref=np.max, top_db=80)
-        mel_spectrogram_db = 2 * (mel_spectrogram_db - mel_spectrogram_db.min()) / (mel_spectrogram_db.max() - mel_spectrogram_db.min() + 1e-6) - 1
-        
-        # MFCC computation for complementary spectral features
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=hop_length)
-        mfcc = 2 * (mfcc - mfcc.min()) / (mfcc.max() - mfcc.min() + 1e-6) - 1  # Normalize to [-1, 1]
-        
-        # Concatenate mel and MFCC features along frequency axis
-        combined = np.concatenate([mel_spectrogram_db, mfcc], axis=0)
-        
-        # Ensure consistent time dimension through padding/truncation
-        if combined.shape[1] < fixed_time_steps:
-            pad_width = fixed_time_steps - combined.shape[1]
-            combined = np.pad(combined, ((0, 0), (0, pad_width)), 'constant', constant_values=-1)
-        elif combined.shape[1] > fixed_time_steps:
-            combined = combined[:, :fixed_time_steps]
-        
-        return combined
-    
-    except Exception as e:
-        print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
-        effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
-        return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
