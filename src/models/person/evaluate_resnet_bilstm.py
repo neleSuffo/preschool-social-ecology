@@ -2,13 +2,7 @@
 """
 Evaluation script for CNN-RNN person classification model on test set.
 Based on the improved training script architecture.
-
-Usage:
-  python evaluate_rnn_cnn_v2.py
 """
-
-import os
-import argparse
 import json
 import datetime
 import torch
@@ -16,11 +10,9 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from tqdm import tqdm
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix, classification_report
 import matplotlib.pyplot as plt
-from constants import PersonClassification
 from config import PersonConfig
 from utils import load_model, setup_evaluation, calculate_metrics, sequence_features_from_cnn
 
@@ -35,7 +27,7 @@ def plot_confusion_matrices(y_true, y_pred, class_names, output_dir):
         Predicted labels of shape (n_samples, n_classes).
     class_names : List[str]
         Names of the classes.
-    output_dir : str
+    output_dir : Path
         Directory to save plots.
     """
     fig, axes = plt.subplots(1, len(class_names), figsize=(12, 5))
@@ -64,7 +56,7 @@ def plot_confusion_matrices(y_true, y_pred, class_names, output_dir):
         axes[i].set_yticklabels(['No', 'Yes'])
     
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'confusion_matrices.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / 'confusion_matrices.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 def plot_metrics_comparison(metrics, output_dir):
@@ -119,7 +111,7 @@ def plot_metrics_comparison(metrics, output_dir):
         ax.bar_label(container, fmt='%.3f', rotation=90, padding=3)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'metrics_comparison.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(output_dir / 'metrics_comparison.png', dpi=300, bbox_inches='tight')
     plt.close()
 
 def evaluate_model(models, dataloader, device, output_dir):
@@ -133,7 +125,7 @@ def evaluate_model(models, dataloader, device, output_dir):
         Test data loader.
     device : torch.device
         Device to run evaluation on.
-    output_dir : str
+    output_dir : Path
         Directory to save results.
         
     Returns
@@ -254,8 +246,8 @@ def evaluate_model(models, dataloader, device, output_dir):
         'child_prob': all_probs[:, 0],
         'adult_prob': all_probs[:, 1]
     })
-    frame_results.to_csv(os.path.join(output_dir, 'frame_level_results.csv'), index=False)
-    
+    frame_results.to_csv(output_dir / 'frame_level_results.csv', index=False)
+
     # Generate plots
     plot_confusion_matrices(all_labels, all_preds, PersonConfig.TARGET_LABELS, output_dir)
     plot_metrics_comparison(metrics, output_dir)
@@ -287,8 +279,8 @@ def evaluate_model(models, dataloader, device, output_dir):
             'test_loss': metrics['test_loss']
         }
     }
-    
-    with open(os.path.join(output_dir, 'summary_stats.json'), 'w') as f:
+
+    with open(output_dir / 'summary_stats.json', 'w') as f:
         json.dump(summary_stats, f, indent=4)
     
     return metrics
