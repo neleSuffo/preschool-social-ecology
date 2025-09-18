@@ -282,4 +282,4 @@ if __name__ == "__main__":
                     help="List of video names to process")
     
     args = parser.parse_args()
-    main(args.video_list, args.frame_step, args.device)
+    main(args.video_list)
