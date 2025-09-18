@@ -1,118 +1,23 @@
-# filepath: /home/nele_pauline_suffo/projects/naturalistic-social-analysis/src/models/person/evaluate_rnn_cnn_v2.py
 """
 Evaluation script for CNN-RNN person classification model on test set.
-Based on the improved training script architecture.
+Based on the improved training script architecture with utility functions moved to utils.py.
 """
 import json
-import datetime
 import torch
 import torch.nn as nn
 import pandas as pd
-import numpy as np
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix, classification_report
-import matplotlib.pyplot as plt
+from sklearn.metrics import precision_recall_fscore_support
+
 from config import PersonConfig
-from utils import load_model, setup_evaluation, calculate_metrics, sequence_features_from_cnn
-
-def plot_confusion_matrices(y_true, y_pred, class_names, output_dir):
-    """Plot confusion matrices for each class.
-    
-    Parameters
-    ----------
-    y_true : np.ndarray
-        Ground truth labels of shape (n_samples, n_classes).
-    y_pred : np.ndarray
-        Predicted labels of shape (n_samples, n_classes).
-    class_names : List[str]
-        Names of the classes.
-    output_dir : Path
-        Directory to save plots.
-    """
-    fig, axes = plt.subplots(1, len(class_names), figsize=(12, 5))
-    if len(class_names) == 1:
-        axes = [axes]
-    
-    for i, class_name in enumerate(class_names):
-        cm = confusion_matrix(y_true[:, i], y_pred[:, i])
-        im = axes[i].imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-        axes[i].figure.colorbar(im, ax=axes[i])
-        
-        # Add text annotations
-        thresh = cm.max() / 2.
-        for j in range(cm.shape[0]):
-            for k in range(cm.shape[1]):
-                axes[i].text(k, j, format(cm[j, k], 'd'),
-                           ha="center", va="center",
-                           color="white" if cm[j, k] > thresh else "black")
-        
-        axes[i].set_title(f'{class_name.capitalize()} Confusion Matrix')
-        axes[i].set_xlabel('Predicted')
-        axes[i].set_ylabel('Actual')
-        axes[i].set_xticks([0, 1])
-        axes[i].set_yticks([0, 1])
-        axes[i].set_xticklabels(['No', 'Yes'])
-        axes[i].set_yticklabels(['No', 'Yes'])
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / 'confusion_matrices.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-def plot_metrics_comparison(metrics, output_dir):
-    """Plot comparison of metrics across classes.
-    
-    Parameters
-    ----------
-    metrics : Dict[str, float]
-        Dictionary containing calculated metrics.
-    output_dir : str
-        Directory to save plots.
-    """
-    # Extract metrics for each class
-    metric_types = ['precision', 'recall', 'f1']
-    
-    data = []
-    for class_name in PersonConfig.TARGET_LABELS:
-        for metric_type in metric_types:
-            key = f'{class_name}_{metric_type}'
-            if key in metrics:
-                data.append({
-                    'Class': class_name.capitalize(),
-                    'Metric': metric_type.capitalize(),
-                    'Value': metrics[key]
-                })
-    
-    # Add macro averages
-    for metric_type in metric_types:
-        key = f'macro_{metric_type}'
-        if key in metrics:
-            data.append({
-                'Class': 'Macro Average',
-                'Metric': metric_type.capitalize(),
-                'Value': metrics[key]
-            })
-    
-    df = pd.DataFrame(data)
-    
-    # Create grouped bar plot
-    plt.figure(figsize=(12, 6))
-    pivot_df = df.pivot(index='Metric', columns='Class', values='Value')
-    ax = pivot_df.plot(kind='bar', width=0.8)
-    plt.title('Performance Metrics by Class')
-    plt.ylabel('Score')
-    plt.xlabel('Metric')
-    plt.legend(title='Class')
-    plt.xticks(rotation=0)
-    plt.ylim(0, 1)
-    
-    # Add value labels on bars
-    for container in ax.containers:
-        ax.bar_label(container, fmt='%.3f', rotation=90, padding=3)
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / 'metrics_comparison.png', dpi=300, bbox_inches='tight')
-    plt.close()
+from utils import (
+    load_model, 
+    setup_evaluation, 
+    calculate_metrics, 
+    sequence_features_from_cnn,
+    plot_confusion_matrices,
+    plot_metrics_comparison
+)
 
 def evaluate_model(models, dataloader, device, output_dir):
     """Evaluate the model on test data and generate comprehensive results.
@@ -179,26 +84,13 @@ def evaluate_model(models, dataloader, device, output_dir):
                 video_labels = labels_padded[i, :seq_len].cpu().numpy()
                 video_probs = probs[i, :seq_len].cpu().numpy()
                 
-                # Calculate video-level statistics
+                # Store basic video information for reference
                 video_results.append({
                     'video_id': video_id,
                     'num_frames': seq_len,
                     'adult_frames': int(video_labels[:, 1].sum()),
                     'child_frames': int(video_labels[:, 0].sum()),
-                    'predicted_adult_frames': int(video_preds[:, 1].sum()),
-                    'predicted_child_frames': int(video_preds[:, 0].sum()),
-                    'adult_precision': precision_recall_fscore_support(video_labels[:, 1], video_preds[:, 1], average='binary', zero_division=0)[0],
-                    'adult_recall': precision_recall_fscore_support(video_labels[:, 1], video_preds[:, 1], average='binary', zero_division=0)[1],
-                    'adult_f1': precision_recall_fscore_support(video_labels[:, 1], video_preds[:, 1], average='binary', zero_division=0)[2],
-                    'child_precision': precision_recall_fscore_support(video_labels[:, 0], video_preds[:, 0], average='binary', zero_division=0)[0],
-                    'child_recall': precision_recall_fscore_support(video_labels[:, 0], video_preds[:, 0], average='binary', zero_division=0)[1],
-                    'child_f1': precision_recall_fscore_support(video_labels[:, 0], video_preds[:, 0], average='binary', zero_division=0)[2],
-                    'avg_adult_prob': float(video_probs[:, 1].mean()),
-                    'avg_child_prob': float(video_probs[:, 0].mean()),
-                    'max_adult_prob': float(video_probs[:, 1].max()),
-                    'max_child_prob': float(video_probs[:, 0].max()),
-                    'min_adult_prob': float(video_probs[:, 1].min()),
-                    'min_child_prob': float(video_probs[:, 0].min())
+                    'no_face_frames': seq_len - int(video_labels[:, 0].sum()) - int(video_labels[:, 1].sum())
                 })
             
             # Only keep valid predictions (not masked)
@@ -252,31 +144,27 @@ def evaluate_model(models, dataloader, device, output_dir):
     plot_confusion_matrices(all_labels, all_preds, PersonConfig.TARGET_LABELS, output_dir)
     plot_metrics_comparison(metrics, output_dir)
     
-    # Save summary statistics
+    # Save essential metrics only
     summary_stats = {
-        'model_info': {
-            'backbone': PersonConfig.BACKBONE,
-            'feat_dim': PersonConfig.FEAT_DIM,
-            'rnn_hidden': PersonConfig.RNN_HIDDEN,
-            'rnn_layers': PersonConfig.RNN_LAYERS,
-            'bidirectional': PersonConfig.BIDIRECTIONAL,
-            'sequence_length': PersonConfig.MAX_SEQ_LEN
+        'performance_metrics': {
+            # Per-class metrics
+            'child_precision': metrics['child_precision'],
+            'child_recall': metrics['child_recall'], 
+            'child_f1': metrics['child_f1'],
+            'adult_precision': metrics['adult_precision'],
+            'adult_recall': metrics['adult_recall'],
+            'adult_f1': metrics['adult_f1'],
+            # Overall metrics
+            'macro_precision': metrics['macro_precision'],
+            'macro_recall': metrics['macro_recall'],
+            'macro_f1': metrics['macro_f1']
         },
         'dataset_stats': {
-            'total_videos': len(video_df),
+            'total_videos': len(video_results),
             'total_frames': metrics['total_samples'],
             'adult_frames': metrics['adult_samples'],
             'child_frames': metrics['child_samples'],
-            'adult_prevalence': metrics['adult_prevalence'],
-            'child_prevalence': metrics['child_prevalence']
-        },
-        'performance_summary': {
-            'macro_f1': metrics['macro_f1'],
-            'macro_precision': metrics['macro_precision'],
-            'macro_recall': metrics['macro_recall'],
-            'adult_f1': metrics['adult_f1'],
-            'child_f1': metrics['child_f1'],
-            'test_loss': metrics['test_loss']
+            'no_face_frames': metrics['total_samples'] - metrics['adult_samples'] - metrics['child_samples']
         }
     }
 
