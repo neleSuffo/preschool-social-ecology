@@ -11,22 +11,13 @@ Usage:
 """
 
 import argparse
-import datetime
-import json
 import os
-import shutil
-import sys
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-
 from config import PersonConfig
-from constants import PersonClassification
 from person_classifier import CNNEncoder, FrameRNNClassifier, VideoFrameDataset
-
-# Utilities (moved to utils.py) ------------------------------------------------
 from utils import (
-    collate_fn,
     calculate_metrics,
     sequence_features_from_cnn,
     setup_training_environment,
