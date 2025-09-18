@@ -61,21 +61,19 @@ def load_trained_model(device):
                 cleaned[k] = v
         return cleaned
     
-    # Load weights
-    if 'cnn_state_dict' in checkpoint and 'rnn_state_dict' in checkpoint:
-        cnn.load_state_dict(clean_state_dict(checkpoint['cnn_state_dict']))
-        rnn_model.load_state_dict(clean_state_dict(checkpoint['rnn_state_dict']))
+    if "cnn_state" in checkpoint and "rnn_state" in checkpoint:
+        cnn.load_state_dict(clean_state_dict(checkpoint["cnn_state"]))
+        rnn_model.load_state_dict(clean_state_dict(checkpoint["rnn_state"]))
     else:
-        raise ValueError("Checkpoint does not contain expected keys 'cnn_state_dict' and 'rnn_state_dict'")
-    
+        raise ValueError(
+            "Checkpoint does not contain expected CNN/RNN keys. "
+            f"Available keys: {list(checkpoint.keys())}"
+        )
+
     cnn.eval()
     rnn_model.eval()
     
     print(f"✅ Model loaded successfully")
-    print(f"   CNN backbone: {PersonConfig.BACKBONE}")
-    print(f"   Feature dimension: {PersonConfig.FEAT_DIM}")
-    print(f"   RNN hidden: {PersonConfig.RNN_HIDDEN}")
-    print(f"   Bidirectional: {PersonConfig.BIDIRECTIONAL}")
     
     return cnn, rnn_model
 
@@ -114,10 +112,6 @@ def setup_video_reader(video_path):
         'height': height,
         'duration': duration
     }
-    
-    print(f"📹 Video info:")
-    print(f"   Total frames: {total_frames}")
-    print(f"   Duration: {duration:.2f}s")
     
     return cap, video_info
 
@@ -225,10 +219,10 @@ def run_inference_on_video(video_path, output_dir, device, batch_size, window_si
         stride = PersonConfig.STRIDE
     
     print(f"🎯 Processing video with:")
-    print(f"   Window size: {window_size} frames")
-    print(f"   Stride: {stride} frames")
-    print(f"   Batch size: {batch_size}")
-    print(f"   Device: {device}")
+    print(f"      Window size: {window_size} frames")
+    print(f"      Stride: {stride} frames")
+    print(f"      Batch size: {batch_size}")
+    print(f"      Device: {device}")
     
     total_frames = video_info['total_frames']
     results = []
