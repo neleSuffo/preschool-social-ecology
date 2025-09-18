@@ -10,11 +10,12 @@ Usage:
   python train_cnn_rnn.py
 """
 import os
-# Set thread limits
-os.environ['OMP_NUM_THREADS'] = '12'
+# Set conservative thread limits to avoid DataLoader hangs
+os.environ['OMP_NUM_THREADS'] = '4'  # Reduced from 12
+os.environ['MKL_NUM_THREADS'] = '4'
 
 import torch
-torch.set_num_threads(12)
+torch.set_num_threads(4)  # Reduced from 12
 
 import argparse
 import torch.nn as nn
