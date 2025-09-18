@@ -113,8 +113,8 @@ class PersonConfig:
     BACKBONE = 'resnet18'
     CONFIDENCE_THRESHOLD = 0.5
     BATCH_SIZE_INFERENCE = 64
-    WINDOW_SIZE = 60
-    STRIDE = 30
+    WINDOW_SIZE = 60 # frames
+    STRIDE = 30 # frames
     MODEL_ID = 2
 
 class FaceConfig:
