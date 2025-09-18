@@ -30,16 +30,16 @@ class FrameRNNClassifier(nn.Module):
         Dropout probability for regularization.
     """
     def __init__(self, 
-                 feat_dim=PersonConfig.FEAT_DIM, 
-                 rnn_hidden=PersonConfig.RNN_HIDDEN, 
-                 rnn_layers=PersonConfig.RNN_LAYERS, 
-                 bidirectional=PersonConfig.BIDIRECTIONAL, 
-                 num_outputs=PersonConfig.NUM_OUTPUTS, 
-                 dropout=PersonConfig.DROPOUT):
+                feat_dim=PersonConfig.FEAT_DIM, 
+                rnn_hidden=PersonConfig.RNN_HIDDEN, 
+                rnn_layers=PersonConfig.RNN_LAYERS, 
+                bidirectional=PersonConfig.BIDIRECTIONAL, 
+                num_outputs=PersonConfig.NUM_OUTPUTS, 
+                dropout=PersonConfig.DROPOUT):
         super().__init__()
         self.rnn = nn.LSTM(input_size=feat_dim, hidden_size=rnn_hidden,
-                           num_layers=rnn_layers, batch_first=True,
-                           bidirectional=bidirectional, dropout=dropout if rnn_layers>1 else 0.0)
+                        num_layers=rnn_layers, batch_first=True,
+                        bidirectional=bidirectional, dropout=dropout if rnn_layers>1 else 0.0)
         out_dim = rnn_hidden * (2 if bidirectional else 1)
         self.classifier = nn.Sequential(
             nn.Linear(out_dim, out_dim//2),
@@ -138,7 +138,7 @@ class CNNEncoder(nn.Module):
         if self.project is not None:
             f = self.project(f)
         return f  # (N, feat_dim)
-   
+
 class VideoFrameDataset(Dataset):
     def __init__(self, csv_file, sequence_length=PersonConfig.SEQUENCE_LENGTH, transform=None, log_dir=None):
         self.data = pd.read_csv(csv_file)
