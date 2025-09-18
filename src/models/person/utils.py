@@ -17,7 +17,7 @@ from tqdm import tqdm
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
 from config import PersonConfig
 from constants import PersonClassification
-from person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
+from .person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -304,7 +304,6 @@ def load_model(device):
     Tuple[nn.Module, nn.Module]
         Loaded CNN and RNN models.
     """
-    print(f"Loading model from {PersonClassification.TRAINED_WEIGHTS_PATH}")
     checkpoint = torch.load(PersonClassification.TRAINED_WEIGHTS_PATH, map_location=device)
     
     # Initialize models with same architecture as training
@@ -324,16 +323,6 @@ def load_model(device):
     # Load state dicts
     cnn.load_state_dict(clean_state_dict(checkpoint['cnn_state']))
     rnn_model.load_state_dict(clean_state_dict(checkpoint['rnn_state']))
-    
-    print(f"Model loaded successfully from epoch {checkpoint['epoch']}")
-    
-    # Print loaded model metrics if available
-    if 'val_metrics' in checkpoint:
-        val_metrics = checkpoint['val_metrics']
-        print(f"Loaded model validation performance:")
-        print(f"  Macro F1: {val_metrics.get('macro_f1', 'N/A'):.3f}")
-        print(f"  Adult F1: {val_metrics.get('adult_f1', 'N/A'):.3f}")
-        print(f"  Child F1: {val_metrics.get('child_f1', 'N/A'):.3f}")
     
     return cnn, rnn_model
 
