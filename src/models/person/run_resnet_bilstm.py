@@ -3,7 +3,7 @@ Run ResNet-BiLSTM person classification on a single video.
 Outputs frame-by-frame predictions in CSV format similar to YOLO face detection output.
 
 Usage:
-    python run_resnet_bilstm.py --video_path /path/to/video.mp4 --output_csv /path/to/output.csv
+    python models/person/run_resnet_bilstm.py --video_path /path/to/video.mp4
 """
 
 import argparse
@@ -378,8 +378,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     print(f"🚀 Starting ResNet-BiLSTM person classification")
-    print(f"📹 Input video: {args.video_path}")
-    print(f"📄 Output Dir: {args.output_dir}")
     
     try:
         # Run inference
