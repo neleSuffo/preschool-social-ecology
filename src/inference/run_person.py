@@ -179,7 +179,6 @@ def main(video_list: List[str]):
         cnn, rnn_model = load_model(device)
         cnn.eval()
         rnn_model.eval()
-        logging.info(f"Loaded person classification model from {PersonClassification.TRAINED_WEIGHTS_PATH}")
     except Exception as e:
         logging.error(f"Failed to load model: {e}")
         conn.close()
@@ -193,8 +192,6 @@ def main(video_list: List[str]):
             continue
 
     conn.close()
-    logging.info("Person classification processing completed")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run person classification on extracted video frames")
