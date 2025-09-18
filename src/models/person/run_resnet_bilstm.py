@@ -225,7 +225,6 @@ def run_inference_on_video(video_path, output_dir, device, batch_size, window_si
     print(f"      Device: {device}")
     
     total_frames = video_info['total_frames']
-    results = []
     
     # Initialize all frames with default values (no person detected)
     all_predictions = {
