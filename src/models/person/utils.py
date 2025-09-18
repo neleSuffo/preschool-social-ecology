@@ -9,13 +9,17 @@ import json
 import datetime
 import torch
 import numpy as np
+import pandas as pd
+from pathlib import Path
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
-from sklearn.metrics import precision_recall_fscore_support, accuracy_score
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
 from config import PersonConfig
 from constants import PersonClassification
-from person_classifier import VideoFrameDataset
+from person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 # ---------------------------
@@ -269,7 +273,7 @@ def setup_evaluation():
     test_ds = VideoFrameDataset(
         PersonClassification.TEST_CSV_PATH, 
         transform=transform,
-        sequence_length=PersonConfig.MAX_SEQ_LEN,
+        sequence_length=PersonConfig.SEQUENCE_LENGTH,
         log_dir=eval_dir
     )
     
@@ -330,3 +334,180 @@ def load_model(device):
         print(f"  Child F1: {val_metrics.get('child_f1', 'N/A'):.3f}")
     
     return cnn, rnn_model
+
+# ---------------------------
+# Visualization utilities  
+# ---------------------------
+
+def plot_confusion_matrices(y_true, y_pred, class_names, output_dir):
+    """Plot confusion matrices for each class and create multi-class confusion matrix.
+    
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground truth labels of shape (n_samples, n_classes).
+    y_pred : np.ndarray  
+        Predicted labels of shape (n_samples, n_classes).
+    class_names : List[str]
+        Names of the classes.
+    output_dir : Path
+        Directory to save plots.
+    """
+    import seaborn as sns
+    
+    # Original binary confusion matrices for each class
+    fig, axes = plt.subplots(1, len(class_names), figsize=(12, 5))
+    if len(class_names) == 1:
+        axes = [axes]
+    
+    for i, class_name in enumerate(class_names):
+        cm = confusion_matrix(y_true[:, i], y_pred[:, i])
+        im = axes[i].imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+        axes[i].figure.colorbar(im, ax=axes[i])
+        
+        # Add text annotations
+        thresh = cm.max() / 2.
+        for j in range(cm.shape[0]):
+            for k in range(cm.shape[1]):
+                axes[i].text(k, j, format(cm[j, k], 'd'),
+                           ha="center", va="center", 
+                           color="white" if cm[j, k] > thresh else "black")
+        
+        axes[i].set_title(f'{class_name.capitalize()} Confusion Matrix')
+        axes[i].set_xlabel('Predicted')
+        axes[i].set_ylabel('Actual')
+        axes[i].set_xticks([0, 1])
+        axes[i].set_yticks([0, 1])
+        axes[i].set_xticklabels(['No', 'Yes'])
+        axes[i].set_yticklabels(['No', 'Yes'])
+    
+    plt.tight_layout()
+    plt.savefig(output_dir / 'confusion_matrices_binary.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Convert multi-label to multi-class for comprehensive confusion matrix
+    # Categories: 0=no_face, 1=child, 2=adult
+    y_true_multiclass = []
+    y_pred_multiclass = []
+    
+    for i in range(len(y_true)):
+        # Ground truth conversion
+        if y_true[i, 0] == 1:  # child
+            true_class = 1
+        elif y_true[i, 1] == 1:  # adult
+            true_class = 2
+        else:  # no face
+            true_class = 0
+        y_true_multiclass.append(true_class)
+        
+        # Prediction conversion
+        if y_pred[i, 0] == 1:  # predicted child
+            pred_class = 1
+        elif y_pred[i, 1] == 1:  # predicted adult
+            pred_class = 2
+        else:  # predicted no face
+            pred_class = 0
+        y_pred_multiclass.append(pred_class)
+    
+    y_true_multiclass = np.array(y_true_multiclass)
+    y_pred_multiclass = np.array(y_pred_multiclass)
+    
+    # Multi-class confusion matrix with counts
+    multiclass_labels = ['No Face', 'Child', 'Adult']
+    cm_multiclass = confusion_matrix(y_true_multiclass, y_pred_multiclass, labels=[0, 1, 2])
+    
+    # Plot count matrix
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm_multiclass, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=multiclass_labels, yticklabels=multiclass_labels,
+                cbar_kws={'label': 'Count'})
+    plt.title('Multi-class Confusion Matrix (Counts)')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.tight_layout()
+    plt.savefig(output_dir / 'confusion_matrix_multiclass_counts.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Plot percentage matrix
+    cm_multiclass_pct = cm_multiclass.astype('float') / cm_multiclass.sum(axis=1)[:, np.newaxis] * 100
+    
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm_multiclass_pct, annot=True, fmt='.1f', cmap='Blues',
+                xticklabels=multiclass_labels, yticklabels=multiclass_labels,
+                cbar_kws={'label': 'Percentage (%)'})
+    plt.title('Multi-class Confusion Matrix (Percentages)')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.tight_layout()
+    plt.savefig(output_dir / 'confusion_matrix_multiclass_percentages.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Save confusion matrix data as CSV for reference
+    import pandas as pd
+    cm_df_counts = pd.DataFrame(cm_multiclass, 
+                               index=[f'True_{label}' for label in multiclass_labels],
+                               columns=[f'Pred_{label}' for label in multiclass_labels])
+    cm_df_counts.to_csv(output_dir / 'confusion_matrix_multiclass_counts.csv')
+    
+    cm_df_pct = pd.DataFrame(cm_multiclass_pct,
+                            index=[f'True_{label}' for label in multiclass_labels], 
+                            columns=[f'Pred_{label}' for label in multiclass_labels])
+    cm_df_pct.to_csv(output_dir / 'confusion_matrix_multiclass_percentages.csv')
+
+def plot_metrics_comparison(metrics, output_dir):
+    """Plot comparison of metrics across classes.
+    
+    Parameters
+    ----------
+    metrics : Dict[str, float]
+        Dictionary containing calculated metrics.
+    output_dir : str
+        Directory to save plots.
+    """
+    import pandas as pd
+    from config import PersonConfig
+    
+    # Extract metrics for each class
+    metric_types = ['precision', 'recall', 'f1']
+    
+    data = []
+    for class_name in PersonConfig.TARGET_LABELS:
+        for metric_type in metric_types:
+            key = f'{class_name}_{metric_type}'
+            if key in metrics:
+                data.append({
+                    'Class': class_name.capitalize(),
+                    'Metric': metric_type.capitalize(),
+                    'Value': metrics[key]
+                })
+    
+    # Add macro averages
+    for metric_type in metric_types:
+        key = f'macro_{metric_type}'
+        if key in metrics:
+            data.append({
+                'Class': 'Macro Average',
+                'Metric': metric_type.capitalize(),
+                'Value': metrics[key]
+            })
+    
+    df = pd.DataFrame(data)
+    
+    # Create grouped bar plot
+    plt.figure(figsize=(12, 6))
+    pivot_df = df.pivot(index='Metric', columns='Class', values='Value')
+    ax = pivot_df.plot(kind='bar', width=0.8)
+    plt.title('Performance Metrics by Class')
+    plt.ylabel('Score')
+    plt.xlabel('Metric')
+    plt.legend(title='Class')
+    plt.xticks(rotation=0)
+    plt.ylim(0, 1)
+    
+    # Add value labels on bars
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.3f', rotation=90, padding=3)
+    
+    plt.tight_layout()
+    plt.savefig(output_dir / 'metrics_comparison.png', dpi=300, bbox_inches='tight')
+    plt.close()
