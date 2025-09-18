@@ -6,7 +6,7 @@ from constants import DataPaths
 
 logging.basicConfig(level=logging.INFO)
 
-def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection, video_path: Path):
+def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection):
     """
     Stores video information from age_group.csv directly in the Videos table.
     Logs video information in a tabular format.
@@ -17,8 +17,6 @@ def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection, video
         DataFrame containing video information from age_group.csv
     conn : sqlite3.Connection
         SQLite connection object
-    video_path : Path
-        Path to the video file or directory
     """
     cursor = conn.cursor()
     video_data = []
@@ -69,7 +67,7 @@ def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection, video
     
     logging.info(f"Stored {len(video_data)} videos in the database.")
 
-def setup_interaction_db(db_path: Path, video_path: Path):
+def setup_interaction_db(db_path: Path):
     """
     This function sets up the SQLite database for storing detection results.
     If the database already exists, it skips creation.
@@ -78,8 +76,6 @@ def setup_interaction_db(db_path: Path, video_path: Path):
     ----------
     db_path : Path
         Path to the SQLite database file, defaults to DetectionPaths.detection_db_path
-    video_path : Path
-        Path to the video file or directory
     """
     # Check if database already exists
     if db_path.exists():
@@ -189,7 +185,7 @@ def setup_interaction_db(db_path: Path, video_path: Path):
     )
     
     # Store video data directly in Videos table
-    store_video_data(age_group_df, conn, video_path)
+    store_video_data(age_group_df, conn)
 
     conn.commit()
     conn.close()
