@@ -178,7 +178,7 @@ def setup_training_environment():
     # use cuda if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    scaler = torch.amp.GradScaler(device_type='cuda') if device.type == 'cuda' else None
+    scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
     return out_dir, device, scaler
 
 
