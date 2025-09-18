@@ -4,7 +4,7 @@ import run_face_proximity
 import run_speech_type
 import run_person
 from pathlib import Path
-from setup_interaction_db import setup_interaction_db
+from setup_interaction_db import main as setup_interaction_db
 from constants import DataPaths
 from config import InferenceConfig
 
