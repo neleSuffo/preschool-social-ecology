@@ -290,7 +290,7 @@ def setup_evaluation():
     
     print(f"Test dataset loaded: {len(test_ds)} sequences")
     return device, test_loader, test_ds, eval_dir
-  
+
 def load_model(device):
     """Load trained model from checkpoint.
     
