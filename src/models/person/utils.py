@@ -279,11 +279,13 @@ def setup_evaluation():
     
     test_loader = DataLoader(
         test_ds, 
-        batch_size=PersonConfig.BATCH_SIZE, 
+        batch_size=PersonConfig.BATCH_SIZE_INFERENCE,  # Use larger batch size for inference
         shuffle=False, 
-        num_workers=4,
+        num_workers=8,  # Increase workers for faster data loading
         collate_fn=collate_fn, 
-        pin_memory=True
+        pin_memory=True,
+        prefetch_factor=2,  # Prefetch more batches
+        persistent_workers=True  # Keep workers alive between epochs
     )
     
     print(f"Test dataset loaded: {len(test_ds)} sequences")
