@@ -7,7 +7,8 @@ from typing import List
 from sklearn.preprocessing import MultiLabelBinarizer
 from constants import AudioClassification, DataPaths
 from config import AudioConfig
-from models.speech_type.audio_classifier import build_model_multi_label, load_thresholds, extract_features
+from models.speech_type.audio_classifier import build_model_multi_label
+from models.speech_type.utils import load_thresholds, extract_features
 from utils import get_video_id
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
