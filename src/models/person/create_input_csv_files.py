@@ -67,6 +67,49 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
 # Data Processing Functions
 # ==============================
 
+def get_all_video_frames(video_ids: List[int]) -> pd.DataFrame:
+    """
+    Get ALL frames from specified videos for sequential LSTM modeling.
+    
+    Unlike the annotation-only approach, this gets every frame from each video
+    to maintain temporal continuity needed for LSTM models.
+    
+    Parameters
+    ----------
+    video_ids : List[int]
+        List of video IDs to extract frames from
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with all frames: ['video_id', 'frame_id', 'file_name']
+    """
+    if not video_ids:
+        return pd.DataFrame()
+        
+    placeholders = ", ".join("?" * len(video_ids))
+    excluded_videos_sql = ", ".join(f"'{v}'" for v in DataConfig.EXCLUDED_VIDEOS)
+    
+    query = f"""
+    SELECT DISTINCT
+        i.video_id,
+        i.frame_id,
+        i.file_name
+    FROM images i
+    JOIN videos v ON i.video_id = v.id
+    WHERE i.video_id IN ({placeholders})
+      AND v.file_name NOT IN ({excluded_videos_sql})
+    ORDER BY i.video_id, i.frame_id
+    """
+    
+    with sqlite3.connect(DataPaths.ANNO_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, video_ids)
+        results = cursor.fetchall()
+    
+    df = pd.DataFrame(results, columns=['video_id', 'frame_id', 'file_name'])
+    return df
+
 def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int], model_class_mapping: Dict[int, str]) -> pd.DataFrame:
     """
     Convert individual person annotations into frame-level binary labels.
@@ -140,8 +183,161 @@ def build_frame_level_labels(rows: List[Tuple], age_group_mapping: Dict[str, int
         }
         data.append(row)
     
-    df = pd.DataFrame(data)
-    return df
+    # Fetch all frames from videos and add missing ones with 0/0 labels
+    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
+    video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
+    conn.close()
+    
+    # Get all available image files
+    all_frames = []
+    for video_id, video_name in video_map.values:
+        folder_name = video_name.replace('.avi', '')  # Remove extension
+        folder_path = PersonClassification.IMAGES_INPUT_DIR / folder_name
+        
+        if folder_path.exists():
+            for image_file in folder_path.iterdir():
+                if image_file.suffix.lower() in DataConfig.VALID_EXTENSIONS:
+                    # Extract frame ID from filename (e.g., "video_frame_0001.jpg" -> 1)
+                    try:
+                        frame_num_str = image_file.stem.split('_')[-1]
+                        frame_id = int(frame_num_str)
+                        file_name = image_file.stem  # Without extension
+                        
+                        # Check if this frame already has annotations
+                        has_annotation = any(
+                            row["video_id"] == video_id and row["frame_id"] == frame_id
+                            for row in data
+                        )
+                        
+                        if not has_annotation:
+                            # Add frame with 0/0 labels
+                            all_frames.append({
+                                "video_id": video_id,
+                                "frame_id": frame_id,
+                                "file_path": str(image_file),
+                                "adult": 0,
+                                "child": 0
+                            })
+                    except (ValueError, IndexError):
+                        continue
+    
+    # Combine annotated and non-annotated frames
+    data.extend(all_frames)
+    
+    return pd.DataFrame(data)
+
+
+def build_sequential_dataset(annotated_frames_df: pd.DataFrame, train_ids: List[str], val_ids: List[str], test_ids: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Build complete sequential datasets for LSTM training.
+    
+    Gets ALL frames from each child's videos to maintain temporal sequence,
+    then assigns labels based on annotations (0/0 for frames without people).
+    
+    Parameters
+    ----------
+    annotated_frames_df : pd.DataFrame
+        DataFrame with annotated frames and their labels
+    train_ids, val_ids, test_ids : List[str]
+        Child IDs assigned to each split
+        
+    Returns
+    -------
+    Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
+        (df_train_full, df_val_full, df_test_full) with all frames
+    """    
+    # Get video mapping
+    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
+    video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
+    conn.close()
+    
+    def extract_child_id(file_name: str) -> str:
+        try:
+            return 'id' + file_name.split('id')[1].split('_')[0]
+        except (IndexError, ValueError):
+            return None
+    
+    video_map['child_id'] = video_map['file_name'].apply(extract_child_id)
+    video_map.dropna(subset=['child_id'], inplace=True)
+    
+    # Create annotation lookup for quick access
+    # Key: (video_id, frame_id), Value: {adult: 0/1, child: 0/1}
+    annotation_lookup = {}
+    for _, row in annotated_frames_df.iterrows():
+        key = (row['video_id'], row['frame_id'])
+        annotation_lookup[key] = {
+            PersonConfig.TARGET_LABELS[0]: row[PersonConfig.TARGET_LABELS[0]],  # child
+            PersonConfig.TARGET_LABELS[1]: row[PersonConfig.TARGET_LABELS[1]]   # adult
+        }
+    
+    def build_split_data(child_ids: List[str], split_name: str) -> pd.DataFrame:
+        """Build complete frame sequence for a split."""
+        if not child_ids:
+            return pd.DataFrame()
+            
+        # Get all videos for these children
+        split_videos = video_map[video_map['child_id'].isin(child_ids)]['video_id'].tolist()
+        
+        if not split_videos:
+            logging.warning(f"No videos found for {split_name} children: {child_ids}")
+            return pd.DataFrame()
+        
+        # Get ALL frames from these videos
+        all_frames_df = get_all_video_frames(split_videos)
+        
+        if all_frames_df.empty:
+            logging.warning(f"No frames found for {split_name} videos")
+            return pd.DataFrame()
+        
+        # Build complete dataset with labels
+        data = []
+        frames_with_people = 0
+        frames_without_people = 0
+        
+        for _, frame_row in all_frames_df.iterrows():
+            video_id = frame_row['video_id']
+            frame_id = frame_row['frame_id']
+            file_name = frame_row['file_name']
+            
+            # Check if image file exists
+            frame_folder = "_".join(file_name.split("_")[:-1])
+            image_path = None
+            for ext in DataConfig.VALID_EXTENSIONS:
+                potential_path = PersonClassification.IMAGES_INPUT_DIR / frame_folder / f"{file_name}{ext}"
+                if potential_path.exists():
+                    image_path = str(potential_path)
+                    break
+            
+            if image_path is None:
+                continue  # Skip if image file doesn't exist
+            
+            # Get labels from annotation lookup or default to 0/0
+            key = (video_id, frame_id)
+            if key in annotation_lookup:
+                labels = annotation_lookup[key]
+                frames_with_people += 1
+            else:
+                # Frame without people annotations
+                labels = {PersonConfig.TARGET_LABELS[0]: 0, PersonConfig.TARGET_LABELS[1]: 0}
+                frames_without_people += 1
+            
+            row = {
+                "video_id": video_id,
+                "frame_id": frame_id,
+                "file_path": image_path,
+                **labels
+            }
+            data.append(row)
+        
+        df = pd.DataFrame(data)
+        return df
+    
+    # Build datasets for each split
+    df_train_full = build_split_data(train_ids, "Train")
+    df_val_full = build_split_data(val_ids, "Validation") 
+    df_test_full = build_split_data(test_ids, "Test")
+    
+    return df_train_full, df_val_full, df_test_full
 
 # ==============================
 # Data Splitting Functions
@@ -166,8 +362,6 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = PersonConfig.TRAIN_
     Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List, List, List]
         (df_train, df_val, df_test, train_ids, val_ids, test_ids)
     """
-    logging.info("Starting child ID-based data splitting...")
-
     # --- Step 1: Map video_id to child_id ---
     conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
     video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
@@ -186,8 +380,6 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = PersonConfig.TRAIN_
     df = df.merge(video_map.drop(columns='file_name'), on="video_id", how="left")
     df.dropna(subset=['child_id'], inplace=True)
     
-    logging.info(f"Found {df['child_id'].nunique()} unique children in dataset")
-
     # --- Step 2: Calculate class distribution per child ---
     child_group_counts = df.groupby('child_id')[PersonConfig.TARGET_LABELS].sum()
 
@@ -216,8 +408,6 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = PersonConfig.TRAIN_
             logging.error("Could not meet minimum ID requirements for all splits.")
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), [], [], []
         n_test = 2
-
-    logging.info(f"Split sizes: Train={n_train}, Val={n_val}, Test={n_test} children")
 
     # --- Step 4: Initialize splits ---
     split_info = {
@@ -304,11 +494,13 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
         # Overall dataset statistics
         total_child = df['child'].sum()
         total_adult = df['adult'].sum()
+        total_without_person = len(df[(df['child'] == 0) & (df['adult'] == 0)])
 
         f.write(f"=== OVERALL DATASET STATISTICS ===\n")
         f.write(f"Total Images: {total_images}\n")
         f.write(f"Class 0 ({PersonConfig.TARGET_LABELS[0]}): {total_child} images ({total_child / total_images:.2%})\n")
-        f.write(f"Class 1 ({PersonConfig.TARGET_LABELS[1]}): {total_adult} images ({total_adult / total_images:.2%})\n\n")
+        f.write(f"Class 1 ({PersonConfig.TARGET_LABELS[1]}): {total_adult} images ({total_adult / total_images:.2%})\n")
+        f.write(f"Frames without any person: {total_without_person} images ({total_without_person / total_images:.2%})\n\n")
 
         f.write("=== SPLIT DISTRIBUTION ===\n")
         f.write("-" * 50 + "\n\n")
@@ -320,15 +512,18 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
 
             count_child = split_df[PersonConfig.TARGET_LABELS[0]].sum()
             count_adult = split_df[PersonConfig.TARGET_LABELS[1]].sum()
+            count_without_person = len(split_df[(split_df['child'] == 0) & (split_df['adult'] == 0)])
             
             # Within-split ratios
             ratio_child = count_child / total_split if total_split > 0 else 0
             ratio_adult = count_adult / total_split if total_split > 0 else 0
+            ratio_without_person = count_without_person / total_split if total_split > 0 else 0
             
             f.write(f"{split_name} Set ({split_percentage:.1%} of total):\n")
             f.write(f"  Total Images: {total_split}\n")
             f.write(f"  {PersonConfig.TARGET_LABELS[0]}: {count_child} ({ratio_child:.2%})\n")
-            f.write(f"  {PersonConfig.TARGET_LABELS[1]}: {count_adult} ({ratio_adult:.2%})\n\n")
+            f.write(f"  {PersonConfig.TARGET_LABELS[1]}: {count_adult} ({ratio_adult:.2%})\n")
+            f.write(f"  Without any person: {count_without_person} ({ratio_without_person:.2%})\n\n")
 
         # Write statistics for each split
         write_split_info("Training", df_train)
@@ -366,14 +561,18 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
 
 def main():
     """
-    Main execution pipeline for person classification data preparation.
+    Main execution pipeline for person classification data preparation with LSTM support.
     
     Pipeline:
     1. Fetch person annotations from database
-    2. Convert to frame-level binary labels (adult/child presence)
-    3. Split data by child IDs to prevent leakage
-    4. Save train/val/test CSV files
-    5. Generate detailed statistics report
+    2. Convert to frame-level binary labels (adult/child presence) 
+    3. Split children by IDs to prevent leakage (using annotated frames)
+    4. Build complete sequential datasets with ALL frames for LSTM
+    5. Save complete train/val/test CSV files
+    6. Generate detailed statistics report
+    
+    The key difference for LSTM: We include ALL frames from each child's videos
+    to maintain temporal continuity, not just frames with annotations.
     """    
     # Step 1: Fetch annotations from database
     logging.info("Step 1: Fetching annotations from database...")
@@ -397,32 +596,39 @@ def main():
                      f"Available columns: {df.columns.tolist()}")
         exit(1)
 
-    # Step 3: Split data by child IDs
-    logging.info("Step 3: Splitting data by child IDs...")
-    df_train, df_val, df_test, train_ids, val_ids, test_ids = split_by_child_id(df)
+    # Step 3: Split data by child IDs (using annotated frames for assignment)
+    logging.info("Step 3: Splitting children by IDs using annotated frames...")
+    _, _, _, train_ids, val_ids, test_ids = split_by_child_id(df)
 
-    # Validate splits were created successfully
-    if df_train.empty or df_val.empty or df_test.empty:
-        logging.error("Failed to create valid data splits. Check child ID distribution.")
+    # Validate child assignments
+    if not train_ids or not val_ids or not test_ids:
+        logging.error("Failed to create valid child ID splits.")
         exit(1)
 
-    # Step 4: Save CSV files
-    logging.info("Step 4: Saving train/val/test CSV files...")
+    # Step 4: Build complete sequential datasets with ALL frames
+    logging.info("Step 4: Building complete sequential datasets with all frames...")
+    df_train_full, df_val_full, df_test_full = build_sequential_dataset(df, train_ids, val_ids, test_ids)
+
+    # Validate full datasets were created successfully
+    if df_train_full.empty or df_val_full.empty or df_test_full.empty:
+        logging.error("Failed to create complete sequential datasets.")
+        exit(1)
+
+    # Step 5: Save CSV files
+    logging.info("Step 5: Saving complete train/val/test CSV files...")
     PersonClassification.INPUT_DIR.mkdir(parents=True, exist_ok=True)
     
-    df_train.to_csv(PersonClassification.TRAIN_CSV_PATH, index=False)
-    df_val.to_csv(PersonClassification.VAL_CSV_PATH, index=False)
-    df_test.to_csv(PersonClassification.TEST_CSV_PATH, index=False)
+    df_train_full.to_csv(PersonClassification.TRAIN_CSV_PATH, index=False)
+    df_val_full.to_csv(PersonClassification.VAL_CSV_PATH, index=False)
+    df_test_full.to_csv(PersonClassification.TEST_CSV_PATH, index=False)
 
-    # Step 5: Generate statistics report
-    logging.info("Step 5: Generating statistics report...")
-    generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids)
+    # Step 6: Generate statistics report
+    logging.info("Step 6: Generating statistics report...")
+    generate_statistics_file(df, df_train_full, df_val_full, df_test_full, train_ids, val_ids, test_ids)
 
-    # Final summary
-    logging.info(f"✅ Pipeline completed successfully!")
+    # Final summary with sequential dataset info
+    logging.info(f"✅ Sequential dataset pipeline completed successfully!")
     logging.info(f"📁 CSV files saved to: {PersonClassification.INPUT_DIR}")
-    logging.info(f"📊 Train: {len(df_train)} frames, Val: {len(df_val)} frames, Test: {len(df_test)} frames")
-    logging.info(f"👥 Children split - Train: {len(train_ids)}, Val: {len(val_ids)}, Test: {len(test_ids)}")
-    
+        
 if __name__ == "__main__":
     main()
