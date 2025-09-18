@@ -51,14 +51,6 @@ def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection):
             continue
     
     conn.commit()
-    
-    # Log video information
-    if video_data:
-        df = pd.DataFrame(video_data)
-        logging.info("\nVideo Information:\n" + df.to_string())
-    
-    logging.info(f"Stored {len(video_data)} videos in the database.")
-
 
 def setup_interaction_db(db_path: Path):
     """
@@ -165,12 +157,15 @@ def setup_interaction_db(db_path: Path):
     logging.info(f"Detection database created at {db_path}")
 
 
-def main():
+def main(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     """
     Main function to set up the database and store video data.
+    
+    Parameters:
+    ----------
+    db_path : Path
+        Path to the SQLite database file
     """
-    db_path = DataPaths.DETECTION_DB_PATH
-
     # Step 1: Setup database
     setup_interaction_db(db_path)
 
@@ -180,7 +175,6 @@ def main():
             DataPaths.SUBJECTS_CSV_PATH,
             header=0, sep=',', encoding='utf-8'
         )
-        logging.info(f"Loaded {len(age_group_df)} records from {DataPaths.SUBJECTS_CSV_PATH}")
     except Exception as e:
         logging.error(f"Failed to load CSV at {DataPaths.SUBJECTS_CSV_PATH}: {str(e)}")
         return
@@ -193,8 +187,6 @@ def main():
         logging.error(f"Database operation failed: {str(e)}")
     finally:
         conn.close()
-        logging.info("Database connection closed.")
-
 
 if __name__ == "__main__":
     main()
