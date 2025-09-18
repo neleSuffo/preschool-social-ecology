@@ -11,11 +11,17 @@ Usage:
 """
 import os
 # Set conservative thread limits to avoid DataLoader hangs
-os.environ['OMP_NUM_THREADS'] = '4'  # Reduced from 12
+os.environ['OMP_NUM_THREADS'] = '4'  
 os.environ['MKL_NUM_THREADS'] = '4'
 
+import warnings
+# Suppress NVML warnings due to driver/library version mismatch
+warnings.filterwarnings("ignore", message="Can't initialize NVML")
+
 import torch
-torch.set_num_threads(4)  # Reduced from 12
+torch.set_num_threads(4)
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"GPU count: {torch.cuda.device_count()}")
 
 import argparse
 import torch.nn as nn
