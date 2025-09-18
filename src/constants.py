@@ -1,7 +1,5 @@
 from pathlib import Path
 
-VALID_TARGETS = {"person_face", "all", "person_cls", "face_cls", "gaze_cls", "face_det", "gaze_cls_vit"}
-
 class BasePaths:
     BASE_DIR = Path("/home/nele_pauline_suffo")
     MODELS_DIR = Path(BASE_DIR/"models")
@@ -25,7 +23,6 @@ class DataPaths:
     INFERENCE_DB_PATH = Path(INFERENCE_DIR/"inference.db")
 
 class AudioClassification:
-    #RESULTS_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/runs/20250703-165356")
     RESULTS_DIR = Path("/Users/nelesuffo/Promotion/outputs/audio_classification/runs/20250916-201650")
     TRAINED_WEIGHTS_PATH = Path(RESULTS_DIR/"best_model.keras")
     ANNOTATIONS_INPUT_DIR = Path(BasePaths.DATA_DIR/"childlens_annotations/keeper/v1")
@@ -43,7 +40,6 @@ class AudioClassification:
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
     KCHI_OUTPUT_FILE = ALICE_OUTPUT_DIR / "KCHI_output_utterances.txt"
-    #OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "FEM_MAL_output_utterances.txt"
     OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "OTH_output_utterances.txt"
 
 class PersonClassification:
