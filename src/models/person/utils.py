@@ -214,9 +214,9 @@ def setup_data_loaders(out_dir):
     train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, log_dir=out_dir)
     val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, log_dir=out_dir)
 
-    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=8,
+    train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=4,
                               collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
-    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=8,
+    val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=4,
                             collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
 
     return train_loader, val_loader, train_ds, val_ds
