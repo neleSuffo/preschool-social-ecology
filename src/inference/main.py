@@ -34,7 +34,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
     """
     try:
         # Setup the detection database which will hold the detection results (if it doesnt already exist)
-        setup_interaction_db(db_path = db_path, video_path = video_path)
+        setup_interaction_db(db_path = db_path)
 
         # Check if video_path is a file or directory
         video_path = Path(video_path)
@@ -65,9 +65,6 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
         else:
             logging.error(f"Path is neither a file nor a directory: {video_path}")
             return False
-
-        # Run the detection pipeline
-        logging.info(f"Starting detection pipeline for {len(selected_videos)} videos")
         
         # Determine which models to run
         if models is None or 'all' in models:
