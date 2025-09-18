@@ -138,54 +138,6 @@ class CNNEncoder(nn.Module):
         if self.project is not None:
             f = self.project(f)
         return f  # (N, feat_dim)
-
-def load_model(device, model_path):
-    """Load trained model from checkpoint.
-    
-    Parameters
-    ----------
-    device : torch.device
-        Device to load the model on.
-    model_path : str
-        Path to the model checkpoint.
-        
-    Returns
-    -------
-    Tuple[nn.Module, nn.Module]
-        Loaded CNN and RNN models.
-    """
-    print(f"Loading model from {model_path}")
-    checkpoint = torch.load(model_path, map_location=device)
-    
-    # Initialize models with same architecture as training
-    cnn = CNNEncoder(backbone=PersonConfig.BACKBONE, pretrained=False, feat_dim=PersonConfig.FEAT_DIM).to(device)
-    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim).to(device)
-    
-    # Handle compiled models (strip _orig_mod prefix if present)
-    def clean_state_dict(state_dict):
-        cleaned = {}
-        for k, v in state_dict.items():
-            if k.startswith('_orig_mod.'):
-                cleaned[k[10:]] = v  # Remove '_orig_mod.' prefix
-            else:
-                cleaned[k] = v
-        return cleaned
-    
-    # Load state dicts
-    cnn.load_state_dict(clean_state_dict(checkpoint['cnn_state']))
-    rnn_model.load_state_dict(clean_state_dict(checkpoint['rnn_state']))
-    
-    print(f"Model loaded successfully from epoch {checkpoint['epoch']}")
-    
-    # Print loaded model metrics if available
-    if 'val_metrics' in checkpoint:
-        val_metrics = checkpoint['val_metrics']
-        print(f"Loaded model validation performance:")
-        print(f"  Macro F1: {val_metrics.get('macro_f1', 'N/A'):.3f}")
-        print(f"  Adult F1: {val_metrics.get('adult_f1', 'N/A'):.3f}")
-        print(f"  Child F1: {val_metrics.get('child_f1', 'N/A'):.3f}")
-    
-    return cnn, rnn_model
    
 class VideoFrameDataset(Dataset):
     def __init__(self, csv_file, sequence_length=PersonConfig.SEQUENCE_LENGTH, transform=None, log_dir=None):
