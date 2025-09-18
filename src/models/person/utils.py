@@ -249,9 +249,9 @@ def setup_evaluation():
     """Setup output directory, device, and data loader."""   
     # Create timestamped evaluation directory
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    eval_dir = os.path.join(PersonClassification.OUTPUT_DIR, f"{PersonConfig.MODEL_NAME}_evaluation_{timestamp}")
-    os.makedirs(eval_dir, exist_ok=True)
-    
+    eval_dir = Path(PersonClassification.OUTPUT_DIR) / f"{PersonConfig.MODEL_NAME}_evaluation_{timestamp}"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"Results will be saved to: {eval_dir}")
     
     # use cuda if available
