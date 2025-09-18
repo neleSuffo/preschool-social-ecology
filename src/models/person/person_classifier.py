@@ -6,7 +6,6 @@ import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.utils.data import Dataset
 from torchvision import models
-
 from config import PersonConfig
 
 class FrameRNNClassifier(nn.Module):
@@ -57,14 +56,14 @@ class FrameRNNClassifier(nn.Module):
         Parameters
         ----------
         feats : torch.Tensor
-            CNN features of shape (batch_size, max_seq_len, feat_dim).
+            CNN features of shape (batch_size, sequence_length, feat_dim).
         lengths : torch.Tensor
             Actual sequence lengths for each sample in the batch.
             
         Returns
         -------
         torch.Tensor
-            Classification logits of shape (batch_size, max_seq_len, num_outputs).
+            Classification logits of shape (batch_size, sequence_length, num_outputs).
         """
         packed = pack_padded_sequence(feats, lengths.cpu(), batch_first=True, enforce_sorted=False)
         packed_out, _ = self.rnn(packed)
@@ -89,14 +88,22 @@ class CNNEncoder(nn.Module):
     """
     def __init__(self, backbone='resnet18', pretrained=True, feat_dim=512):
         super().__init__()
+        
+        # Handle new torchvision weights API (deprecated 'pretrained' parameter)
         if backbone == 'resnet18':
-            res = models.resnet18(pretrained=pretrained)
+            if pretrained:
+                res = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+            else:
+                res = models.resnet18(weights=None)
             feat_in = res.fc.in_features
             modules = list(res.children())[:-1]  # remove FC and avgpool kept? last is avgpool
             self.encoder = nn.Sequential(*modules)  # outputs (B, feat_in, 1, 1)
             self.feat_dim = feat_in
         elif backbone == 'resnet50':
-            res = models.resnet50(pretrained=pretrained)
+            if pretrained:
+                res = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+            else:
+                res = models.resnet50(weights=None)
             feat_in = res.fc.in_features
             modules = list(res.children())[:-1]  # remove FC and avgpool kept? last is avgpool
             self.encoder = nn.Sequential(*modules)  # outputs (B, feat_in, 1, 1)
@@ -183,7 +190,7 @@ def load_model(device, model_path):
 class VideoFrameDataset(Dataset):
     def __init__(self, csv_file, sequence_length=PersonConfig.SEQUENCE_LENGTH, transform=None, log_dir=None):
         self.data = pd.read_csv(csv_file)
-        self.sequence_length = sequence_length
+        self.sequence_length = sequence_length # number of frames per sequence
         self.transform = transform
         self.skipped_files = []
         self.log_dir = log_dir
