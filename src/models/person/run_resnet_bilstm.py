@@ -292,22 +292,17 @@ def run_inference_on_video(video_path, output_dir, device, batch_size, window_si
                 window_preds = preds[0, :actual_window_size].cpu().numpy()   # (actual_window_size, 2)
                 
                 # Update predictions for frames in this window
-                for i, frame_idx in enumerate(frame_numbers):
-                    if 0 <= frame_idx < total_frames:
-                        # Use max confidence across overlapping windows
-                        current_child_conf = all_predictions['child_confidence'][frame_idx]
-                        current_adult_conf = all_predictions['adult_confidence'][frame_idx]
-                        
-                        new_child_conf = float(window_probs[i, 0])
-                        new_adult_conf = float(window_probs[i, 1])
-                        
-                        if new_child_conf > current_child_conf:
-                            all_predictions['child_confidence'][frame_idx] = new_child_conf
-                            all_predictions['child_person'][frame_idx] = int(window_preds[i, 0])
-                        
-                        if new_adult_conf > current_adult_conf:
-                            all_predictions['adult_confidence'][frame_idx] = new_adult_conf
-                            all_predictions['adult_person'][frame_idx] = int(window_preds[i, 1])
+                last_idx = frame_numbers[-1]  # e.g., 59, 89, 119, ...
+                if 0 <= last_idx < total_frames:
+                    new_child_conf = float(window_probs[-1, 0])
+                    new_adult_conf = float(window_probs[-1, 1])
+                    new_child_pred = int(window_preds[-1, 0])
+                    new_adult_pred = int(window_preds[-1, 1])
+
+                    all_predictions['child_confidence'][last_idx] = new_child_conf
+                    all_predictions['adult_confidence'][last_idx] = new_adult_conf
+                    all_predictions['child_person'][last_idx] = new_child_pred
+                    all_predictions['adult_person'][last_idx] = new_adult_pred
                 
             except Exception as e:
                 print(f"Warning: Error processing window starting at frame {window_start}: {e}")
@@ -327,6 +322,9 @@ def run_inference_on_video(video_path, output_dir, device, batch_size, window_si
     # Reorder columns to match YOLO face detection style
     df = df[['frame_number', 'child_person', 'adult_person', 'child_confidence', 'adult_confidence']]
     
+    # Keep only frames that actually got predictions (multiples of stride)
+    df = df[df['frame_number'] % stride == (window_size - 1) % stride].reset_index(drop=True)
+
     # Ensure output directory exists
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
