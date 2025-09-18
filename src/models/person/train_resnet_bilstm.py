@@ -89,14 +89,8 @@ def setup_models_and_optimizers(device: torch.device):
         betas=(0.9, 0.999),
     )
 
-    # BCEWithLogits with class weighting to counter class imbalance
-    pos_weight = torch.tensor(PersonConfig.POS_WEIGHT if hasattr(PersonConfig, 'POS_WEIGHT') else [3.0, 3.0], dtype=torch.float32).to(device)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-    print("Model setup complete:")
-    print(f"  CNN learning rate: {PersonConfig.LR * 0.01 if not PersonConfig.FREEZE_CNN else 'Frozen'}")
-    print(f"  RNN learning rate: {PersonConfig.LR * 2.0}")
-    print(f"  Loss: BCEWithLogitsLoss with pos_weight={pos_weight.tolist()}")
+    # Standard BCE loss without class weighting (classes are balanced)
+    criterion = nn.BCEWithLogitsLoss()
 
     return cnn, rnn_model, opt_cnn, opt_rnn, criterion
 
