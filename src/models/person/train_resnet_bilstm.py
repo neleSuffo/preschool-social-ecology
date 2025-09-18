@@ -402,7 +402,7 @@ def main():
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
 
-    out_dir, device, scaler = setup_training_environment(args)
+    out_dir, device, scaler = setup_training_environment()
 
     train_loader, val_loader, train_ds, val_ds = setup_data_loaders(out_dir)
 
