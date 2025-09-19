@@ -80,8 +80,8 @@ class Proximity:
 class Inference:
     BASE_OUTPUT_DIR = BasePaths.HOME_DIR / "src/results"
     PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
-    FACE_LOG_FILE_PATH = BASE_OUTPUT_DIR / "logs" / "face_processed.txt"
-    SPEECH_LOG_FILE_PATH = BASE_OUTPUT_DIR / "logs" / "speech_processed.txt"
+    FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
+    SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
     GROUND_TRUTH_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments_gt.csv"
     FRAME_LEVEL_INTERACTIONS_CSV = BASE_OUTPUT_DIR / "01_frame_level_social_interactions.csv"
     INTERACTION_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments.csv"
