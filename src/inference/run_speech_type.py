@@ -5,13 +5,14 @@ import sqlite3
 import logging
 from typing import List
 from sklearn.preprocessing import MultiLabelBinarizer
-from constants import AudioClassification, DataPaths
+from constants import AudioClassification, DataPaths, Inference
 from config import AudioConfig
 from models.speech_type.audio_classifier import build_model_multi_label
 from models.speech_type.utils import load_thresholds, extract_features
-from utils import get_video_id
+from utils import get_video_id, load_processed_videos, save_processed_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+LOG_FILE_PATH = Inference.SPEECH_LOG_FILE_PATH
 
 def load_inference_model():
     """
@@ -36,7 +37,6 @@ def load_inference_model():
             num_classes=num_classes
         )
         model.load_weights(AudioClassification.TRAINED_WEIGHTS_PATH)
-        print("✅ Model loaded successfully by rebuilding architecture and loading weights.")
         return model, mlb
     except Exception as e:
         print(f"❌ Error loading model: {e}")
@@ -99,7 +99,7 @@ def classify_audio_windows(audio_path, model, mlb, batch_size=32):
         })
     return results, mlb.classes_, audio_duration
 
-def aggregate_and_save_results(audio_file, predictions, class_names, db_cursor, thresholds, model_id, video_id):
+def aggregate_and_save_results(predictions, class_names, db_cursor, video_id, thresholds):
     """
     Aggregates overlapping window predictions and saves the results to the database.
     For each second of audio, averages the probabilities from all overlapping windows
@@ -107,20 +107,16 @@ def aggregate_and_save_results(audio_file, predictions, class_names, db_cursor, 
     
     Parameters
     ----------
-    audio_file : str
-        Path to the audio file being processed.
     predictions : list of dict
         List of dictionaries containing start_time, end_time, and probabilities for each window.
     class_names : list
         List of class names corresponding to the model outputs.
     db_cursor : sqlite3.Cursor
         Database cursor for executing SQL commands.
-    thresholds : dict
-        Dictionary mapping class names to optimal thresholds
-    model_id : int
-        ID of the model used for classification
     video_id : int
         ID of the video in the database
+    thresholds : dict
+        Dictionary mapping class names to their optimized threshold values.
     """
     # Organize predictions by second
     second_predictions = {}
@@ -158,16 +154,21 @@ def aggregate_and_save_results(audio_file, predictions, class_names, db_cursor, 
                 video_id, frame_number, model_id,
                 has_kchi, kchi_confidence_score,
                 has_cds, cds_confidence_score,
-                has_ohs, ohs_confidence_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                has_ohs, ohs_confidence_score) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            video_id, second, model_id,
-            has_kchi, kchi_confidence,
-            has_cds, cds_confidence,
-            has_ohs, ohs_confidence
+            video_id, 
+            second, 
+            int(AudioConfig.MODEL_ID),
+            has_kchi, 
+            kchi_confidence,
+            has_cds, 
+            cds_confidence,
+            has_ohs, 
+            ohs_confidence
         ))
 
-def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor, thresholds: dict, model_id: int):
+def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor):
     """
     Process a single audio file and save classification results to database.
 
@@ -181,12 +182,11 @@ def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor, thre
         MultiLabelBinarizer fitted on the training data.
     cursor : sqlite3.Cursor
         Database cursor for executing SQL commands.
-    thresholds : dict
-        Dictionary mapping class names to optimal thresholds
-    model_id : int
-        ID of the model used for classification
     """
     logging.info(f"Processing audio for video: {video_name}")
+    
+    # Load optimized thresholds from training
+    thresholds = load_thresholds(AudioClassification.RESULTS_DIR, mlb.classes_)
     
     # Get video_id from database
     video_id = get_video_id(video_name, cursor)
@@ -194,22 +194,19 @@ def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor, thre
         logging.error(f"Video ID not found for {video_name}")
         return
     
-    # Look for audio file in the audio input directory
-    audio_file = list(DataPaths.AUDIO_INPUT_DIR.glob(f"{video_name}*.wav"))
+    # Look for exact audio file match
+    audio_file_path = AudioClassification.QUANTEX_AUDIO_DIR / f"{video_name}.wav"
     
-    if not audio_file:
-        logging.error(f"Audio file not found for {video_name}")
+    if not audio_file_path.exists():
+        logging.error(f"Audio file not found: {audio_file_path}")
         return
 
     try:
         # Classify audio windows
-        prediction_results, _, _ = classify_audio_windows(str(audio_file), model, mlb)
+        prediction_results, _, _ = classify_audio_windows(str(audio_file_path), model, mlb)
         
         if prediction_results:
-            aggregate_and_save_results(
-                str(audio_file), prediction_results, mlb.classes_, 
-                cursor, thresholds, model_id, video_id
-            )
+            aggregate_and_save_results(prediction_results, mlb.classes_, cursor, video_id, thresholds)
             logging.info(f"✅ Saved audio classification results for {video_name}")
         else:
             logging.warning(f"No prediction results for {video_name}")
@@ -226,12 +223,19 @@ def main(video_list: List[str]):
     video_list : List[str]
         List of video names to process
     """
+    # Setup processing log file
+    processed_videos = load_processed_videos(LOG_FILE_PATH)
+    # Filter out already processed videos
+    videos_to_process = [v for v in video_list if v not in processed_videos]
+    skipped_videos = [v for v in video_list if v in processed_videos]
+        
+    if not videos_to_process:
+        logging.info("All requested videos have already been processed!")
+        return
+    
     # Connect to database
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     cursor = conn.cursor()
-    
-    # Load the trained model and MultiLabelBinarizer
-    model_id = AudioConfig.MODEL_ID
     
     model, mlb = load_inference_model()
     if model is None:
@@ -239,14 +243,11 @@ def main(video_list: List[str]):
         conn.close()
         return
     
-    # Load optimized thresholds from training
-    thresholds = load_thresholds(AudioClassification.RESULTS_DIR, mlb.classes_)
-    logging.info(f"Using thresholds: {thresholds}")
-    
     # Process each video
     for video_name in video_list:
         try:
-            process_audio_file(video_name, model, mlb, cursor, thresholds, model_id)
+            process_audio_file(video_name, model, mlb, cursor)
+            save_processed_video(LOG_FILE_PATH, video_name)
             conn.commit()  # Commit after each video
         except Exception as e:
             logging.error(f"Error processing video {video_name}: {e}")
@@ -259,6 +260,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run audio classifier on video list")
     parser.add_argument("--video_list", nargs='+', required=True, 
                     help="List of video names to process")
-    
+    parser.add_argument("--force", action='store_true',
+                    help="Force reprocessing of already processed videos")
     args = parser.parse_args()
+    
+        # Handle force reprocessing
+    if args.force:
+        logging.info("Force flag enabled - will reprocess all videos")
+        if LOG_FILE_PATH.exists():
+            # Create backup of current log
+            backup_path = LOG_FILE_PATH.with_suffix('.txt.backup')
+            import shutil
+            shutil.copy2(LOG_FILE_PATH, backup_path)
+            LOG_FILE_PATH.unlink()  # Remove current log
+
     main(args.video_list)
