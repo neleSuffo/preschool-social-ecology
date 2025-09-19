@@ -7,14 +7,14 @@ from torchvision import transforms
 from pathlib import Path
 from typing import List, Set
 from tqdm import tqdm
-from constants import DataPaths, PersonClassification
+from constants import DataPaths, PersonClassification, Inference
 from config import PersonConfig
 from models.person.utils import load_model, sequence_features_from_cnn
 from models.person.person_classifier import CNNEncoder, FrameRNNClassifier
 from utils import get_video_id, get_frame_paths, extract_frame_number, load_processed_videos, save_processed_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
+LOG_FILE_PATH = Inference.PERSON_LOG_FILE_PATH
 
 def process_video(
     video_name: str,
@@ -172,10 +172,15 @@ def process_video(
 def main(video_list: List[str]):
     """
     Main function to process videos for person classification
+    
+    Parameters:
+    ----------
+    video_list : List[str]
+        List of video names to process
     """
     # Setup processing log file
-    processed_videos = load_processed_videos(Inference.PERSON_LOG_FILE_PATH)
-    
+    processed_videos = load_processed_videos(LOG_FILE_PATH)
+
     # Filter out already processed videos
     videos_to_process = [v for v in video_list if v not in processed_videos]
     skipped_videos = [v for v in video_list if v in processed_videos]
@@ -183,7 +188,8 @@ def main(video_list: List[str]):
     if not videos_to_process:
         logging.info("All requested videos have already been processed!")
         return
-        
+    
+    # Connect to database
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     cursor = conn.cursor()
 
@@ -203,12 +209,14 @@ def main(video_list: List[str]):
     for video_name in videos_to_process:
         try:
             process_video(video_name, cnn, rnn_model, cursor, conn, device)
-            save_processed_video(log_file_path, video_name)
+            save_processed_video(LOG_FILE_PATH, video_name)
         except Exception as e:
             logging.error(f"Error processing video {video_name}: {e}")
             continue
 
     conn.close()
+    logging.info("Person Classification processing completed.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run person classification on extracted video frames")
@@ -221,12 +229,11 @@ if __name__ == "__main__":
     # Handle force reprocessing
     if args.force:
         logging.info("Force flag enabled - will reprocess all videos")
-        log_file_path = Inference.PERSON_LOG_FILE_PATH
-        if log_file_path.exists():
+        if LOG_FILE_PATH.exists():
             # Create backup of current log
-            backup_path = log_file_path.with_suffix('.txt.backup')
+            backup_path = LOG_FILE_PATH.with_suffix('.txt.backup')
             import shutil
-            shutil.copy2(log_file_path, backup_path)
-            log_file_path.unlink()  # Remove current log
+            shutil.copy2(LOG_FILE_PATH, backup_path)
+            LOG_FILE_PATH.unlink()  # Remove current log
 
     main(args.video_list)
