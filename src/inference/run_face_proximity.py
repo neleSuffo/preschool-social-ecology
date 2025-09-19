@@ -170,7 +170,6 @@ def main(video_list: List[str], frame_step: int = 10):
     
     # Load YOLO face detection model
     model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
-    logging.info(f"Loaded face detection model from {FaceDetection.TRAINED_WEIGHTS_PATH}")
     
     # Process each video
     for video_name in video_list:
