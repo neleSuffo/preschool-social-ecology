@@ -207,7 +207,6 @@ def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor):
         
         if prediction_results:
             aggregate_and_save_results(prediction_results, mlb.classes_, cursor, video_id, thresholds)
-            logging.info(f"✅ Saved audio classification results for {video_name}")
         else:
             logging.warning(f"No prediction results for {video_name}")
             
