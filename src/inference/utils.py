@@ -2,6 +2,7 @@ import logging
 import sqlite3
 import re
 from pathlib import Path
+from typing import Set
 from config import DataConfig
 
 def get_video_id(video_name: str, cursor: sqlite3.Cursor) -> int:
@@ -38,3 +39,57 @@ def get_frame_paths(video_frame_dir: Path):
         key=lambda x: int(x.stem.split('_')[-1])
     )
     return frame_paths
+
+
+# ---------------------------
+# Processing Log Functions
+# ---------------------------
+
+def load_processed_videos(log_file_path: Path) -> Set[str]:
+    """
+    Load the list of already processed videos from a simple text file.
+    
+    Parameters:
+    -----------
+    log_file_path : Path
+        Path to the processing log file
+        
+    Returns:
+    --------
+    Set[str]
+        Set of video names that have already been processed
+    """
+    # If log file doesn't exist, return empty set
+    if not log_file_path.exists():
+        return set()
+    
+    try:
+        with open(log_file_path, 'r') as f:
+            processed_videos = {line.strip() for line in f if line.strip()}
+        return processed_videos
+    except Exception as e:
+        logging.warning(f"Could not load processed videos log: {e}")
+        return set()
+
+
+def save_processed_video(log_file_path: Path, video_name: str):
+    """
+    Add a video name to the processed videos log file.
+    
+    Parameters:
+    -----------
+    log_file_path : Path
+        Path to the processing log file
+    video_name : str
+        Name of the video that was processed
+    """
+    try:
+        # Ensure directory exists
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Append video name to file
+        with open(log_file_path, 'a') as f:
+            f.write(f"{video_name}\n")
+            
+    except Exception as e:
+        logging.error(f"Could not save processed video log: {e}")
