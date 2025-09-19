@@ -225,6 +225,7 @@ def main(video_list: List[str]):
     """
     # Setup processing log file
     processed_videos = load_processed_videos(LOG_FILE_PATH)
+    
     # Filter out already processed videos
     videos_to_process = [v for v in video_list if v not in processed_videos]
     skipped_videos = [v for v in video_list if v in processed_videos]
@@ -244,7 +245,7 @@ def main(video_list: List[str]):
         return
     
     # Process each video
-    for video_name in video_list:
+    for video_name in videos_to_process:
         try:
             process_audio_file(video_name, model, mlb, cursor)
             save_processed_video(LOG_FILE_PATH, video_name)
