@@ -9,7 +9,7 @@ from tqdm import tqdm
 from constants import DataPaths, FaceDetection
 from config import FaceConfig
 from models.proximity.estimate_proximity import calculate_proximity
-from utils import get_video_id, extract_frame_number, get_frame_paths
+from utils import get_video_id, get_frame_paths, extract_frame_number, load_processed_videos, save_processed_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -96,7 +96,6 @@ def process_video(
                 conn.commit()
 
     conn.commit()
-    logging.info(f"Processed video {video_name}: {processed_frames} frames classified")
 
 def process_frame(frame_path: Path, video_id: int, frame_number: int, 
                 model: YOLO, cursor: sqlite3.Cursor) -> int:
@@ -153,6 +152,17 @@ def main(video_list: List[str], frame_step: int = 10):
     frame_step : int
         Step size for frame processing (default: 10)
     """
+    # Setup processing log file
+    processed_videos = load_processed_videos(Inference.PERSON_LOG_FILE_PATH)
+    
+    # Filter out already processed videos
+    videos_to_process = [v for v in video_list if v not in processed_videos]
+    skipped_videos = [v for v in video_list if v in processed_videos]
+    
+    if not videos_to_process:
+        logging.info("All requested videos have already been processed!")
+        return
+    
     # Connect to database
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     cursor = conn.cursor()
@@ -165,6 +175,7 @@ def main(video_list: List[str], frame_step: int = 10):
     for video_name in video_list:
         try:
             process_video(video_name, frame_step, model, cursor, conn, process_frame_func=process_frame)
+            save_processed_video(log_file_path, video_name)
         except Exception as e:
             logging.error(f"Error processing video {video_name}: {e}")
             continue
@@ -178,6 +189,19 @@ if __name__ == "__main__":
                     help="List of video names to process")
     parser.add_argument("--frame_step", type=int, default=10, 
                     help="Frame step for processing (default: 10)")
-    
+    parser.add_argument("--force", action='store_true',
+                    help="Force reprocessing of already processed videos")
     args = parser.parse_args()
+    
+    # Handle force reprocessing
+    if args.force:
+        logging.info("Force flag enabled - will reprocess all videos")
+        log_file_path = Inference.FACE_LOG_FILE_PATH
+        if log_file_path.exists():
+            # Create backup of current log
+            backup_path = log_file_path.with_suffix('.txt.backup')
+            import shutil
+            shutil.copy2(log_file_path, backup_path)
+            log_file_path.unlink()  # Remove current log
+            
     main(args.video_list, args.frame_step)
