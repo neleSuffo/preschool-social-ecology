@@ -6,12 +6,13 @@ from typing import List, Callable
 from pathlib import Path
 from ultralytics import YOLO
 from tqdm import tqdm
-from constants import DataPaths, FaceDetection
+from constants import DataPaths, FaceDetection, Inference
 from config import FaceConfig
 from models.proximity.estimate_proximity import calculate_proximity
 from utils import get_video_id, get_frame_paths, extract_frame_number, load_processed_videos, save_processed_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+LOG_FILE_PATH = Inference.FACE_LOG_FILE_PATH
 
 def process_video(
     video_name: str,
@@ -153,7 +154,7 @@ def main(video_list: List[str], frame_step: int = 10):
         Step size for frame processing (default: 10)
     """
     # Setup processing log file
-    processed_videos = load_processed_videos(Inference.PERSON_LOG_FILE_PATH)
+    processed_videos = load_processed_videos(LOG_FILE_PATH)
     
     # Filter out already processed videos
     videos_to_process = [v for v in video_list if v not in processed_videos]
@@ -175,7 +176,7 @@ def main(video_list: List[str], frame_step: int = 10):
     for video_name in video_list:
         try:
             process_video(video_name, frame_step, model, cursor, conn, process_frame_func=process_frame)
-            save_processed_video(log_file_path, video_name)
+            save_processed_video(LOG_FILE_PATH, video_name)
         except Exception as e:
             logging.error(f"Error processing video {video_name}: {e}")
             continue
@@ -196,12 +197,11 @@ if __name__ == "__main__":
     # Handle force reprocessing
     if args.force:
         logging.info("Force flag enabled - will reprocess all videos")
-        log_file_path = Inference.FACE_LOG_FILE_PATH
-        if log_file_path.exists():
+        if LOG_FILE_PATH.exists():
             # Create backup of current log
-            backup_path = log_file_path.with_suffix('.txt.backup')
+            backup_path = LOG_FILE_PATH.with_suffix('.txt.backup')
             import shutil
-            shutil.copy2(log_file_path, backup_path)
-            log_file_path.unlink()  # Remove current log
+            shutil.copy2(LOG_FILE_PATH, backup_path)
+            LOG_FILE_PATH.unlink()  # Remove current log
             
     main(args.video_list, args.frame_step)
