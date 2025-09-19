@@ -53,9 +53,7 @@ def load_thresholds(run_dir, mlb_classes):
             
             # Return the dictionary directly, filtering out non-class keys
             thresholds = {class_name: thresholds_dict.get(class_name, 0.5) for class_name in mlb_classes}
-            
-            print(f"📊 Class thresholds: {thresholds}")
-            
+                        
             # Validate threshold ranges
             if any(t < 0.1 or t > 0.9 for t in thresholds.values()):
                 print("⚠️ Warning: Some thresholds are outside typical range [0.1, 0.9]")
