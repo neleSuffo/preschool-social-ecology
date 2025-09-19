@@ -5,15 +5,16 @@ import torch
 from PIL import Image
 from torchvision import transforms
 from pathlib import Path
-from typing import List
+from typing import List, Set
 from tqdm import tqdm
 from constants import DataPaths, PersonClassification
 from config import PersonConfig
 from models.person.utils import load_model, sequence_features_from_cnn
 from models.person.person_classifier import CNNEncoder, FrameRNNClassifier
-from utils import get_video_id, get_frame_paths, extract_frame_number
+from utils import get_video_id, get_frame_paths, extract_frame_number, load_processed_videos, save_processed_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 def process_video(
     video_name: str,
@@ -172,6 +173,17 @@ def main(video_list: List[str]):
     """
     Main function to process videos for person classification
     """
+    # Setup processing log file
+    processed_videos = load_processed_videos(Inference.PERSON_LOG_FILE_PATH)
+    
+    # Filter out already processed videos
+    videos_to_process = [v for v in video_list if v not in processed_videos]
+    skipped_videos = [v for v in video_list if v in processed_videos]
+        
+    if not videos_to_process:
+        logging.info("All requested videos have already been processed!")
+        return
+        
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     cursor = conn.cursor()
 
@@ -186,9 +198,12 @@ def main(video_list: List[str]):
         conn.close()
         return
 
-    for video_name in video_list:
+    successfully_processed = 0
+    
+    for video_name in videos_to_process:
         try:
             process_video(video_name, cnn, rnn_model, cursor, conn, device)
+            save_processed_video(log_file_path, video_name)
         except Exception as e:
             logging.error(f"Error processing video {video_name}: {e}")
             continue
@@ -199,5 +214,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run person classification on extracted video frames")
     parser.add_argument("--video_list", nargs='+', required=True,
                         help="List of video names to process")
+    parser.add_argument("--force", action='store_true',
+                        help="Force reprocessing of already processed videos")
     args = parser.parse_args()
+    
+    # Handle force reprocessing
+    if args.force:
+        logging.info("Force flag enabled - will reprocess all videos")
+        log_file_path = Inference.PERSON_LOG_FILE_PATH
+        if log_file_path.exists():
+            # Create backup of current log
+            backup_path = log_file_path.with_suffix('.txt.backup')
+            import shutil
+            shutil.copy2(log_file_path, backup_path)
+            log_file_path.unlink()  # Remove current log
+
     main(args.video_list)
