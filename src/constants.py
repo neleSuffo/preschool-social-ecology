@@ -28,6 +28,7 @@ class AudioClassification:
     ANNOTATIONS_INPUT_DIR = Path(BasePaths.DATA_DIR/"childlens_annotations/keeper/v1")
     CHILDLENS_PARTICIPANT_INFO = Path(ANNOTATIONS_INPUT_DIR/"childlens_participant_info.csv")
     AUDIO_FILES_DIR = Path(BasePaths.DATA_DIR/"childlens_audio")
+    QUANTEX_AUDIO_DIR = Path(BasePaths.DATA_DIR/"quantex_audio")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"audio_cls_input")
     TRAIN_RTTM_FILE = Path(INPUT_DIR/"train.rttm")
     VAL_RTTM_FILE = Path(INPUT_DIR/"dev.rttm")
@@ -56,7 +57,7 @@ class PersonClassification:
     TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
 class FaceDetection:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12l_20250821_155703/weights/best.pt")
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12l_20250918_104616/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_cvat")
@@ -78,6 +79,9 @@ class Proximity:
     
 class Inference:
     BASE_OUTPUT_DIR = BasePaths.HOME_DIR / "src/results"
+    PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
+    FACE_LOG_FILE_PATH = BASE_OUTPUT_DIR / "logs" / "face_processed.txt"
+    SPEECH_LOG_FILE_PATH = BASE_OUTPUT_DIR / "logs" / "speech_processed.txt"
     GROUND_TRUTH_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments_gt.csv"
     FRAME_LEVEL_INTERACTIONS_CSV = BASE_OUTPUT_DIR / "01_frame_level_social_interactions.csv"
     INTERACTION_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments.csv"
