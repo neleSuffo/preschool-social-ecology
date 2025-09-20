@@ -10,7 +10,8 @@ import csv
 from datetime import datetime
 from tqdm import tqdm
 from pathlib import Path
-from config import AudioConfig, AudioClassification
+from config import AudioConfig
+from constants import AudioClassification
 from audio_classifier import build_model_multi_label, ThresholdOptimizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
@@ -338,26 +339,32 @@ def create_data_generators(segment_files, mlb):
     # Use centralized time steps calculation to ensure consistency
     fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
     
-    train_generator = AudioSegmentDataGenerator(
-        segment_files['train'], mlb, 
-        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
-        AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32, shuffle=True, augment=True  # Enable augmentation for training
-    )
+    train_generator = None
+    if segment_files.get('train') is not None:
+        train_generator = AudioSegmentDataGenerator(
+            segment_files['train'], mlb, 
+            AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
+            AudioConfig.WINDOW_DURATION, fixed_time_steps,
+            batch_size=32, shuffle=True, augment=True  # Enable augmentation for training
+        )
     
-    val_generator = AudioSegmentDataGenerator(
-        segment_files['val'], mlb,
-        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-        AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32, shuffle=False, augment=False  # No augmentation for validation
-    )
+    val_generator = None
+    if segment_files.get('val') is not None:
+        val_generator = AudioSegmentDataGenerator(
+            segment_files['val'], mlb,
+            AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
+            AudioConfig.WINDOW_DURATION, fixed_time_steps,
+            batch_size=32, shuffle=False, augment=False  # No augmentation for validation
+        )
     
-    test_generator = AudioSegmentDataGenerator(
-        segment_files['test'], mlb,
-        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-        AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32, shuffle=False, augment=False  # No augmentation for testing
-    )
+    test_generator = None
+    if segment_files.get('test') is not None:
+        test_generator = AudioSegmentDataGenerator(
+            segment_files['test'], mlb,
+            AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
+            AudioConfig.WINDOW_DURATION, fixed_time_steps,
+            batch_size=32, shuffle=False, augment=False  # No augmentation for testing
+        )
     
     return train_generator, val_generator, test_generator
 
@@ -969,7 +976,6 @@ def load_model(model_path: Path = AudioClassification.TRAINED_WEIGHTS_PATH):
         
         # Load only the weights from the saved .keras file
         model.load_weights(model_path)
-        print(f"✅ Model loaded successfully from {model_path}")
     
     except Exception as e:
         print(f"❌ Failed to load model: {e}")
@@ -999,15 +1005,8 @@ def setup_gpu_config():
             test_tensor = tf.constant([1.0, 2.0, 3.0])
             test_result = tf.reduce_sum(test_tensor)
         
-        print(f"🚀 GPU acceleration enabled - Found {len(physical_devices)} GPU(s)")
-        for i, device in enumerate(physical_devices):
-            print(f"   GPU {i}: {device}")
         return True
         
     except Exception as e:
         print(f"⚠️ GPU configuration failed: {e}")
-        print("💡 To fix CUDA library issues, try:")
-        print("   1. conda install -c conda-forge cudatoolkit=11.8 cudnn")
-        print("   2. pip install tensorflow[and-cuda]")
-        print("   3. Check NVIDIA driver: nvidia-smi")
         return False
