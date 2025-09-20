@@ -308,7 +308,7 @@ class EvaluationDataGenerator(tf.keras.utils.Sequence):
         # Process each segment in the batch
         for segment in batch_segments:
             # Extract features using consistent pipeline
-            mel = extract_enhanced_features(
+            mel = extract_features(
                 segment['audio_path'], segment['start'], segment['duration'],
                 sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
                 fixed_time_steps=self.fixed_time_steps
@@ -359,131 +359,6 @@ def create_empty_feature_matrix(n_mels, fixed_time_steps):
     effective_n_mels = min(n_mels, 128)
     return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
 
-# --- Feature Extraction ---
-def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_length, fixed_time_steps=None):
-    """
-    Extract enhanced mel-spectrogram and MFCC features from audio segments.
-    
-    This function maintains exact consistency with the training pipeline to ensure
-    evaluation accuracy. It combines mel-spectrogram and MFCC features with 
-    identical preprocessing steps including normalization, pre-emphasis filtering,
-    and dimensional standardization.
-    
-    Feature Processing Pipeline:
-    1. Audio loading with precise timing and resampling validation
-    2. Duration padding/truncation to exact expected sample count
-    3. Amplitude normalization to prevent clipping artifacts
-    4. Pre-emphasis filtering to balance spectral energy (α=0.97)
-    5. Mel-spectrogram extraction with perceptually relevant frequency range
-    6. Power-to-dB conversion with controlled dynamic range (80dB)
-    7. Feature normalization to [-1, 1] range for stable training
-    8. MFCC computation for complementary cepstral features
-    9. Feature concatenation and temporal dimension standardization
-    
-    Audio Configuration:
-    - Sample Rate: Configured in AudioConfig.SR
-    - Frequency Range: 20 Hz - 10 kHz (human speech range)
-    - Window: 2048-point FFT with hop_length overlap
-    - Mel Bands: Perceptually spaced frequency bins (capped at 128 for 16kHz)
-    - MFCC: 13 coefficients capturing spectral envelope
-    
-    Parameters:
-    ----------
-    audio_path (str): 
-        Full path to audio file for segment extraction
-    start_time (float): 
-        Segment start time in seconds from audio beginning
-    duration (float): 
-        Segment duration in seconds (fixed window size)
-    sr (int): 
-        Target sample rate for audio loading and processing
-    n_mels (int): 
-        Number of mel frequency bands for spectrogram (will be capped at 128)
-    hop_length (int): 
-        Hop length in samples for STFT computation
-    fixed_time_steps (int, optional): 
-        Fixed number of time steps for consistent model input dimensions
-
-    Returns:
-    -------
-    np.ndarray: Combined feature matrix (effective_n_mels + 13, fixed_time_steps)
-        Shape represents concatenated mel-spectrogram and MFCC features
-        normalized to [-1, 1] range with standardized temporal dimension
-    """
-    # Use effective mel count (capped at 128 for 16kHz audio) to match model architecture
-    effective_n_mels = min(n_mels, 128)
-    
-    # Use centralized time steps calculation if not provided
-    if fixed_time_steps is None:
-        fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-
-    try:
-        # Load audio segment with precise timing control
-        y, sr_loaded = librosa.load(audio_path, sr=sr, offset=start_time, duration=duration)
-        
-        # Validate and correct sample rate if necessary
-        if sr_loaded != sr:
-            y = librosa.resample(y, orig_sr=sr_loaded, target_sr=sr)
-        
-        # Ensure exact sample count for consistent processing
-        expected_samples = int(duration * sr)
-        if len(y) < expected_samples:
-            # Zero-pad short segments to expected length
-            y = np.pad(y, (0, expected_samples - len(y)), 'constant')
-        elif len(y) > expected_samples:
-            # Truncate long segments to expected length
-            y = y[:expected_samples]
-        
-        # Handle empty audio gracefully with appropriate fallback
-        if len(y) == 0:
-            return create_empty_feature_matrix(n_mels, fixed_time_steps)
-        
-        # Amplitude normalization to prevent numerical instability
-        y = y / (np.max(np.abs(y)) + 1e-6)
-        
-        # Apply pre-emphasis filter to balance spectral energy
-        # Formula: y[n] = x[n] - α*x[n-1] with α=0.97
-        y = np.append(y[0], y[1:] - 0.97 * y[:-1])
-        
-        # Extract mel-spectrogram with perceptually relevant frequency range (using effective n_mels)
-        mel_spectrogram = librosa.feature.melspectrogram(
-            y=y, sr=sr, n_mels=effective_n_mels, hop_length=hop_length, 
-            n_fft=2048,    # 2048-point FFT for good frequency resolution
-            fmin=20,       # Lower frequency bound (human hearing)
-            fmax=10000     # Upper frequency bound (speech content)
-        )
-        
-        # Convert power spectrogram to decibel scale with controlled dynamic range
-        mel_spectrogram_db = librosa.power_to_db(mel_spectrogram, ref=np.max, top_db=80)
-        
-        # Normalize mel-spectrogram to [-1, 1] range for stable neural network input
-        mel_spectrogram_db = 2 * (mel_spectrogram_db - mel_spectrogram_db.min()) / (mel_spectrogram_db.max() - mel_spectrogram_db.min() + 1e-6) - 1
-        
-        # Extract MFCC features for complementary cepstral representation
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=hop_length)
-        
-        # Normalize MFCC features to [-1, 1] range matching mel-spectrogram
-        mfcc = 2 * (mfcc - mfcc.min()) / (mfcc.max() - mfcc.min() + 1e-6) - 1
-        
-        # Concatenate mel-spectrogram and MFCC for enhanced feature representation
-        combined = np.concatenate([mel_spectrogram_db, mfcc], axis=0)
-        
-        # Standardize temporal dimension for consistent model input
-        if combined.shape[1] < fixed_time_steps:
-            # Pad short sequences with silence marker (-1)
-            pad_width = fixed_time_steps - combined.shape[1]
-            combined = np.pad(combined, ((0, 0), (0, pad_width)), 'constant', constant_values=-1)
-        elif combined.shape[1] > fixed_time_steps:
-            # Truncate long sequences to fixed length
-            combined = combined[:, :fixed_time_steps]
-        
-        return combined
-    
-    except Exception as e:
-        # Graceful error handling with informative logging
-        print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
-        return create_empty_feature_matrix(n_mels, fixed_time_steps)
-
 # ---- Evaluation Data Generator ----
 def create_evaluation_generator(test_segments_file, mlb):
     """
@@ -530,3 +405,225 @@ def create_evaluation_generator(test_segments_file, mlb):
         batch_size=32
     )
     return test_generator
+
+# ---- Evaluation Functions ----
+def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir):
+    """
+    Perform comprehensive multi-label classification evaluation with detailed analysis. 
+    
+    Parameters:
+    ----------
+    model (tf.keras.Model): 
+        Trained multi-label audio classification model
+    test_generator (EvaluationDataGenerator): 
+        Test data generator with deterministic ordering
+    mlb (MultiLabelBinarizer): 
+        Fitted label encoder from training pipeline
+    thresholds (dict): 
+        Dictionary mapping class names to decision thresholds for binary classification
+    output_dir (str or Path): 
+        Directory to save evaluation results and visualizations
+        
+    Outputs:
+    -------
+    Files Created:
+    - evaluation_summary.json: Comprehensive metrics summary
+    - detailed_predictions.csv: Per-sample predictions and probabilities
+    
+    Raises:
+    ------
+    ValueError: If test generator is empty or predictions fail
+    RuntimeError: If evaluation cannot complete due to data issues
+    """
+    from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
+    from tqdm import tqdm
+    from pathlib import Path
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print("🔍 Running comprehensive model evaluation...")
+    print("=" * 60)
+    
+    # Stage 1: Generate probability predictions for all test samples
+    print("📊 Generating predictions for test set...")
+    test_predictions = model.predict(test_generator, verbose=1)
+    
+    # Stage 2: Collect true labels with progress tracking
+    test_true_labels = []
+    for i in tqdm(range(len(test_generator)), desc="Processing batches"):
+        _, labels = test_generator[i]
+        if len(labels) > 0:  # Skip empty batches
+            test_true_labels.extend(labels)
+    test_true_labels = np.array(test_true_labels)
+    
+    # Stage 3: Handle potential shape mismatches between predictions and labels
+    if test_predictions.shape[0] != test_true_labels.shape[0]:
+        print(f"⚠️ Shape mismatch detected:")
+        print(f"   Predictions: {test_predictions.shape[0]} samples")
+        print(f"   True labels: {test_true_labels.shape[0]} samples")
+        
+        # Use minimum available samples to ensure valid comparison
+        min_samples = min(test_predictions.shape[0], test_true_labels.shape[0])
+        test_predictions = test_predictions[:min_samples]
+        test_true_labels = test_true_labels[:min_samples]
+        
+        print(f"✂️ Adjusted evaluation set to {min_samples} samples")
+        
+        if min_samples == 0:
+            raise ValueError("No samples available for evaluation after shape adjustment")
+    
+    # Stage 4: Apply class-specific thresholds to convert probabilities to predictions
+    test_pred_binary = np.array([
+        (test_predictions[:, i] > thresholds[mlb.classes_[i]]).astype(int) 
+        for i in range(len(mlb.classes_))
+    ]).T
+    
+    # Stage 5: Calculate comprehensive evaluation metrics
+    if test_true_labels.sum() > 0:        
+        # Per-class detailed metrics
+        precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
+            test_true_labels, test_pred_binary, average=None, zero_division=0
+        )
+        
+        # Macro-averaged metrics (equal weight per class)
+        macro_precision = precision_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
+        macro_recall = recall_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
+        macro_f1 = f1_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
+        
+        # Micro-averaged metrics (global performance)
+        micro_precision = precision_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
+        micro_recall = recall_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
+        micro_f1 = f1_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
+        
+        # Subset accuracy (exact multi-label match)
+        subset_accuracy = accuracy_score(test_true_labels, test_pred_binary)
+        
+        # Stage 6: Save comprehensive results to files
+        save_evaluation_results(
+            output_dir, mlb.classes_, thresholds,
+            test_true_labels, test_pred_binary, test_predictions,
+            precision_per_class, recall_per_class, f1_per_class, support_per_class,
+            macro_precision, macro_recall, macro_f1,
+            micro_precision, micro_recall, micro_f1, subset_accuracy
+        )
+    else:
+        print("⚠️ Warning: No positive instances found in test set")
+        print("❌ Cannot compute meaningful evaluation metrics")
+    
+    print(f"\n✅ Evaluation completed!")
+    print(f"📁 Results saved to: {output_dir}")
+
+def save_evaluation_results(output_dir, class_names, thresholds,
+                        test_true_labels, test_pred_binary, test_predictions,
+                        precision_per_class, recall_per_class, f1_per_class, support_per_class,
+                        macro_precision, macro_recall, macro_f1,
+                        micro_precision, micro_recall, micro_f1, subset_accuracy):
+    """
+    Save comprehensive evaluation results in multiple formats for analysis and reporting.
+    
+    This function creates both machine-readable (JSON) and human-readable (CSV) outputs
+    containing detailed evaluation metrics.
+    
+    Parameters:
+    ----------
+    output_dir (Path): Target directory for result files
+    class_names (list): Names of classification classes
+    thresholds (dict): Dictionary mapping class names to decision thresholds
+    test_true_labels (ndarray): Ground truth binary labels (n_samples, n_classes)
+    test_pred_binary (ndarray): Binary predictions (n_samples, n_classes)
+    test_predictions (ndarray): Probability predictions (n_samples, n_classes)
+    precision_per_class (ndarray): Per-class precision scores
+    recall_per_class (ndarray): Per-class recall scores  
+    f1_per_class (ndarray): Per-class F1 scores
+    support_per_class (ndarray): Per-class positive sample counts
+    macro_precision (float): Macro-averaged precision
+    macro_recall (float): Macro-averaged recall
+    macro_f1 (float): Macro-averaged F1 score
+    micro_precision (float): Micro-averaged precision
+    micro_recall (float): Micro-averaged recall
+    micro_f1 (float): Micro-averaged F1 score
+    subset_accuracy (float): Subset accuracy (exact match rate)
+    """
+    import pandas as pd
+    from datetime import datetime
+    from pathlib import Path
+    
+    output_dir = Path(output_dir)
+    
+    # Create comprehensive metrics summary for programmatic analysis
+    summary = {
+        'evaluation_metadata': {
+            'test_set_size': len(test_true_labels),
+            'num_classes': len(class_names),
+            'class_names': list(class_names),
+            'evaluation_timestamp': datetime.now().isoformat()
+        },
+        'overall_metrics': {
+            'subset_accuracy': float(subset_accuracy),
+            'macro_precision': float(macro_precision),
+            'macro_recall': float(macro_recall),
+            'macro_f1': float(macro_f1),
+            'micro_precision': float(micro_precision),
+            'micro_recall': float(micro_recall),
+            'micro_f1': float(micro_f1)
+        },
+        'per_class_metrics': {
+            str(class_names[i]): {
+                'precision': float(precision_per_class[i]),
+                'recall': float(recall_per_class[i]),
+                'f1_score': float(f1_per_class[i]),
+                'support': int(support_per_class[i]),
+                'threshold': float(thresholds[str(class_names[i])]),
+                'positive_rate': float(support_per_class[i] / len(test_true_labels))
+            } for i in range(len(class_names))
+        },
+        'threshold_configuration': {
+            'method': 'optimized_from_validation',
+            'fallback': 0.5,
+            'per_class_thresholds': {str(class_name): float(thresholds[str(class_name)]) for class_name in class_names}
+        }
+    }
+    
+    # Save structured JSON summary for automated analysis
+    summary_path = output_dir / 'evaluation_summary.json'
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=4, ensure_ascii=False)
+    
+    # Create detailed per-sample results for error analysis
+    class_names_list = list(class_names)
+    
+    # Probability predictions (raw model outputs)
+    predictions_df = pd.DataFrame(
+        test_predictions, 
+        columns=[f'{name}_prob' for name in class_names_list]
+    )
+    
+    # Binary predictions (after threshold application)
+    predictions_binary_df = pd.DataFrame(
+        test_pred_binary, 
+        columns=[f'{name}_pred' for name in class_names_list]
+    )
+    
+    # True labels (ground truth)
+    true_labels_df = pd.DataFrame(
+        test_true_labels, 
+        columns=[f'{name}_true' for name in class_names_list]
+    )
+    
+    # Combine all information for comprehensive per-sample analysis
+    detailed_results = pd.concat([
+        predictions_df, 
+        predictions_binary_df, 
+        true_labels_df
+    ], axis=1)
+    
+    # Add derived columns for quick analysis
+    detailed_results['sample_id'] = range(len(detailed_results))
+    detailed_results['num_true_labels'] = test_true_labels.sum(axis=1)
+    detailed_results['num_pred_labels'] = test_pred_binary.sum(axis=1)
+    detailed_results['exact_match'] = (test_true_labels == test_pred_binary).all(axis=1).astype(int)
+    
+    # Save detailed predictions for manual inspection and error analysis
+    predictions_path = output_dir / 'detailed_predictions.csv'
+    detailed_results.to_csv(predictions_path, index=False, float_format='%.4f')
