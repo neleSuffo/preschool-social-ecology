@@ -285,7 +285,7 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     - OR Key child-directed speech present
     - OR an adult face (proximity doesn't matter) + recent speech
     
-    2. CO-PRESENT SILENT: Passive social presence
+    2. Available: Passive social presence
     - Person detected but no active interaction indicators
     
     3. ALONE: No social presence detected
@@ -302,7 +302,7 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     Returns
     -------
     str
-        Interaction category ('Interacting', 'Co-present Silent', 'Alone')
+        Interaction category ('Interacting', 'Available', 'Alone')
     """
     # Default rules if none specified (currently excluding rule 1 - turn taking)
     if included_rules is None:
@@ -338,9 +338,9 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     if active_rules:
         return "Interacting"
 
-    # Tier 2: CO-PRESENT SILENT (Passive presence)
+    # Tier 2: Available (Passive presence)
     if person_is_present:
-        return "Co-present Silent"
+        return "Available"
 
     # Tier 3: ALONE (No presence)
     return "Alone"
