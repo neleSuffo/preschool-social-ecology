@@ -310,27 +310,6 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         plt.savefig(os.path.join(self.log_dir, 'macro_f1_plot.png'))
         plt.close()
 
-# --- Setup and Training Functions --
-def setup_training_environment():
-    """
-    Set up training environment with directories and configuration.
-    
-    Returns:
-    -------
-    str: 
-        Path to training run directory
-    """
-    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = AudioClassification.OUTPUT_DIR / timestamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Training run output directory: {run_dir}")
-    
-    # Copy current script for reproducibility
-    current_script_path = Path(__file__)
-    shutil.copy(current_script_path, run_dir / 'train_audio_classifier.py')
-    
-    return run_dir
-
 def setup_multilabel_encoder(unique_labels):
     """
     Set up multi-label binarizer for voice type classification.
@@ -759,7 +738,7 @@ class EvaluationDataGenerator(tf.keras.utils.Sequence):
         # Process each segment in the batch
         for segment in batch_segments:
             # Extract features using consistent pipeline
-            mel = extract_enhanced_features(
+            mel = extract_features(
                 segment['audio_path'], segment['start'], segment['duration'],
                 sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
                 fixed_time_steps=self.fixed_time_steps
@@ -810,57 +789,8 @@ def create_empty_feature_matrix(n_mels, fixed_time_steps):
     effective_n_mels = min(n_mels, 128)
     return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
 
-# --- Feature Extraction ---
-def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_length, fixed_time_steps=None):
-    """
-    Extract enhanced mel-spectrogram and MFCC features from audio segments.
-    
-    This function maintains exact consistency with the training pipeline to ensure
-    evaluation accuracy. It combines mel-spectrogram and MFCC features with 
-    identical preprocessing steps including normalization, pre-emphasis filtering,
-    and dimensional standardization.
-    
-    Feature Processing Pipeline:
-    1. Audio loading with precise timing and resampling validation
-    2. Duration padding/truncation to exact expected sample count
-    3. Amplitude normalization to prevent clipping artifacts
-    4. Pre-emphasis filtering to balance spectral energy (α=0.97)
-    5. Mel-spectrogram extraction with perceptually relevant frequency range
-    6. Power-to-dB conversion with controlled dynamic range (80dB)
-    7. Feature normalization to [-1, 1] range for stable training
-    8. MFCC computation for complementary cepstral features
-    9. Feature concatenation and temporal dimension standardization
-    
-    Audio Configuration:
-    - Sample Rate: Configured in AudioConfig.SR
-    - Frequency Range: 20 Hz - 10 kHz (human speech range)
-    - Window: 2048-point FFT with hop_length overlap
-    - Mel Bands: Perceptually spaced frequency bins (capped at 128 for 16kHz)
-    - MFCC: 13 coefficients capturing spectral envelope
-    
-    Parameters:
-    ----------
-    audio_path (str): 
-        Full path to audio file for segment extraction
-    start_time (float): 
-        Segment start time in seconds from audio beginning
-    duration (float): 
-        Segment duration in seconds (fixed window size)
-    sr (int): 
-        Target sample rate for audio loading and processing
-    n_mels (int): 
-        Number of mel frequency bands for spectrogram (will be capped at 128)
-    hop_length (int): 
-        Hop length in samples for STFT computation
-    fixed_time_steps (int, optional): 
-        Fixed number of time steps for consistent model input dimensions
-
-    Returns:
-    -------
-    np.ndarray: Combined feature matrix (effective_n_mels + 13, fixed_time_steps)
-        Shape represents concatenated mel-spectrogram and MFCC features
-        normalized to [-1, 1] range with standardized temporal dimension
-    """
+# ---- Inference Functions ----
+def classify_audio_windows(audio_path, model, mlb, batch_size=32):
     # Use effective mel count (capped at 128 for 16kHz audio) to match model architecture
     effective_n_mels = min(n_mels, 128)
     
@@ -935,49 +865,249 @@ def extract_enhanced_features(audio_path, start_time, duration, sr, n_mels, hop_
         print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
         return create_empty_feature_matrix(n_mels, fixed_time_steps)
 
-# ---- Evaluation Data Generator ----
-def create_evaluation_generator(test_segments_file, mlb):
+# ---- Inference Functions ----
+def classify_audio_windows(audio_path, model, mlb, batch_size=32):
     """
-    Create deterministic data generator for comprehensive model evaluation.
+    Classifies audio windows using the trained model.
+
+    Parameters
+    ----------
+    audio_path : Path
+        Path to the audio file to be classified.
+    model : tf.keras.Model
+        The trained audio classification model.
+    mlb : sklearn.preprocessing.MultiLabelBinarizer
+        MultiLabelBinarizer fitted on the training data.
+    batch_size : int, optional
+        Batch size for prediction, by default 32
+
+    Returns
+    -------
+    results : list of dict
+        List of dictionaries containing start_time, end_time, and probabilities for each window.
+    class_names : list
+        List of class names corresponding to the model outputs.
+    audio_duration : float
+        Duration of the audio file in seconds.
+    """
+    import librosa
     
-    This function creates a specialized data generator for evaluation that maintains
-    consistency with the training pipeline while optimizing for inference performance.
-    The generator eliminates randomness and augmentation to ensure reproducible 
-    evaluation results across multiple runs.
+    y_audio, sr_audio = librosa.load(audio_path, sr=AudioConfig.SR)
+    audio_duration = librosa.get_duration(y=y_audio, sr=sr_audio)
+    all_window_data = []
+    current_time = 0.0
+    while current_time < audio_duration:
+        window_start = current_time
+        window_end = min(current_time + AudioConfig.WINDOW_DURATION, audio_duration)
+        if (window_end - window_start) > 0.01:
+            mel = extract_features(
+                audio_path, window_start, AudioConfig.WINDOW_DURATION, 
+                sr=AudioConfig.SR, n_mels=min(AudioConfig.N_MELS, 128), hop_length=AudioConfig.HOP_LENGTH
+            )
+            all_window_data.append({
+                'start_time': window_start,
+                'end_time': window_end,
+                'mel_spec': mel
+            })
+        current_time += AudioConfig.WINDOW_STEP
+    if not all_window_data:
+        print("No valid windows extracted for classification.")
+        return [], [], []
+    mel_specs_batch = np.array([d['mel_spec'] for d in all_window_data])
+    mel_specs_batch = np.expand_dims(mel_specs_batch, -1)
+    predictions = model.predict(mel_specs_batch, batch_size=batch_size)
+    results = []
+    for i, data_point in enumerate(all_window_data):
+        results.append({
+            'start_time': data_point['start_time'],
+            'end_time': data_point['end_time'],
+            'probabilities': predictions[i]
+        })
+    return results, mlb.classes_, audio_duration
+
+def aggregate_and_save_results(audio_file, predictions, class_names, output_writer, thresholds):
+    """
+    Aggregates overlapping window predictions and writes the final results to a CSV file.
+    For each second of audio, averages the probabilities from all overlapping windows
+    and assigns binary labels based on the class-specific optimized thresholds.
     
-    Generator Configuration:
-    - Deterministic ordering (no shuffling) for reproducible results
-    - No data augmentation to preserve original audio characteristics  
-    - Consistent feature extraction pipeline matching training
-    - Fixed batch size for optimal inference throughput
-    - Lazy loading strategy for memory efficiency
+    Parameters
+    ----------
+    audio_file : str
+        Path to the audio file being processed.
+    predictions : list of dict
+        List of dictionaries containing start_time, end_time, and probabilities for each window.
+    class_names : list
+        List of class names corresponding to the model outputs.
+    output_writer : csv.DictWriter
+        CSV writer object to write the results.
+    thresholds : dict
+        Dictionary mapping class names to optimal thresholds
+    """
+    from pathlib import Path
+    
+    video_id = Path(audio_file).stem
+    
+    # Organize predictions by second
+    second_predictions = {}
+    for p in predictions:
+        start_second = int(np.floor(p['start_time']))
+        end_second = int(np.ceil(p['end_time']))
+        
+        for second in range(start_second, end_second):
+            if second not in second_predictions:
+                second_predictions[second] = {'probabilities': [], 'count': 0}
+            second_predictions[second]['probabilities'].append(p['probabilities'])
+            second_predictions[second]['count'] += 1
+
+    # Aggregate and write results using class-specific thresholds
+    for second in sorted(second_predictions.keys()):
+        avg_probs = np.mean(second_predictions[second]['probabilities'], axis=0)
+        
+        # Apply class-specific thresholds
+        binary_labels = []
+        for i, class_name in enumerate(class_names):
+            threshold = thresholds[str(class_name)]
+            binary_labels.append(1 if avg_probs[i] > threshold else 0)
+        
+        row = {'video_id': video_id, 'second': second}
+        for i, class_name in enumerate(class_names):
+            row[class_name] = binary_labels[i]
+        
+        output_writer.writerow(row)
+
+def process_audio_folder(folder_path, model, mlb, output_dir, thresholds):
+    """
+    Process a folder of audio files and save classification results using optimized thresholds.
+
+    Parameters
+    ----------
+    folder_path : str
+        Path to the folder containing audio files.
+    model : tf.keras.Model
+        The trained audio classification model.
+    mlb : sklearn.preprocessing.MultiLabelBinarizer
+        MultiLabelBinarizer fitted on the training data.
+    output_dir : str
+        Path to the directory where output files will be saved.
+    thresholds : dict
+        Dictionary mapping class names to optimal thresholds
+    """
+    import csv
+    from pathlib import Path
+    
+    folder_path = Path(folder_path)
+    output_file = output_dir / 'classification_results.csv'
+    
+    audio_files = list(folder_path.glob('*.wav'))
+    if not audio_files:
+        print(f"⚠️ No WAV audio files found in {folder_path}")
+        return
+    
+    print(f"✅ Found {len(audio_files)} audio files to process.")
+    
+    # Prepare CSV file
+    class_names = mlb.classes_
+    fieldnames = ['video_id', 'second'] + list(class_names)
+    
+    with open(output_file, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for i, audio_file in enumerate(audio_files):
+            print("\n" + "="*50)
+            print(f"Processing file {i+1}/{len(audio_files)}: {audio_file.name}")
+            print("="*50)
+            
+            try:
+                prediction_results, _, _ = classify_audio_windows(str(audio_file), model, mlb)
+                
+                if prediction_results:
+                    aggregate_and_save_results(str(audio_file), prediction_results, class_names, writer, thresholds)
+                else:
+                    print(f"No prediction results for {audio_file.name}")
+            except Exception as e:
+                print(f"❌ An error occurred while processing {audio_file.name}: {e}")
+
+    print(f"\n✅ All processing complete. Results saved to {output_file}")
+
+def load_inference_model(model_path):
+    """
+    Load trained model for inference by building the architecture and loading weights.
     
     Parameters:
     ----------
-    test_segments_file (Path): 
-        Path to JSONL file containing test segment metadata
-    mlb (MultiLabelBinarizer): 
-        Fitted multi-label binarizer from training run
-    
+    model_path (Path): 
+        Path to the saved model weights file (.keras)
+        
     Returns:
     -------
-    EvaluationDataGenerator: 
-        Configured test data generator ready for model evaluation
-        
-    Features:
-    --------
-    - Batch size: 32 samples (optimal for most GPUs)
-    - Memory efficient: Lazy loading with small memory footprint
-    - Consistent preprocessing: Identical to training feature extraction
-    - Reproducible: Deterministic sample ordering for consistent metrics
+    tuple: (model, mlb) where:
+        - model: Loaded Keras model ready for inference
+        - mlb: Fitted MultiLabelBinarizer for decoding predictions
     """
-    # Use centralized time steps calculation to ensure consistency with training
+    if not model_path.exists():
+        print(f"❌ Model file not found: {model_path}")
+        print("💡 Please train the model first using train_audio_classifier.py")
+        return None, None
+        
+    # Setup multi-label binarizer consistent with training
+    mlb = MultiLabelBinarizer(classes=AudioConfig.VALID_RTTM_CLASSES)
+    mlb.fit([[]])  # Initialize with empty list to set up classes
+    num_classes = len(mlb.classes_)
+
+    # Use centralized calculation for consistent time steps across all components
     fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+
+    try:
+        # Build the model architecture first
+        model = build_model_multi_label(
+            n_mels=AudioConfig.N_MELS,
+            fixed_time_steps=fixed_time_steps,
+            num_classes=num_classes
+        )
+        
+        # Load only the weights from the saved .keras file
+        model.load_weights(model_path)
+        print(f"✅ Model loaded successfully from {model_path}")
     
-    test_generator = EvaluationDataGenerator(
-        test_segments_file, mlb,
-        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-        AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32
-    )
-    return test_generator
+    except Exception as e:
+        print(f"❌ Failed to load model: {e}")
+        return None, None
+    
+    return model, mlb
+
+# ---- GPU Configuration ----
+def setup_gpu_config():
+    """
+    Configure GPU settings with proper error handling.
+    """
+    try:
+        # Check for GPU devices
+        physical_devices = tf.config.list_physical_devices('GPU')
+        
+        if not physical_devices:
+            print("⚠️ No GPU devices found")
+            return False
+        
+        # Configure GPU memory growth
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+        
+        # Test GPU functionality
+        with tf.device('/GPU:0'):
+            test_tensor = tf.constant([1.0, 2.0, 3.0])
+            test_result = tf.reduce_sum(test_tensor)
+        
+        print(f"🚀 GPU acceleration enabled - Found {len(physical_devices)} GPU(s)")
+        for i, device in enumerate(physical_devices):
+            print(f"   GPU {i}: {device}")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ GPU configuration failed: {e}")
+        print("💡 To fix CUDA library issues, try:")
+        print("   1. conda install -c conda-forge cudatoolkit=11.8 cudnn")
+        print("   2. pip install tensorflow[and-cuda]")
+        print("   3. Check NVIDIA driver: nvidia-smi")
+        return False
