@@ -119,13 +119,13 @@ def process_video(
                     probs = torch.sigmoid(logits)
                     preds = (probs > confidence_threshold).float()
 
-                    # Store predictions only for frames that are multiples of stride
-                    # This gives us every 30th frame when stride=30
+                    # Store predictions for frames at stride intervals within the window
+                    # This gives us classifications for every 30th frame while using full temporal context
                     for i in range(actual_window_size):
                         frame_idx_in_video = window_start + i
                         frame_number = frame_numbers[i]
                         
-                        # Only store if this frame index is a multiple of stride
+                        # Only store results for frames that are multiples of stride (every 30th frame)
                         if frame_idx_in_video % stride == 0:
                             frame_prob = probs[0, i].cpu().numpy()   # (2,)
                             frame_pred = preds[0, i].cpu().numpy()   # (2,)
