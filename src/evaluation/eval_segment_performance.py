@@ -100,14 +100,14 @@ def evaluate_performance_by_frames(predictions_df, ground_truth_df, fps=30):
         pred_video['start_time_sec'] = pd.to_numeric(pred_video['start_time_sec'], errors='coerce')
         pred_video['end_time_sec'] = pd.to_numeric(pred_video['end_time_sec'], errors='coerce')
         
-        # Convert HH:MM:SS format to seconds for ground truth
+        # Convert MM:SS format to seconds for ground truth
         def time_to_seconds(time_str):
-            """Convert HH:MM:SS format to seconds"""
+            """Convert MM:SS format to seconds"""
             try:
                 parts = str(time_str).split(':')
-                if len(parts) == 3:
-                    hours, minutes, seconds = map(float, parts)
-                    return hours * 3600 + minutes * 60 + seconds
+                if len(parts) == 2:
+                    minutes, seconds = map(float, parts)
+                    return minutes * 60 + seconds
                 else:
                     # If it's already in seconds format, just convert to float
                     return float(time_str)
@@ -420,6 +420,11 @@ def main(predictions_df, ground_truth_df, fps=30):
     Main function to evaluate performance using frame-by-frame accuracy.
     """
     print("Evaluating performance using frame-by-frame accuracy...")
+    
+    # only keep columns "video_name", "start_time_sec", "end_time_sec", "interaction_type" from gt dataframe
+    ground_truth_df = ground_truth_df[['video_name', 'start_time_sec', 'end_time_sec', 'interaction_type']]
+    # remove rows with NaN in any of these columns
+    ground_truth_df = ground_truth_df.dropna(subset=['video_name', 'start_time_sec', 'end_time_sec', 'interaction_type'])
     
     pred_videos = set(predictions_df['video_name'].unique())
     gt_videos = set(ground_truth_df['video_name'].unique())
