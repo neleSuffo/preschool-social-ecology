@@ -1,32 +1,16 @@
-import os
-
-# Set up CUDA library paths directly
-cuda_lib_paths = [
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cublas/lib",
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cudnn/lib", 
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cufft/lib",
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/curand/lib",
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cusolver/lib",
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cusparse/lib",
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cuda_runtime/lib",
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cuda_cupti/lib",
-    "/home/nele_pauline_suffo/projects/naturalistic-social-analysis/.venv/lib/python3.8/site-packages/nvidia/cuda_nvrtc/lib"
-]
-
-existing_path = os.environ.get("LD_LIBRARY_PATH", "")
-new_path = ":".join(cuda_lib_paths)
-
-if existing_path:
-    os.environ["LD_LIBRARY_PATH"] = new_path + ":" + existing_path
-else:
-    os.environ["LD_LIBRARY_PATH"] = new_path
-
-print("🔧 CUDA library paths configured")
-
+import tensorflow as tf
 from pathlib import Path
 from datetime import datetime
+from config import AudioConfig
 from constants import AudioClassification
-from utils import load_thresholds, load_model, create_data_generators, evaluate_model_comprehensive
+from utils import load_thresholds, load_model, create_data_generators, evaluate_model_comprehensive, setup_gpu_config
+
+# Setup GPU configuration
+gpu_available = setup_gpu_config()
+if gpu_available:
+    print("✅ GPU configuration completed successfully")
+else:
+    print("⚠️ GPU configuration failed, will use CPU")
 
 def main():
     """
@@ -67,7 +51,7 @@ def main():
         }
         _, _, test_generator = create_data_generators(segment_files, mlb)
         
-        if len(test_generator) == 0:
+        if test_generator is None or len(test_generator) == 0:
             raise ValueError("Test generator is empty. Check test data file and paths.")
 
         # Stage 5: Execute comprehensive model evaluation
