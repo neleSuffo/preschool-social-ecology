@@ -26,7 +26,7 @@ print("🔧 CUDA library paths configured")
 from pathlib import Path
 from datetime import datetime
 from constants import AudioClassification
-from utils import load_thresholds, load_model_and_setup, create_evaluation_generator, evaluate_model_comprehensive
+from utils import load_thresholds, load_model, create_data_generators, evaluate_model_comprehensive
 
 def main():
     """
@@ -47,22 +47,25 @@ def main():
         print("=" * 70)
         
         # Stage 1: Configure evaluation environment and paths
-        results_dir = Path(AudioClassification.RESULTS_DIR)
-        model_path = results_dir / "best_model.keras"
         test_segments_file = AudioClassification.TEST_SEGMENTS_FILE
         
         # Create timestamped output directory for this evaluation run
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = results_dir / f'evaluation_results_{timestamp}'
-        
+        output_dir = Path(AudioClassification.RESULTS_DIR) / f'evaluation_results_{timestamp}'
+
         # Stage 2: Load trained model with Lambda layer handling
-        model, mlb = load_model_and_setup(model_path)
+        model, mlb = load_model()
 
         # Stage 3: Load optimized thresholds from training run
-        thresholds = load_thresholds(results_dir, mlb.classes_)
+        thresholds = load_thresholds(mlb.classes_)
         
-        # Stage 4: Create deterministic test data generator
-        test_generator = create_evaluation_generator(test_segments_file, mlb)
+        # Stage 4: Create test data generator (reuse existing function)
+        segment_files = {
+            'train': None,  # Not needed for evaluation
+            'val': None,    # Not needed for evaluation
+            'test': test_segments_file
+        }
+        _, _, test_generator = create_data_generators(segment_files, mlb)
         
         if len(test_generator) == 0:
             raise ValueError("Test generator is empty. Check test data file and paths.")
