@@ -12,7 +12,7 @@ from tqdm import tqdm
 from pathlib import Path
 from config import AudioConfig
 from constants import AudioClassification
-from audio_classifier import build_model_multi_label, ThresholdOptimizer
+from models.speech_type.audio_classifier import build_model_multi_label, ThresholdOptimizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
 from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
