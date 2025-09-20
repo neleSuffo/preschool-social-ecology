@@ -149,7 +149,8 @@ def setup_interaction_db(db_path: Path):
         '{"has_adult_person": {"0": "no", "1": "yes"}, "has_child_person": {"0": "no", "1": "yes"}}'),
         ('audio_voice_classification', 'Audio model for voice type classification',
         '{"has_kchi": {"0": "no", "1": "yes"}, "has_cds": {"0": "no", "1": "yes"}, "has_ohs": {"0": "no", "1": "yes"}}'),
-        ('kchi_vocalization', 'ALICE for KCHI vocalization analysis','{"phonemes": "float", "syllables": "float", "words": "float"}')
+        ('kchi_vocalization', 'ALICE for KCHI vocalization analysis',
+        '{"phonemes": "float", "syllables": "float", "words": "float"}')
     ''')
     
     conn.commit()
