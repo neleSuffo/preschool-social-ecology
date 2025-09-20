@@ -77,52 +77,31 @@ def get_all_analysis_data(conn):
     """)
     
     # ====================================================================
-    # STEP 2: VOCALIZATION PROCESSING WITH PRIORITY HANDLING
+    # STEP 2: AUDIO CLASSIFICATION PROCESSING
     # ====================================================================
-    # Purpose: Map time-based vocalizations to frame-based data with conflict resolution
+    # Purpose: Get frame-level audio classifications directly from AudioClassifications table
     #
-    # Input: Vocalizations table with time intervals
-    #        - start_time_seconds, end_time_seconds: continuous time intervals
-    #        - speaker: 'KCHI' (child) or other speakers (adult/unknown)
-    #        - Overlapping intervals possible (child and adult speaking simultaneously)
+    # Input: AudioClassifications table with frame-level predictions
+    #        - frame_number: frame identifier (consistent with PersonClassifications)
+    #        - has_kchi: child speech detection (0/1)
+    #        - has_ohs: other human speech detection (0/1) 
+    #        - has_cds: child-directed speech detection (0/1)
     #
-    # Processing Steps:
-    #   1. Convert time intervals to frame ranges using 30fps
-    #   2. Round to 10-frame intervals (ROUND_TO=10) for data consistency
-    #   3. Expand intervals into individual frame assignments
-    #   4. Resolve conflicts using KCHI priority rule
+    # Processing: Direct selection since data is already frame-based
     #
-    # Conflict Resolution Logic:
-    #   - If KCHI and other speakers detected in same frame → assign KCHI
-    #   - If only other speakers detected → assign that speaker
-    #   - If no speakers detected → NULL
-    #
-    # Time-to-Frame Conversion Formula:
-    #   frame = ROUND(time_seconds * 30 / 10) * 10
-    #   Example: 5.3 seconds → frame 160 (5.3 * 30 = 159 → round to 160)
-    #
-    # Output: VocalizationFrames temp table
-    #         - One row per frame with speech
-    #         - Single speaker per frame (conflicts resolved)
-    #         - Consistent with PersonClassifications frame numbering
+    # Output: AudioFrames temp table
+    #         - One row per frame with audio classifications
+    #         - All three audio classes preserved for analysis
+    #         - Consistent frame numbering with PersonClassifications
     conn.execute("""
-    CREATE TEMP TABLE IF NOT EXISTS VocalizationFrames AS
+    CREATE TEMP TABLE IF NOT EXISTS AudioFrames AS
     SELECT 
         video_id,
         frame_number,
-        REPLACE(GROUP_CONCAT(DISTINCT speaker), ',', ';') AS speaker
-    FROM (
-        SELECT 
-            v.video_id,
-            v.speaker,
-            pf.frame_number
-        FROM Vocalizations v
-        JOIN PersonClassifications pf ON v.video_id = pf.video_id
-        WHERE pf.frame_number BETWEEN 
-            CAST(ROUND(v.start_time_seconds * 30 / 10) * 10 AS INTEGER) AND 
-            CAST(ROUND(v.end_time_seconds * 30 / 10) * 10 AS INTEGER)
-    )
-    GROUP BY video_id, frame_number;
+        has_kchi,
+        has_ohs,
+        has_cds
+    FROM AudioClassifications;
     """)
     
     # ====================================================================
@@ -133,12 +112,12 @@ def get_all_analysis_data(conn):
     # Data Sources:
     #   1. PersonClassifications (pd) - PRIMARY: person body detections per frame
     #   2. FaceAgg (fa) - SECONDARY: aggregated face detections with proximity
-    #   3. VocalizationFrames (vf) - TERTIARY: speech activity per frame
+    #   3. AudioFrames (af) - TERTIARY: audio classifications per frame
     #   4. Videos (v) - METADATA: video information and naming
     #
     # Join Strategy:
     #   - LEFT JOIN ensures all PersonClassifications frames are preserved
-    #   - Missing face/speech data filled with NULL/0 values using COALESCE
+    #   - Missing face/audio data filled with NULL/0 values using COALESCE
     #   - Frame and video IDs used as joint keys for temporal alignment
     #   - Videos table joined to provide video metadata (name, etc.)
     #
@@ -153,7 +132,7 @@ def get_all_analysis_data(conn):
     #   - Face flags: has_child_face, has_adult_face (aggregated)
     #   - Social distance: proximity (0=far, 1=close, NULL=no faces)
     #   - Combined flags: child_present, adult_present (multimodal fusion)
-    #   - Speech activity: speaker ('KCHI', other, or NULL)
+    #   - Audio activity: has_kchi, has_ohs, has_cds (frame-level classifications)
     #
     # Temporal Granularity:
     #   - Frame-level analysis enables precise temporal segmentation
@@ -181,12 +160,14 @@ def get_all_analysis_data(conn):
         CASE WHEN COALESCE(fa.has_child_face,0)=1 OR pd.has_child_person=1 THEN 1 ELSE 0 END AS child_present,
         CASE WHEN COALESCE(fa.has_adult_face,0)=1 OR pd.has_adult_person=1 THEN 1 ELSE 0 END AS adult_present,
         
-        -- VOCALIZATION MODALITY
-        -- Speech activity with conflict resolution (KCHI priority)
-        vf.speaker                   -- String: 'KCHI', other speaker, or NULL
+        -- AUDIO CLASSIFICATION MODALITY
+        -- Frame-level audio classifications
+        COALESCE(af.has_kchi, 0) AS has_kchi,       -- Binary: child speech detected
+        COALESCE(af.has_ohs, 0) AS has_ohs,         -- Binary: other human speech detected
+        COALESCE(af.has_cds, 0) AS has_cds          -- Binary: key child-directed speech detected
     FROM PersonClassifications pd
     LEFT JOIN FaceAgg fa ON pd.frame_number = fa.frame_number AND pd.video_id = fa.video_id
-    LEFT JOIN VocalizationFrames vf ON pd.frame_number = vf.frame_number AND pd.video_id = vf.video_id
+    LEFT JOIN AudioFrames af ON pd.frame_number = af.frame_number AND pd.video_id = af.video_id
     LEFT JOIN Videos v ON pd.video_id = v.video_id
     """
     return pd.read_sql(query, conn)
@@ -196,12 +177,12 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
     Adaptive turn-taking detection with temporal gap constraint:
     - Uses smaller window (base_window_sec) when child is alone
     - Expands window (extended_window_sec) if a person or face is visible
-    - Only considers it turn-taking if gap between KCHI and other speech is ≤ 5 seconds
+    - Only considers it turn-taking if gap between KCHI and CDS is ≤ 5 seconds
 
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain ['video_id', 'frame_number', 'speaker', 'child_present', 'adult_present']
+        Must contain ['video_id', 'frame_number', 'has_kchi', 'has_cds', 'child_present', 'adult_present']
     fps : int
         Frames per second
     base_window_sec : int
@@ -213,8 +194,9 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
     extended_window_frames = extended_window_sec * fps
 
     df_copy = df.copy()   
-    df_copy['has_kchi'] = df_copy['speaker'].str.contains('KCHI', na=False).astype(int)
-    df_copy['has_other'] = df_copy['speaker'].str.contains('FEM_MAL', na=False).astype(int)
+    # Use the new audio classification columns
+    df_copy['has_kchi'] = df_copy['has_kchi'].astype(int)  # Child speech
+    df_copy['has_cds'] = df_copy['has_cds'].astype(int)    # Key Child-directed speech
 
     all_results = []
 
@@ -259,21 +241,21 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
 
             # Check for interaction with gap constraint
             has_kchi_in_window = window_data['has_kchi'].sum() > 0
-            has_other_in_window = window_data['has_other'].sum() > 0
+            has_cds_in_window = window_data['has_cds'].sum() > 0
             
-            # Only consider it turn-taking if both speakers present AND gap <= 5 seconds
+            # Only consider it turn-taking if both KCHI and CDS present AND gap <= 5 seconds
             is_interaction = False
-            if has_kchi_in_window and has_other_in_window:
-                # Find frames with KCHI and other speech
+            if has_kchi_in_window and has_cds_in_window:
+                # Find frames with KCHI and CDS
                 kchi_frames = window_data[window_data['has_kchi'] == 1]['frame_number'].values
-                other_frames = window_data[window_data['has_other'] == 1]['frame_number'].values
+                cds_frames = window_data[window_data['has_cds'] == 1]['frame_number'].values
                 
-                if len(kchi_frames) > 0 and len(other_frames) > 0:
-                    # Calculate minimum gap between any KCHI and other speech frames
+                if len(kchi_frames) > 0 and len(cds_frames) > 0:
+                    # Calculate minimum gap between any KCHI and CDS frames
                     min_gap_frames = float('inf')
                     for kchi_frame in kchi_frames:
-                        for other_frame in other_frames:
-                            gap_frames = abs(kchi_frame - other_frame)
+                        for cds_frame in cds_frames:
+                            gap_frames = abs(kchi_frame - cds_frame)
                             min_gap_frames = min(min_gap_frames, gap_frames)
                     
                     # Convert gap from frames to seconds (5 seconds = 5 * fps frames)
@@ -300,7 +282,7 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     1. INTERACTING: Active social engagement
     - Turn-taking audio interaction detected (highest priority)
     - OR Very close proximity (>= PROXIMITY_THRESHOLD)
-    - OR other person speaking
+    - OR Key child-directed speech present
     - OR an adult face (proximity doesn't matter) + recent speech
     
     2. CO-PRESENT SILENT: Passive social presence
@@ -326,10 +308,10 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     if included_rules is None:
         included_rules = [1, 2, 3, 4]  # Default: turn taking, proximity, other speaking, adult face + recent speech
     
-    # Calculate recent proximity once at the beginning
+    # Calculate recent speech activity once at the beginning
     current_index = row.name
     window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
-    recent_speech_exists = (results_df.loc[window_start:current_index, 'fem_mal_speech_present'] == 1).any()
+    recent_speech_exists = (results_df.loc[window_start:current_index, 'has_cds'] == 1).any()
 
     # Check if a person is present at all, using the combined flags
     person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
@@ -345,8 +327,8 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     if 2 in included_rules and (row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD):
         active_rules.append(2)
     
-    # Rule 3: Other person speaking
-    if 3 in included_rules and row['fem_mal_speech_present']:
+    # Rule 3: Key Child-directed speech present
+    if 3 in included_rules and row['has_cds']:
         active_rules.append(3)
     
     # Rule 4: Adult face + recent speech
@@ -371,9 +353,9 @@ def classify_interaction_rules(row, results_df):
     to enable analysis of which rules are most commonly triggering interactions.
     
     Rules:
-    1. Turn-taking audio interaction (highest priority)
+    1. Turn-taking audio interaction (KCHI + CDS)
     2. Very close proximity (>= PROXIMITY_THRESHOLD)
-    3. Other person speaking
+    3. Key Child-directed speech present
     4. Adult face + recent speech
     
     Parameters
@@ -391,7 +373,7 @@ def classify_interaction_rules(row, results_df):
     # Calculate recent speech for rule 4
     current_index = row.name
     window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
-    recent_speech_exists = (results_df.loc[window_start:current_index, 'fem_mal_speech_present'] == 1).any()
+    recent_speech_exists = (results_df.loc[window_start:current_index, 'has_cds'] == 1).any()
     
     # Rule 1: Turn-taking audio interaction detected (highest priority)
     rule1_turn_taking = bool(row['is_audio_interaction'])
@@ -399,13 +381,13 @@ def classify_interaction_rules(row, results_df):
     # Rule 2: Very close proximity (>= PROXIMITY_THRESHOLD)
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
     
-    # Rule 3: Other person speaking
-    rule3_other_speaking = bool(row['fem_mal_speech_present'])
+    # Rule 3: Key Child-directedspeech present
+    rule3_cds_speaking = bool(row['has_cds'])
     
     # Rule 4: Adult face + recent speech
     rule4_adult_face_recent_speech = bool(row['has_adult_face'] == 1 and recent_speech_exists)
     
-    return rule1_turn_taking, rule2_close_proximity, rule3_other_speaking, rule4_adult_face_recent_speech
+    return rule1_turn_taking, rule2_close_proximity, rule3_cds_speaking, rule4_adult_face_recent_speech
 
 def classify_face_category(row):
     """Categorize face detection patterns for attention analysis."""
@@ -513,9 +495,9 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
 
     # Print which rules are being used
     rule_names = {
-        1: "Turn-taking audio interaction",
+        1: "Turn-taking audio interaction (KCHI + KCDS)",
         2: "Very close proximity",
-        3: "Other person speaking", 
+        3: "Key Child-directed speech present", 
         4: "Adult face + recent speech"
     }
     
@@ -523,26 +505,20 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
     print(f"📋 Using interaction rules: {[f'{i}: {rule_names[i]}' for i in included_rules]}")
     
     with sqlite3.connect(db_path) as conn:
-        # Step 1: Data integration
+        # Data integration
         all_data = get_all_analysis_data(conn)
 
-        # Step 2: Audio turn-taking analysis
+        # Audio turn-taking analysis
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
             all_data, FPS, InferenceConfig.TURN_TAKING_BASE_WINDOW_SEC, InferenceConfig.TURN_TAKING_EXT_WINDOW_SEC
         )
-
-        # Step 3: Speech feature extraction        
-        for cls in InferenceConfig.SPEECH_CLASSES:
-            col_name = f"{cls.lower()}_speech_present"
-            all_data[col_name] = all_data['speaker'].str.contains(cls, na=False).astype(int)
         
-        # Step 4: Social interaction classification with specified rules
+        # Social interaction classification with specified rules
         all_data['interaction_type'] = all_data.apply(
             lambda row: classify_interaction_with_audio(row, all_data, included_rules), axis=1
         )
         
-        # Step 4b: Interaction rule analysis - track which specific rules are active
-        print("🔍 Analyzing interaction rule patterns...")
+        # Interaction rule analysis - track which specific rules are active
         rule_results = all_data.apply(
             lambda row: classify_interaction_rules(row, all_data), axis=1
         )
@@ -550,7 +526,7 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         # Unpack the rule results into separate columns
         all_data['rule1_turn_taking'] = [result[0] for result in rule_results]
         all_data['rule2_close_proximity'] = [result[1] for result in rule_results]
-        all_data['rule3_other_speaking'] = [result[2] for result in rule_results]
+        all_data['rule3_cds_speaking'] = [result[2] for result in rule_results]
         all_data['rule4_adult_face_recent_speech'] = [result[3] for result in rule_results]
 
         # Step 5: Presence pattern categorization       
@@ -574,7 +550,7 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
     parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4],
-                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=other-speaking, 4=adult-face-recent-speech). Default: [1, 2, 3, 4]')
+                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=cds-speaking, 4=adult-face-recent-speech). Default: [1, 2, 3, 4]')
 
     args = parser.parse_args()
     
