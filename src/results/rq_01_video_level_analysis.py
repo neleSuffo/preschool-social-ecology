@@ -283,8 +283,6 @@ def add_metadata_to_segments(segments_df, frame_data):
     # Add child_id to segments_df using extract_child_id
     segments_df['child_id'] = segments_df['video_name'].apply(extract_child_id)
     
-    # change segment name "co-present silent" to "Co-present"
-    segments_df['interaction_type'] = segments_df['interaction_type'].replace("Co-present Silent", "Co-present")
     # Extract age information from frame_data (get unique video_name to age_at_recording mapping)
     try:
         # Get unique video_name to age_at_recording mapping from frame_data
@@ -334,20 +332,20 @@ def print_segment_summary(segments_df):
         total_segments = len(segments_df)
         interacting_segments = len(segments_df[segments_df['interaction_type'] == 'Interacting'])
         alone_segments = len(segments_df[segments_df['interaction_type'] == 'Alone'])
-        copresent_segments = len(segments_df[segments_df['interaction_type'] == 'Co-present'])
+        copresent_segments = len(segments_df[segments_df['interaction_type'] == 'Available'])
 
         # Calculate total duration for each segment interaction_type in minutes (with two decimals)
         total_duration = round(segments_df['duration_sec'].sum() / 60, 2)
         interacting_duration = round(segments_df[segments_df['interaction_type'] == 'Interacting']['duration_sec'].sum() / 60, 2)
         alone_duration = round(segments_df[segments_df['interaction_type'] == 'Alone']['duration_sec'].sum() / 60, 2)
-        copresent_duration = round(segments_df[segments_df['interaction_type'] == 'Co-present']['duration_sec'].sum() / 60, 2)
+        copresent_duration = round(segments_df[segments_df['interaction_type'] == 'Available']['duration_sec'].sum() / 60, 2)
 
         print(f"\n📊 Final segment summary:")
         print(f"   Total segments: {total_segments} ({total_duration} minutes)")
         print(f"   Interacting: {interacting_segments} ({interacting_duration} minutes - {interacting_duration/total_duration*100:.1f}%)")
         print(f"   Alone: {alone_segments} ({alone_duration} minutes - {alone_duration/total_duration*100:.1f}%)")
         if copresent_segments > 0:
-            print(f"   Co-present: {copresent_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
+            print(f"   Available: {copresent_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
     else:
         print("\n📊 No segments created")
 
