@@ -33,7 +33,7 @@ import shutil
 from pathlib import Path
 from constants import AudioClassification
 from config import AudioConfig
-from utils import create_data_generators, create_training_callbacks, setup_gpu_config, create_model_and_setup
+from utils import create_data_generators, create_training_callbacks, setup_gpu_config, load_model
 
 # Setup GPU configuration
 gpu_available = setup_gpu_config()
@@ -171,12 +171,12 @@ def main():
         
         # 2. Create model and setup encoders
         print("🧠 Creating model and setting up encoders...")
-        model, mlb, num_classes, fixed_time_steps = create_model_and_setup(unique_labels)
+        model, mlb = load_model()
         model.log_dir = run_dir  # For ThresholdOptimizer callback
 
         # 3. Create data generators
         print("🔄 Creating data generators...")
-        train_generator, val_generator, test_generator = create_data_generators(segment_files, mlb)
+        train_generator, val_generator, _ = create_data_generators(segment_files, mlb)
 
         # 4. Setup training callbacks
         print("🎯 Setting up training callbacks...")
