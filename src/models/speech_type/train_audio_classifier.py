@@ -158,7 +158,7 @@ def main():
     segment_files = {
         'train': AudioClassification.TRAIN_SEGMENTS_FILE,
         'val': AudioClassification.VAL_SEGMENTS_FILE,
-        'test': AudioClassification.TEST_SEGMENTS_FILE
+        'test': None
     }
 
     try:
