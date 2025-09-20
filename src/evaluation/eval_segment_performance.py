@@ -75,8 +75,12 @@ def evaluate_performance_by_frames(predictions_df, ground_truth_df, fps=30):
     
     category_stats = {category: {'total': 0, 'correct': 0} for category in interaction_types}
     
-    # Initialize confusion matrix
+    # Initialize confusion matrix with all ground truth categories
     confusion_matrix = defaultdict(lambda: defaultdict(int))
+    
+    # Ensure all ground truth categories are represented as rows in confusion matrix
+    for gt_type in interaction_types:
+        confusion_matrix[gt_type]  # This initializes the defaultdict for this GT type
     
     video_results = []
     
@@ -198,6 +202,9 @@ def calculate_detailed_metrics(results):
     """
     Calculate precision, recall, and F1-score for each class from confusion matrix.
     
+    This function ensures all ground truth categories are included in metrics,
+    even if they were never predicted (resulting in zero precision/recall).
+    
     Parameters
     ----------
     results : dict
@@ -214,11 +221,8 @@ def calculate_detailed_metrics(results):
     detailed_metrics = {}
     
     for class_name in interaction_types:
-        if class_name not in confusion_matrix:
-            continue
-            
         # Calculate True Positives, False Positives, False Negatives
-        tp = confusion_matrix[class_name].get(class_name, 0)  # Correctly predicted as this class
+        tp = confusion_matrix[class_name].get(class_name, 0) if class_name in confusion_matrix else 0
         
         # False Positives: other classes predicted as this class
         fp = 0
@@ -227,10 +231,21 @@ def calculate_detailed_metrics(results):
                 fp += confusion_matrix[gt_class].get(class_name, 0)
         
         # False Negatives: this class predicted as other classes
+        # Also need to check if this class has instances in category_stats but wasn't predicted at all
         fn = 0
-        for pred_class in confusion_matrix[class_name]:
-            if pred_class != class_name:
-                fn += confusion_matrix[class_name][pred_class]
+        if class_name in confusion_matrix:
+            for pred_class in confusion_matrix[class_name]:
+                if pred_class != class_name:
+                    fn += confusion_matrix[class_name][pred_class]
+        
+        # If class had ground truth instances but never appeared in confusion matrix,
+        # then all its instances were missed (false negatives)
+        # Get the total ground truth instances from category_stats if available
+        category_stats = results.get('category_accuracies', {})
+        if class_name in category_stats:
+            total_gt_instances = category_stats[class_name]['total_frames']
+            # fn should equal total_gt_instances - tp
+            fn = total_gt_instances - tp
         
         # Calculate metrics
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
@@ -268,6 +283,9 @@ def calculate_detailed_metrics(results):
 def generate_confusion_matrix_plots(results):
     """
     Generate and save confusion matrix plots.
+    
+    Ensures all ground truth categories appear in both rows and columns,
+    even if some categories were never predicted (showing zero counts).
     """
     confusion_matrix = results['confusion_matrix']
     interaction_types = results['interaction_types']
@@ -285,8 +303,11 @@ def generate_confusion_matrix_plots(results):
         if label not in sorted_gt_labels:
             sorted_gt_labels.append(label)
     
-    # Get all predicted labels and sort them in preferred order (exclude unclassified)
-    all_pred_labels = set()
+    # Ensure predicted labels include ALL ground truth types (even if count is 0)
+    # This ensures symmetric confusion matrix with all GT categories as both rows and columns
+    all_pred_labels = set(interaction_types)  # Start with all GT types
+    
+    # Add any additional predicted labels that appear in confusion matrix
     for gt_label in confusion_matrix:
         for pred_label in confusion_matrix[gt_label]:
             if pred_label != 'unclassified':  # Skip unclassified labels
@@ -441,6 +462,14 @@ def main(predictions_df, ground_truth_df, fps=30):
     
     # Calculate detailed metrics (precision, recall, F1)
     detailed_metrics = calculate_detailed_metrics(results)
+    
+    # Validation: Ensure all ground truth types are in detailed metrics
+    gt_types_set = set(results['interaction_types'])
+    metrics_types_set = set(detailed_metrics.keys()) - {'macro_avg'}
+    if gt_types_set != metrics_types_set:
+        print(f"⚠️ Warning: Mismatch between GT types and metrics types")
+        print(f"GT types: {sorted(gt_types_set)}")
+        print(f"Metrics types: {sorted(metrics_types_set)}")
 
     # Generate confusion matrix plots
     generate_confusion_matrix_plots(results)
