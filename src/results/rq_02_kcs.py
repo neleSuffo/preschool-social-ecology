@@ -60,7 +60,7 @@ def row_wise_mapping(voc_row, video_segments_df):
         ['vocalization_id', 'video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds']
     video_segments_df : pd.DataFrame
         DataFrame containing interaction segments for one video_id with columns:
-        ['start_time_sec', 'end_time_sec', 'category']  
+        ['start_time_sec', 'end_time_sec', 'interaction_type']  
     
     Returns:
     -------
@@ -94,7 +94,7 @@ def row_wise_mapping(voc_row, video_segments_df):
             'start_time_seconds': voc_row['start_time_seconds'],
             'end_time_seconds': voc_row['end_time_seconds'],
             'seconds': overlap_seconds,
-            'interaction_type': seg['category'],
+            'interaction_type': seg['interaction_type'],
             'total_segment_duration': total_segment_duration,
             'segment_start_time': seg['start_time_sec'],
             'segment_end_time': seg['end_time_sec']
@@ -103,22 +103,26 @@ def row_wise_mapping(voc_row, video_segments_df):
 
 def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV):
     """
-    Retrieve KCHI vocalizations from the SQLite database and map them to interaction segments.
+    Retrieve KCHI audio classifications from the SQLite database and map them to interaction segments.
+    
+    This function queries frame-level KCHI audio detections and converts each frame to a time interval,
+    then maps these frame-level detections to interaction contexts.
+    
     The mapped_vocalizations DataFrame contains the following columns:
-    ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'words', 'interaction_type']
+    ['video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds', 'seconds', 'interaction_type']
 
     Parameters:
     ----------
     db_path : Path
-        Path to the SQLite database.
+        Path to the SQLite database containing AudioClassifications table.
     segments_csv_path : Path
         Path to the CSV file containing interaction segments with columns:
-        ['video_id', 'start_time_sec', 'end_time_sec', 'category']
+        ['video_id', 'start_time_sec', 'end_time_sec', 'interaction_type']
         
     Returns:
     -------
-    tuple
-        (mapped_vocalizations_df, segments_df) - DataFrame with mapped vocalizations and original segments
+    pd.DataFrame
+        DataFrame with mapped frame-level KCHI detections to interaction segments
     """
     # Load segments DataFrame
     segments_df = pd.read_csv(segments_csv_path)
@@ -126,16 +130,35 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     # Load age data
     age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
 
-    # Connect to the SQLite database and query KCHI vocalizations with video names
+    # Connect to the SQLite database and query KCHI audio classifications with video names
     conn = sqlite3.connect(db_path)
-    vocalizations_query = """
-    SELECT v.vocalization_id, v.video_id, vid.video_name, v.start_time_seconds, v.end_time_seconds, v.words
-    FROM Vocalizations v
-    JOIN Videos vid ON v.video_id = vid.video_id
-    WHERE v.speaker = 'KCHI'
+    
+    # Get KCHI audio classifications directly from the AudioClassifications table
+    audio_query = """
+    SELECT ac.video_id, vid.video_name, ac.frame_number, ac.has_kchi
+    FROM AudioClassifications ac
+    JOIN Videos vid ON ac.video_id = vid.video_id
+    WHERE ac.has_kchi = 1
+    ORDER BY ac.video_id, ac.frame_number
     """
-    kchi_vocs = pd.read_sql_query(vocalizations_query, conn)
+    kchi_frames = pd.read_sql_query(audio_query, conn)
     conn.close()
+    
+    # Handle case where no KCHI speech is detected
+    if len(kchi_frames) == 0:
+        print("⚠️ Warning: No KCHI speech frames found in audio classifications")
+        return pd.DataFrame()  # Return empty DataFrame
+    
+    # Convert frame numbers to time using fps
+    fps = 30  # frames per second
+    kchi_frames['start_time_seconds'] = kchi_frames['frame_number'] / fps
+    kchi_frames['end_time_seconds'] = (kchi_frames['frame_number'] + 1) / fps  # Each frame represents 1/fps seconds
+    
+    # Add vocalization_id for compatibility (just use index)
+    kchi_frames['vocalization_id'] = range(len(kchi_frames))
+    
+    # Rename to kchi_vocs to maintain compatibility with existing code
+    kchi_vocs = kchi_frames.copy()
     
     # Extract child_id from video_name
     kchi_vocs['child_id'] = kchi_vocs['video_name'].apply(extract_child_id)
@@ -168,10 +191,11 @@ def main():
     Research Question 2: How much language does the key child produce (utterances and words)?
     
     This script:
-    1. Extracts KCHI (key child) vocalizations from the database
-    2. Maps them to interaction segments (Alone, Co-present Silent, Interacting)  
-    3. Outputs mapped vocalization data with overlap durations
-    4. Saves results to CSV
+    1. Extracts KCHI (key child) audio classifications from the database
+    2. Converts frame-level detections to frame-level time intervals  
+    3. Maps frame-level KCHI detections to interaction contexts (Alone, Co-present Silent, Interacting)  
+    4. Outputs mapped frame-level data with overlap durations
+    5. Saves results to CSV
     
     Parameters
     ----------
@@ -182,14 +206,19 @@ def main():
     """   
     print("🗣️ RESEARCH QUESTION 2: CHILD LANGUAGE PRODUCTION ANALYSIS")
     print("=" * 70)
-    print("Analyzing key child vocalizations by interaction context...")
+    print("Analyzing key child audio classifications by interaction context...")
     
-    # Step 1: Map vocalizations to interaction segments
-    print("\n🔄 Step 1: Mapping vocalizations to interaction segments...")
+    # Step 1: Map audio classifications to interaction segments
+    print("\n🔄 Step 1: Mapping KCHI frame detections to interaction contexts...")
     mapped_vocalizations = map_vocalizations_to_segments()
+    
+    # Handle empty result
+    if len(mapped_vocalizations) == 0:
+        print("❌ No KCHI speech data found. Exiting analysis.")
+        return pd.DataFrame()
 
     # Step 2: Use mapped vocalizations directly
-    print("\n📋 Step 2: Using mapped vocalizations data...")
+    print("\n📋 Step 2: Processing mapped frame-level speech data...")
     
     # Convert seconds to minutes
     mapped_vocalizations['kchi_speech_minutes'] = mapped_vocalizations['seconds'] / 60
@@ -210,7 +239,7 @@ def main():
     # No filtering needed - we want to keep all segments, even those with 0 KCHI minutes
     
     # Step 2.5: Remove overlapping vocalizations and calculate true speech time per segment
-    print("\n📊 Step 2.5: Removing vocalization overlaps and aggregating KCHI speech by segment...")
+    print("\n📊 Step 2.5: Removing frame overlaps and aggregating KCHI speech by interaction segment...")
     
     segment_results = []
     
@@ -221,10 +250,10 @@ def main():
     ]):
         child_id, age_at_recording, interaction_type, seg_start, seg_end = segment_key
         
-        # Get all vocalization intervals within this segment
+        # Get all frame intervals within this interaction segment
         intervals = []
         for _, row in segment_data.iterrows():
-            # Use the actual vocalization times within the segment
+            # Use the actual frame times within the interaction segment
             voc_start = max(row['start_time_seconds'], row['segment_start_time'])
             voc_end = min(row['end_time_seconds'], row['segment_end_time'])
             if voc_end > voc_start:  # Valid interval
@@ -262,8 +291,6 @@ def main():
     max_percentage = segment_totals['speech_activity_percent'].max()
     if max_percentage > 1.0:
         print(f"⚠️  Warning: Maximum percentage is {max_percentage:.1%}, which exceeds 100%")
-    else:
-        print(f"✅ Maximum KCHI speech activity: {max_percentage:.1%} (within valid range)")
     
     # Sort segment totals
     segment_totals = segment_totals.sort_values([
