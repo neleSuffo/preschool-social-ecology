@@ -77,98 +77,95 @@ def get_all_analysis_data(conn):
     """)
     
     # ====================================================================
-    # STEP 2: AUDIO CLASSIFICATION PROCESSING
+    # STEP 2: DIRECT AUDIO INTEGRATION APPROACH
     # ====================================================================
-    # Purpose: Get frame-level audio classifications directly from AudioClassifications table
+    # Purpose: Use AudioClassifications table directly as primary data source
     #
     # Input: AudioClassifications table with frame-level predictions
-    #        - frame_number: frame identifier (consistent with PersonClassifications)
+    #        - frame_number: frame identifier (will become primary key for joins)
     #        - has_kchi: child speech detection (0/1)
     #        - has_ohs: other human speech detection (0/1) 
     #        - has_cds: child-directed speech detection (0/1)
     #
-    # Processing: Direct selection since data is already frame-based
+    # Processing: No temp table needed - use AudioClassifications directly in main query
     #
-    # Output: AudioFrames temp table
-    #         - One row per frame with audio classifications
-    #         - All three audio classes preserved for analysis
-    #         - Consistent frame numbering with PersonClassifications
-    conn.execute("""
-    CREATE TEMP TABLE IF NOT EXISTS AudioFrames AS
-    SELECT 
-        video_id,
-        frame_number,
-        has_kchi,
-        has_ohs,
-        has_cds
-    FROM AudioClassifications;
-    """)
+    # Benefits: 
+    #         - Preserves all 16K+ audio frames instead of only 1.6K person frames
+    #         - Eliminates data loss from mismatched frame alignment
+    #         - Maintains complete temporal coverage of audio events
+    
+    # Note: AudioFrames temp table removed - using AudioClassifications directly
     
     # ====================================================================
     # STEP 3: MAIN DATA INTEGRATION QUERY
     # ====================================================================
     # Purpose: Combine all modalities into a unified frame-level dataset
     #
+    # CRITICAL FIX: Use AudioClassifications as PRIMARY table to preserve all audio frames
+    # 
     # Data Sources:
-    #   1. PersonClassifications (pd) - PRIMARY: person body detections per frame
-    #   2. FaceAgg (fa) - SECONDARY: aggregated face detections with proximity
-    #   3. AudioFrames (af) - TERTIARY: audio classifications per frame
+    #   1. AudioClassifications (af) - PRIMARY: frame-level audio classifications
+    #   2. PersonClassifications (pd) - SECONDARY: person body detections per frame  
+    #   3. FaceAgg (fa) - TERTIARY: aggregated face detections with proximity
     #   4. Videos (v) - METADATA: video information and naming
     #
     # Join Strategy:
-    #   - LEFT JOIN ensures all PersonClassifications frames are preserved
-    #   - Missing face/audio data filled with NULL/0 values using COALESCE
+    #   - AudioClassifications as PRIMARY ensures all audio frames are preserved
+    #   - LEFT JOIN to other modalities fills missing data with NULL/0 values
     #   - Frame and video IDs used as joint keys for temporal alignment
-    #   - Videos table joined to provide video metadata (name, etc.)
+    #   - This approach preserves all 16K+ audio frames instead of only 1.6K person frames
     #
     # Combined Presence Logic:
     #   - child_present = 1 IF (child face detected OR child person detected)
     #   - adult_present = 1 IF (adult face detected OR adult person detected)
     #   - OR logic maximizes detection sensitivity across modalities
+    #   - NULL values handled gracefully with COALESCE
     #
     # Output Columns:
     #   - Identifiers: frame_number, video_id, video_name
-    #   - Person flags: has_child_person, has_adult_person (original)
-    #   - Face flags: has_child_face, has_adult_face (aggregated)
+    #   - Audio activity: has_kchi, has_ohs, has_cds (preserved from primary table)
+    #   - Person flags: has_child_person, has_adult_person (may be NULL/0 for some frames)
+    #   - Face flags: has_child_face, has_adult_face (aggregated, may be NULL/0)
     #   - Social distance: proximity (0=far, 1=close, NULL=no faces)
     #   - Combined flags: child_present, adult_present (multimodal fusion)
-    #   - Audio activity: has_kchi, has_ohs, has_cds (frame-level classifications)
     #
     # Temporal Granularity:
     #   - Frame-level analysis enables precise temporal segmentation
-    #   - 10-frame intervals (1/3 second) balance precision with computational efficiency
-    #   - Consistent timestamps across all modalities for synchronized analysis
+    #   - All audio frames preserved for comprehensive speech analysis
+    #   - Person/face data supplemented where available
     query = """
     SELECT
-        pd.frame_number,
-        pd.video_id,
+        af.frame_number,
+        af.video_id,
         v.video_name,                -- Video metadata: human-readable video name
         
-        -- PERSON DETECTION MODALITY
-        -- Raw person body detections from YOLO model
-        pd.has_child_person,        -- Binary: child body detected in frame
-        pd.has_adult_person,        -- Binary: adult body detected in frame
+        -- AUDIO CLASSIFICATION MODALITY (PRIMARY - all preserved)
+        -- Frame-level audio classifications from primary table
+        af.has_kchi,                 -- Binary: child speech detected
+        af.has_ohs,                  -- Binary: other human speech detected  
+        af.has_cds,                  -- Binary: key child-directed speech detected
         
-        -- FACE DETECTION MODALITY  
+        -- PERSON DETECTION MODALITY (may have gaps)
+        -- Raw person body detections from YOLO model
+        COALESCE(pd.has_child_person, 0) AS has_child_person,    -- Binary: child body detected
+        COALESCE(pd.has_adult_person, 0) AS has_adult_person,    -- Binary: adult body detected
+        
+        -- FACE DETECTION MODALITY (may have gaps)
         -- Aggregated face detections with social distance measures
         COALESCE(fa.has_child_face, 0) AS has_child_face,    -- Binary: any child face
         COALESCE(fa.has_adult_face, 0) AS has_adult_face,    -- Binary: any adult face
-        fa.proximity,                                        -- Float: social distance (0=far, 1=close)
+        fa.proximity,                                        -- Float: social distance (0=far, 1=close, NULL=no faces)
         
         -- MULTIMODAL FUSION FLAGS
         -- Combined presence indicators using OR logic across modalities
-        CASE WHEN COALESCE(fa.has_child_face,0)=1 OR pd.has_child_person=1 THEN 1 ELSE 0 END AS child_present,
-        CASE WHEN COALESCE(fa.has_adult_face,0)=1 OR pd.has_adult_person=1 THEN 1 ELSE 0 END AS adult_present,
+        CASE WHEN COALESCE(fa.has_child_face,0)=1 OR COALESCE(pd.has_child_person,0)=1 THEN 1 ELSE 0 END AS child_present,
+        CASE WHEN COALESCE(fa.has_adult_face,0)=1 OR COALESCE(pd.has_adult_person,0)=1 THEN 1 ELSE 0 END AS adult_present
         
-        -- AUDIO CLASSIFICATION MODALITY
-        -- Frame-level audio classifications
-        COALESCE(af.has_kchi, 0) AS has_kchi,       -- Binary: child speech detected
-        COALESCE(af.has_ohs, 0) AS has_ohs,         -- Binary: other human speech detected
-        COALESCE(af.has_cds, 0) AS has_cds          -- Binary: key child-directed speech detected
-    FROM PersonClassifications pd
-    LEFT JOIN FaceAgg fa ON pd.frame_number = fa.frame_number AND pd.video_id = fa.video_id
-    LEFT JOIN AudioFrames af ON pd.frame_number = af.frame_number AND pd.video_id = af.video_id
-    LEFT JOIN Videos v ON pd.video_id = v.video_id
+    FROM AudioClassifications af
+    LEFT JOIN PersonClassifications pd ON af.frame_number = pd.frame_number AND af.video_id = pd.video_id
+    LEFT JOIN FaceAgg fa ON af.frame_number = fa.frame_number AND af.video_id = fa.video_id
+    LEFT JOIN Videos v ON af.video_id = v.video_id
+    ORDER BY af.video_id, af.frame_number
     """
     return pd.read_sql(query, conn)
 
