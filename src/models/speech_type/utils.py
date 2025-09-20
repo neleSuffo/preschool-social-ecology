@@ -1,17 +1,21 @@
 import json
 import librosa
+import pandas as pd
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import os
 import time
 import csv
+from datetime import datetime
+from tqdm import tqdm
 from pathlib import Path
-from config import AudioConfig
+from config import AudioConfig, AudioClassification
 from audio_classifier import build_model_multi_label, ThresholdOptimizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
-
+from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
+    
 # --- Data Generator ---
 class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
     """
@@ -315,26 +319,6 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         plt.savefig(os.path.join(self.log_dir, 'macro_f1_plot.png'))
         plt.close()
 
-def setup_multilabel_encoder(unique_labels):
-    """
-    Set up multi-label binarizer for voice type classification.
-    
-    Parameters:
-    ----------
-    unique_labels (list): List of unique voice type labels found in data
-        
-    Returns:
-    -------
-    tuple: (mlb, num_classes) where mlb is fitted MultiLabelBinarizer 
-        and num_classes is the number of classes
-    """
-    mlb = MultiLabelBinarizer(classes=unique_labels)
-    mlb.fit([[]])  # Fit with empty list to initialize
-    num_classes = len(mlb.classes_)
-    
-    print(f"\nDetected {num_classes} unique target classes: {mlb.classes_}")
-    return mlb, num_classes
-
 def create_data_generators(segment_files, mlb):
     """
     Create data generators for training, validation, and testing.
@@ -410,39 +394,7 @@ def create_training_callbacks(run_dir, val_generator, mlb_classes):
     ]
     return callbacks
 
-def create_model_and_setup(unique_labels):
-    """
-    Create and compile the multi-label classification model.
-    
-    Parameters:
-    ----------
-    unique_labels (list): List of unique voice type labels
-        
-    Returns:
-    -------
-    tuple: 
-        (model, mlb, num_classes, fixed_time_steps) where:
-            - model: Compiled Keras model
-            - mlb: Fitted MultiLabelBinarizer
-            - num_classes: Number of classes
-            - fixed_time_steps: Fixed time steps for model input
-    """
-    # Setup multi-label encoder
-    mlb, num_classes = setup_multilabel_encoder(unique_labels)
-    
-    # Use centralized calculation for consistent time steps across all components
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-
-    # Build model architecture
-    model = build_model_multi_label(
-        n_mels=AudioConfig.N_MELS,
-        fixed_time_steps=fixed_time_steps,
-        num_classes=num_classes
-    )
-    
-    return model, mlb, num_classes, fixed_time_steps
-
-def load_thresholds(run_dir, mlb_classes):
+def load_thresholds(mlb_classes):
     """
     Load class-specific optimized thresholds from training run output.
     
@@ -463,8 +415,6 @@ def load_thresholds(run_dir, mlb_classes):
     
     Parameters:
     ----------
-    run_dir (str or Path): 
-        Training run directory containing threshold optimization results
     mlb_classes (list): 
         List of class names in the same order as model outputs
     
@@ -482,8 +432,7 @@ def load_thresholds(run_dir, mlb_classes):
         ...
     }
     """
-    run_dir = Path(run_dir)
-    thresholds_file = run_dir / 'thresholds.json'
+    thresholds_file = AudioClassification.RESULTS_DIR / 'thresholds.json'
     
     if thresholds_file.exists():
         try:
@@ -507,48 +456,6 @@ def load_thresholds(run_dir, mlb_classes):
         print("🔄 Using default thresholds (0.5 for all classes)")
     
     return thresholds
-
-def load_model_and_setup(model_path):
-    """
-    Load trained model by building the architecture and loading weights.
-    
-    Parameters:
-    ----------
-    model_path (Path): 
-        Path to the saved model weights file (.keras)
-        
-    Returns:
-    -------
-    tuple: (model, mlb) where:
-        - model: Loaded Keras model ready for inference
-        - mlb: Fitted MultiLabelBinarizer for decoding predictions
-    """    
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model file not found: {model_path}")
-        
-    # Setup multi-label binarizer consistent with training
-    mlb = MultiLabelBinarizer(classes=AudioConfig.VALID_RTTM_CLASSES)
-    mlb.fit([[]])  # Initialize with empty list to set up classes
-    num_classes = len(mlb.classes_)
-
-    # Use centralized calculation for consistent time steps across all components
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-
-    try:
-        # Build the model architecture first, with the corrected Lambda layer
-        model = build_model_multi_label(
-            n_mels=AudioConfig.N_MELS,
-            fixed_time_steps=fixed_time_steps,
-            num_classes=num_classes
-        )
-        
-        # Load only the weights from the saved .keras file
-        model.load_weights(model_path)
-    
-    except Exception as e:
-        raise ValueError(f"Failed to load model: {e}")
-    
-    return model, mlb
 
 # --- Feature Extraction ---
 def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=None):
@@ -649,197 +556,6 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
         print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
         effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
         return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
-   
-# --- Data Generator for Evaluation ---
-class EvaluationDataGenerator(tf.keras.utils.Sequence):
-    """
-    Deterministic data generator for model evaluation with consistent batch loading.
-    
-    This generator provides reproducible evaluation by maintaining deterministic
-    ordering and eliminating data augmentation. It ensures consistent evaluation
-    metrics across multiple runs and fair comparison with training performance.    
-    """
-    def __init__(self, segments_file_path, mlb, n_mels, hop_length, sr, window_duration, fixed_time_steps, batch_size=32):
-        """
-        Initialize evaluation data generator with configuration parameters.
-        
-        Parameters:
-        ----------
-        segments_file_path (str or Path): 
-            Path to JSONL file containing evaluation segments
-        mlb (MultiLabelBinarizer): 
-            Fitted multi-label binarizer from training
-        n_mels (int): 
-            Number of mel frequency bands for spectrograms
-        hop_length (int): 
-            Hop length for STFT computation
-        sr (int): 
-            Audio sample rate for loading and processing
-        window_duration (float): 
-            Fixed window duration for segment extraction
-        fixed_time_steps (int): 
-            Standardized time steps for model input consistency
-        batch_size (int, default=32): 
-            Number of samples per batch for inference
-        """
-        self.segments_file_path = segments_file_path
-        self.mlb = mlb
-        self.n_mels = n_mels
-        self.hop_length = hop_length
-        self.sr = sr
-        self.window_duration = window_duration
-        self.fixed_time_steps = fixed_time_steps
-        self.batch_size = batch_size
-        # Load all segment metadata for deterministic access patterns
-        self.segments_data = self._load_segments_metadata()
-
-    def __len__(self):
-        """Calculate total number of batches for complete evaluation."""
-        return (len(self.segments_data) + self.batch_size - 1) // self.batch_size
-
-    def _load_segments_metadata(self):
-        """
-        Load all segment metadata from JSONL file for deterministic ordering.
-        
-        This method preloads segment paths and labels while keeping audio data
-        lazy-loaded to manage memory usage during evaluation.
-        
-        Returns:
-        -------
-        list: Segment metadata dictionaries with paths and labels
-        """
-        segments = []
-        with open(self.segments_file_path, 'r') as f:
-            for line in f:
-                segments.append(json.loads(line.strip()))
-        return segments
-
-    def __getitem__(self, index):
-        """
-        Generate batch of features and labels for evaluation.
-        
-        This method handles batch boundary conditions gracefully and ensures
-        consistent feature dimensions across all samples in the batch.
-        
-        Parameters:
-        ----------
-        index (int): Batch index for sequential access
-            
-        Returns:
-        -------
-        tuple: (X_batch, y_batch) where:
-            - X_batch: Feature array (batch_size, effective_n_mels+13, time_steps, 1)
-            - y_batch: Multi-hot label array (batch_size, n_classes)
-        """
-        # Calculate batch boundaries with overflow protection
-        start_idx = index * self.batch_size
-        end_idx = min((index + 1) * self.batch_size, len(self.segments_data))
-        batch_segments = self.segments_data[start_idx:end_idx]
-        
-        # Initialize batch collections
-        X_batch = []
-        y_batch = []
-        
-        # Process each segment in the batch
-        for segment in batch_segments:
-            # Extract features using consistent pipeline
-            mel = extract_features(
-                segment['audio_path'], segment['start'], segment['duration'],
-                sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
-                fixed_time_steps=self.fixed_time_steps
-            )
-            
-            # Validate and correct feature dimensions if necessary
-            if mel.ndim != 2:
-                if mel.ndim == 3 and mel.shape[-1] == 1:
-                    # Remove singleton dimension
-                    mel = mel.squeeze(axis=-1)
-                else:
-                    # Skip malformed features
-                    continue
-                    
-            X_batch.append(mel)
-            
-            # Convert string labels to multi-hot encoding
-            multi_hot_labels = self.mlb.transform([segment['labels']])[0]
-            y_batch.append(multi_hot_labels)
-        
-        # Handle empty batch case gracefully
-        if not X_batch:
-            return np.array([]), np.array([])
-            
-        # Convert to numpy arrays with correct dimensions for model input
-        X_batch_np = np.array(X_batch)
-        X_batch_final = np.expand_dims(X_batch_np, -1)  # Add channel dimension
-        return X_batch_final, np.array(y_batch)
-
-def create_empty_feature_matrix(n_mels, fixed_time_steps):
-    """
-    Create standardized empty feature matrix for error cases.
-    
-    This helper ensures consistent fallback behavior when audio processing
-    fails, maintaining expected input dimensions for the neural network.
-    Uses effective n_mels calculation to match model architecture.
-    
-    Parameters:
-    ----------
-    n_mels (int): Number of mel frequency bands (will be capped at 128)
-    fixed_time_steps (int): Number of time steps
-        
-    Returns:
-    -------
-    np.ndarray: Zero-filled feature matrix with correct dimensions
-    """
-    # Use effective mel count to match model architecture 
-    effective_n_mels = min(n_mels, 128)
-    return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
-
-# ---- Evaluation Data Generator ----
-def create_evaluation_generator(test_segments_file, mlb):
-    """
-    Create deterministic data generator for comprehensive model evaluation.
-    
-    This function creates a specialized data generator for evaluation that maintains
-    consistency with the training pipeline while optimizing for inference performance.
-    The generator eliminates randomness and augmentation to ensure reproducible 
-    evaluation results across multiple runs.
-    
-    Generator Configuration:
-    - Deterministic ordering (no shuffling) for reproducible results
-    - No data augmentation to preserve original audio characteristics  
-    - Consistent feature extraction pipeline matching training
-    - Fixed batch size for optimal inference throughput
-    - Lazy loading strategy for memory efficiency
-    
-    Parameters:
-    ----------
-    test_segments_file (Path): 
-        Path to JSONL file containing test segment metadata
-    mlb (MultiLabelBinarizer): 
-        Fitted multi-label binarizer from training run
-    
-    Returns:
-    -------
-    EvaluationDataGenerator: 
-        Configured test data generator ready for model evaluation
-        
-    Features:
-    --------
-    - Batch size: 32 samples (optimal for most GPUs)
-    - Memory efficient: Lazy loading with small memory footprint
-    - Consistent preprocessing: Identical to training feature extraction
-    - Reproducible: Deterministic sample ordering for consistent metrics
-    """
-    # Use centralized time steps calculation to ensure consistency with training
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-    
-    test_generator = EvaluationDataGenerator(
-        test_segments_file, mlb,
-        AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-        AudioConfig.WINDOW_DURATION, fixed_time_steps,
-        batch_size=32
-    )
-    return test_generator
 
 # ---- Evaluation Functions ----
 def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir):
@@ -869,11 +585,7 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
     ------
     ValueError: If test generator is empty or predictions fail
     RuntimeError: If evaluation cannot complete due to data issues
-    """
-    from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
-    from tqdm import tqdm
-    from pathlib import Path
-    
+    """    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -979,11 +691,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     micro_recall (float): Micro-averaged recall
     micro_f1 (float): Micro-averaged F1 score
     subset_accuracy (float): Subset accuracy (exact match rate)
-    """
-    import pandas as pd
-    from datetime import datetime
-    from pathlib import Path
-    
+    """    
     output_dir = Path(output_dir)
     
     # Create comprehensive metrics summary for programmatic analysis
@@ -1091,9 +799,7 @@ def classify_audio_windows(audio_path, model, mlb, batch_size=32):
         List of class names corresponding to the model outputs.
     audio_duration : float
         Duration of the audio file in seconds.
-    """
-    import librosa
-    
+    """    
     y_audio, sr_audio = librosa.load(audio_path, sr=AudioConfig.SR)
     audio_duration = librosa.get_duration(y=y_audio, sr=sr_audio)
     all_window_data = []
@@ -1145,9 +851,7 @@ def aggregate_and_save_results(audio_file, predictions, class_names, output_writ
         CSV writer object to write the results.
     thresholds : dict
         Dictionary mapping class names to optimal thresholds
-    """
-    from pathlib import Path
-    
+    """    
     video_id = Path(audio_file).stem
     
     # Organize predictions by second
@@ -1178,7 +882,7 @@ def aggregate_and_save_results(audio_file, predictions, class_names, output_writ
         
         output_writer.writerow(row)
 
-def process_audio_folder(folder_path, model, mlb, output_dir, thresholds):
+def process_audio_folder(folder_path, model, mlb, thresholds):
     """
     Process a folder of audio files and save classification results using optimized thresholds.
 
@@ -1190,16 +894,10 @@ def process_audio_folder(folder_path, model, mlb, output_dir, thresholds):
         The trained audio classification model.
     mlb : sklearn.preprocessing.MultiLabelBinarizer
         MultiLabelBinarizer fitted on the training data.
-    output_dir : str
-        Path to the directory where output files will be saved.
     thresholds : dict
         Dictionary mapping class names to optimal thresholds
-    """
-    import csv
-    from pathlib import Path
-    
-    folder_path = Path(folder_path)
-    output_file = output_dir / 'classification_results.csv'
+    """    
+    output_file = AudioClassification.OUTPUT_DIR / 'classification_results.csv'
     
     audio_files = list(folder_path.glob('*.wav'))
     if not audio_files:
@@ -1233,7 +931,7 @@ def process_audio_folder(folder_path, model, mlb, output_dir, thresholds):
 
     print(f"\n✅ All processing complete. Results saved to {output_file}")
 
-def load_inference_model(model_path):
+def load_model(model_path: Path = AudioClassification.TRAINED_WEIGHTS_PATH):
     """
     Load trained model for inference by building the architecture and loading weights.
     
