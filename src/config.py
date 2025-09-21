@@ -114,7 +114,7 @@ class PersonConfig:
     CONFIDENCE_THRESHOLD = 0.5
     BATCH_SIZE_INFERENCE = 64
     WINDOW_SIZE = 6 # frames (6 extracted frames = 60 original frames = 2 seconds)
-    STRIDE = 3 # frames (every 3rd extracted frame = every 30 original frames = 1 second output)
+    STRIDE = 1 # frames (every 1st extracted frame = every 10 original frames)
     MODEL_ID = 2
 
 class FaceConfig:
