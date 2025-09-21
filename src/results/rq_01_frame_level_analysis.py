@@ -19,51 +19,45 @@ from config import DataConfig, InferenceConfig
 
 # Constants
 FPS = DataConfig.FPS # frames per second
+SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling rate)
 
 def get_all_analysis_data(conn):
     """
-    Comprehensive multimodal data integration query.
+    Multimodal data integration at configurable frame intervals.
     
     This function creates a unified dataset by combining three detection modalities:
     
     1. FACE AGGREGATION (FaceAgg temp table):
     - Aggregates multiple face detections per frame into binary presence flags
     - Computes proximity values (0=far, 1=close) for social distance analysis
-    - Groups by frame to handle multiple faces of same age class
     
-    2. VOCALIZATION PROCESSING (VocalizationFrames temp table):
-    - Converts time-based vocalizations to frame-based mapping
-    - Implements KCHI priority: child speech overrides adult speech in same frame
-    - Handles overlapping speech segments by prioritizing child vocalizations
-    - Time conversion: seconds → frames with 30fps and 10-frame rounding
+    2. PERSON CLASSIFICATION (PRIMARY temporal grid):
+    - Uses PersonClassifications as PRIMARY table (every sample rate-th frame)
     
-    3. MAIN DATA INTEGRATION:
-    - Joins person classifications with face detections and vocalizations
+    3. AUDIO SAMPLING (filtered to match person frames):
+    - Samples AudioClassifications to every sample rate-th frame only
+    
+    4. MAIN DATA INTEGRATION:
+    - PersonClassifications defines temporal grid (every sample rate-th frame)
+    - LEFT JOINs audio and face data to matching frames
     - Creates combined presence flags (person OR face = presence)
-    - Preserves frame-level granularity for temporal analysis
+    - Optimizes processing efficiency with aligned temporal sampling
     
     Returns:
-        pd.DataFrame: Frame-level dataset with all modalities integrated
-                    Columns: frame_number, video_id, person flags, face flags, 
-                            proximity, combined presence, speaker
+        pd.DataFrame: Temporally-aligned dataset at sample rate-frame intervals
+                    Columns: frame_number, video_id, person flags, audio flags, 
+                            face flags, proximity, combined presence
+                    
+    Temporal Resolution:
+        - Every {SAMPLE_RATE}-th frame = every {SAMPLE_RATE/FPS:.2f} second at FPS
+        - Efficient for social interaction analysis
+        - Aligned with person classification temporal sampling
     """
     # ====================================================================
     # STEP 1: FACE DETECTION AGGREGATION
     # ====================================================================
     # Purpose: Convert multiple face detections per frame into binary flags
-    # 
-    # Input: FaceDetections table with individual face detections
-    #        - Each row = one face detection with age_class (0=child, 1=adult)
-    #        - Multiple faces possible per frame
-    #        - Proximity values indicate social distance (0=far, 1=close)
-    #
-    # Output: FaceAgg temp table with frame-level aggregation
-    #         - One row per frame
-    #         - Binary flags: has_child_face, has_adult_face
-    #         - Single proximity value per frame (from any detected face)
-    #
-    # Logic: MAX() function converts any face detection to 1, else 0
-    #        Groups by frame to collapse multiple detections
+
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS FaceAgg AS
     SELECT 
@@ -80,77 +74,40 @@ def get_all_analysis_data(conn):
     # STEP 2: DIRECT AUDIO INTEGRATION APPROACH
     # ====================================================================
     # Purpose: Use AudioClassifications table directly as primary data source
-    #
-    # Input: AudioClassifications table with frame-level predictions
-    #        - frame_number: frame identifier (will become primary key for joins)
-    #        - has_kchi: child speech detection (0/1)
-    #        - has_ohs: other human speech detection (0/1) 
-    #        - has_cds: child-directed speech detection (0/1)
-    #
-    # Processing: No temp table needed - use AudioClassifications directly in main query
-    #
-    # Benefits: 
-    #         - Preserves all 16K+ audio frames instead of only 1.6K person frames
-    #         - Eliminates data loss from mismatched frame alignment
-    #         - Maintains complete temporal coverage of audio events
-    
-    # Note: AudioFrames temp table removed - using AudioClassifications directly
     
     # ====================================================================
-    # STEP 3: MAIN DATA INTEGRATION QUERY
+    # STEP 3: MAIN DATA INTEGRATION QUERY - OPTIMIZED FOR CONFIGURABLE FRAME ALIGNMENT
     # ====================================================================
     # Purpose: Combine all modalities into a unified frame-level dataset
-    #
-    # CRITICAL FIX: Use AudioClassifications as PRIMARY table to preserve all audio frames
     # 
     # Data Sources:
-    #   1. AudioClassifications (af) - PRIMARY: frame-level audio classifications
-    #   2. PersonClassifications (pd) - SECONDARY: person body detections per frame  
+    #   1. PersonClassifications (pd) - PRIMARY: every {SAMPLE_RATE}-th frame, defines temporal grid
+    #   2. AudioClassifications (af) - SECONDARY: filter to matching frames only  
     #   3. FaceAgg (fa) - TERTIARY: aggregated face detections with proximity
     #   4. Videos (v) - METADATA: video information and naming
     #
     # Join Strategy:
-    #   - AudioClassifications as PRIMARY ensures all audio frames are preserved
-    #   - LEFT JOIN to other modalities fills missing data with NULL/0 values
-    #   - Frame and video IDs used as joint keys for temporal alignment
-    #   - This approach preserves all 16K+ audio frames instead of only 1.6K person frames
-    #
-    # Combined Presence Logic:
-    #   - child_present = 1 IF (child face detected OR child person detected)
-    #   - adult_present = 1 IF (adult face detected OR adult person detected)
-    #   - OR logic maximizes detection sensitivity across modalities
-    #   - NULL values handled gracefully with COALESCE
-    #
-    # Output Columns:
-    #   - Identifiers: frame_number, video_id, video_name
-    #   - Audio activity: has_kchi, has_ohs, has_cds (preserved from primary table)
-    #   - Person flags: has_child_person, has_adult_person (may be NULL/0 for some frames)
-    #   - Face flags: has_child_face, has_adult_face (aggregated, may be NULL/0)
-    #   - Social distance: proximity (0=far, 1=close, NULL=no faces)
-    #   - Combined flags: child_present, adult_present (multimodal fusion)
-    #
-    # Temporal Granularity:
-    #   - Frame-level analysis enables precise temporal segmentation
-    #   - All audio frames preserved for comprehensive speech analysis
-    #   - Person/face data supplemented where available
-    query = """
+    #   - PersonClassifications as PRIMARY defines the {SAMPLE_RATE}-frame temporal grid
+    #   - LEFT JOIN AudioClassifications WHERE frame matches (efficient filtering)
+    #   - LEFT JOIN FaceAgg on same temporal grid    
+    query = f"""
     SELECT
-        af.frame_number,
-        af.video_id,
+        pd.frame_number,
+        pd.video_id,
         v.video_name,                -- Video metadata: human-readable video name
         
-        -- AUDIO CLASSIFICATION MODALITY (PRIMARY - all preserved)
-        -- Frame-level audio classifications from primary table
-        af.has_kchi,                 -- Binary: child speech detected
-        af.has_ohs,                  -- Binary: other human speech detected  
-        af.has_cds,                  -- Binary: key child-directed speech detected
+        -- PERSON DETECTION MODALITY
+        -- Raw person body detections from YOLO + BiLSTM model for every SAMPLE_RATE-th frame
+        pd.has_child_person,         -- Binary: child body detected
+        pd.has_adult_person,         -- Binary: adult body detected
         
-        -- PERSON DETECTION MODALITY (may have gaps)
-        -- Raw person body detections from YOLO model
-        COALESCE(pd.has_child_person, 0) AS has_child_person,    -- Binary: child body detected
-        COALESCE(pd.has_adult_person, 0) AS has_adult_person,    -- Binary: adult body detected
+        -- AUDIO CLASSIFICATION MODALITY (sampled to match person frames)
+        -- Frame-level audio classifications filtered to every SAMPLE_RATE-th frame
+        COALESCE(af.has_kchi, 0) AS has_kchi,        -- Binary: child speech detected
+        COALESCE(af.has_ohs, 0) AS has_ohs,          -- Binary: other human speech detected  
+        COALESCE(af.has_cds, 0) AS has_cds,          -- Binary: key child-directed speech detected
         
-        -- FACE DETECTION MODALITY (may have gaps)
+        -- FACE DETECTION MODALITY (when available)
         -- Aggregated face detections with social distance measures
         COALESCE(fa.has_child_face, 0) AS has_child_face,    -- Binary: any child face
         COALESCE(fa.has_adult_face, 0) AS has_adult_face,    -- Binary: any adult face
@@ -158,14 +115,14 @@ def get_all_analysis_data(conn):
         
         -- MULTIMODAL FUSION FLAGS
         -- Combined presence indicators using OR logic across modalities
-        CASE WHEN COALESCE(fa.has_child_face,0)=1 OR COALESCE(pd.has_child_person,0)=1 THEN 1 ELSE 0 END AS child_present,
-        CASE WHEN COALESCE(fa.has_adult_face,0)=1 OR COALESCE(pd.has_adult_person,0)=1 THEN 1 ELSE 0 END AS adult_present
+        CASE WHEN COALESCE(fa.has_child_face,0)=1 OR pd.has_child_person=1 THEN 1 ELSE 0 END AS child_present,
+        CASE WHEN COALESCE(fa.has_adult_face,0)=1 OR pd.has_adult_person=1 THEN 1 ELSE 0 END AS adult_present
         
-    FROM AudioClassifications af
-    LEFT JOIN PersonClassifications pd ON af.frame_number = pd.frame_number AND af.video_id = pd.video_id
-    LEFT JOIN FaceAgg fa ON af.frame_number = fa.frame_number AND af.video_id = fa.video_id
-    LEFT JOIN Videos v ON af.video_id = v.video_id
-    ORDER BY af.video_id, af.frame_number
+    FROM PersonClassifications pd
+    LEFT JOIN AudioClassifications af ON pd.frame_number = af.frame_number AND pd.video_id = af.video_id
+    LEFT JOIN FaceAgg fa ON pd.frame_number = fa.frame_number AND pd.video_id = fa.video_id
+    LEFT JOIN Videos v ON pd.video_id = v.video_id
+    ORDER BY pd.video_id, pd.frame_number
     """
     return pd.read_sql(query, conn)
 
@@ -271,16 +228,16 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
 
     return df_with_interaction['is_audio_interaction']
 
-def classify_interaction_with_audio(row, results_df, included_rules=None):
+def classify_frames(row, results_df, included_rules=None):
     """
     Hierarchical social interaction classifier with dynamic proximity and audio priority.
     
     CLASSIFICATION LOGIC:
     1. INTERACTING: Active social engagement
-    - Turn-taking audio interaction detected (highest priority)
+    - Turn-taking detected (highest priority)
     - OR Very close proximity (>= PROXIMITY_THRESHOLD)
     - OR Key child-directed speech present
-    - OR an adult face (proximity doesn't matter) + recent speech
+    - OR a Person or Face (proximity doesn't matter) + recent speech
     
     2. Available: Passive social presence
     - Person detected but no active interaction indicators
@@ -328,8 +285,8 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     if 3 in included_rules and row['has_cds']:
         active_rules.append(3)
     
-    # Rule 4: Adult face + recent speech
-    if 4 in included_rules and (row['has_adult_face'] == 1 and recent_speech_exists):
+    # Rule 4: Face or Person + recent speech
+    if 4 in included_rules and (person_is_present and recent_speech_exists):
         active_rules.append(4)
 
     if active_rules:
@@ -342,7 +299,7 @@ def classify_interaction_with_audio(row, results_df, included_rules=None):
     # Tier 3: ALONE (No presence)
     return "Alone"
 
-def classify_interaction_rules(row, results_df):
+def add_interaction_rules(row, results_df):
     """
     Classify which specific interaction rules are active for each frame.
     
@@ -350,10 +307,10 @@ def classify_interaction_rules(row, results_df):
     to enable analysis of which rules are most commonly triggering interactions.
     
     Rules:
-    1. Turn-taking audio interaction (KCHI + CDS)
+    1. Turn-taking  (KCHI + KCDS)
     2. Very close proximity (>= PROXIMITY_THRESHOLD)
-    3. Key Child-directed speech present
-    4. Adult face + recent speech
+    3. KCDS present
+    4. Face/Person + recent speech
     
     Parameters
     ----------
@@ -464,13 +421,13 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
     This function performs comprehensive frame-level analysis by calling specialized
     helper functions for each analytical step:
     
-    1. Data integration (multimodal query)
-    2. Audio turn-taking analysis
-    3. Speech feature extraction
-    4. Social interaction classification
-    5. Presence pattern categorization
-    6. Age information merging
-    7. Results export
+    1. Data Integration: Combines person, audio, and face data into a unified dataset.
+    2. Audio Turn-Taking Analysis: Detects turn-taking interactions with adaptive windows.
+    3. Social Interaction Classification: Classifies frames into interaction categories using specified rules.
+    4. Interaction Rule Analysis: Tracks which specific rules are active for each frame.
+    5. Presence Pattern Categorization: Categorizes face and person detection patterns.
+    6. Age Information Merging: Integrates age data from subjects CSV.
+    7. Result Saving: Outputs detailed frame-level analysis to CSV with rule info in filename
     
     Parameters
     ----------
@@ -492,10 +449,10 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
 
     # Print which rules are being used
     rule_names = {
-        1: "Turn-taking audio interaction (KCHI + KCDS)",
-        2: "Very close proximity",
-        3: "Key Child-directed speech present", 
-        4: "Adult face + recent speech"
+        1: "Turn-Taking (KCHI + KCDS)",
+        2: "Very Close Proximity",
+        3: "KCDS Present", 
+        4: "Face/Person + Recent KCDS"
     }
     
     print("🔄 Running comprehensive multimodal social interaction analysis...")
@@ -512,12 +469,12 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         
         # Social interaction classification with specified rules
         all_data['interaction_type'] = all_data.apply(
-            lambda row: classify_interaction_with_audio(row, all_data, included_rules), axis=1
+            lambda row: classify_frames(row, all_data, included_rules), axis=1
         )
         
         # Interaction rule analysis - track which specific rules are active
         rule_results = all_data.apply(
-            lambda row: classify_interaction_rules(row, all_data), axis=1
+            lambda row: add_interaction_rules(row, all_data), axis=1
         )
         
         # Unpack the rule results into separate columns
