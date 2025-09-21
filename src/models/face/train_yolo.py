@@ -13,6 +13,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train YOLO model for different detection tasks')
     parser.add_argument('--device', type=str, default='1',
                       help='Device to use (e.g., "0" for GPU, "cpu" for CPU)')
+    parser.add_argument('--config', type=str, default=str(FaceDetection.DATA_CONFIG_PATH),
+                      help=f'Path to YOLO data config file (default: {FaceDetection.DATA_CONFIG_PATH})')
     return parser.parse_args()
 
 def main():
@@ -39,7 +41,7 @@ def main():
 
     # Train the model with improved regularization to reduce overfitting
     model.train(
-        data=str(FaceDetection.DATA_CONFIG_PATH),
+        data=args.config,
         epochs=FaceConfig.NUM_EPOCHS,
         imgsz=FaceConfig.IMG_SIZE,
         batch=FaceConfig.BATCH_SIZE,
