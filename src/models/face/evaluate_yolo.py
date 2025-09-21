@@ -7,6 +7,8 @@ from config import FaceConfig
 
 def main():
     model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
+    # Set output directory to parent of trained weights path
+    output_dir = Path(FaceDetection.TRAINED_WEIGHTS_PATH).parent.parent
     folder_name = Path(f"{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
 
     # Validate the model
@@ -15,7 +17,7 @@ def main():
         save_json=True,
         iou=0.5,
         plots=True,
-        project=FaceDetection.OUTPUT_DIR,
+        project=output_dir,
         name=folder_name
     )
 
@@ -30,7 +32,7 @@ def main():
     logging.info(f"F1 Score: {f1_score:.4f}")
 
     # Save precision and recall to a file
-    with open(FaceDetection.OUTPUT_DIR / folder_name / "precision_recall.txt", "w") as f:
+    with open(output_dir / folder_name / "precision_recall.txt", "w") as f:
         f.write(f"Precision: {precision}\n")
         f.write(f"Recall: {recall}\n")
         f.write(f"F1 Score: {f1_score}\n")
