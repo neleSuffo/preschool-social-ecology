@@ -35,7 +35,8 @@ def main():
         
         # Create timestamped output directory for this evaluation run
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path(AudioClassification.RESULTS_DIR) / f'evaluation_results_{timestamp}'
+        output_dir = AudioClassification.TRAINED_WEIGHTS_PATH.parent.parent
+        folder_name = output_dir / f'evaluation_{timestamp}'
 
         # Stage 2: Load trained model with Lambda layer handling
         model, mlb = load_model()
@@ -55,7 +56,7 @@ def main():
             raise ValueError("Test generator is empty. Check test data file and paths.")
 
         # Stage 5: Execute comprehensive model evaluation
-        evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir)
+        evaluate_model_comprehensive(model, test_generator, mlb, thresholds, folder_name)
         
     except FileNotFoundError as e:
         print(f"❌ File not found: {e}")
