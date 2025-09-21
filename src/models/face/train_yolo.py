@@ -39,9 +39,13 @@ def main():
     print(f"Training will be saved to: {output_dir}")
     print("-" * 50)
 
+    # Determine config file path
+    if args.config:
+        config_file_path = FaceDetection.DATA_CONFIG_PATH.parent / args.config
+
     # Train the model with improved regularization to reduce overfitting
     model.train(
-        data=args.config,
+        data=config_file_path,
         epochs=FaceConfig.NUM_EPOCHS,
         imgsz=FaceConfig.IMG_SIZE,
         batch=FaceConfig.BATCH_SIZE,
