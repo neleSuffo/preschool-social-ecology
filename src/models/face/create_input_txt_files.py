@@ -353,6 +353,7 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
 def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes: int = 5) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
     """
     Get frames from the first N minutes of recordings for specified child IDs.
+    Filters based on actual frame numbers, not just file count.
     Splits them between training (first 80%) and validation (remaining 20%).
 
     Parameters
@@ -372,11 +373,12 @@ def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes
     train_frames = []
     val_frames = []
     
-    total_frames_for_minutes = minutes * 60 * DataConfig.FPS
-
-    # Split: first 80% to training, remaining 20% to validation
-    train_frame_limit = int(total_frames_for_minutes * 0.8)  # First ~4 minutes
-    val_frame_limit = total_frames_for_minutes - train_frame_limit  # Next ~1 minute
+    # Calculate the maximum frame number for N minutes
+    max_frame_number = minutes * 60 * DataConfig.FPS  # e.g., 5 * 60 * 30 = 9000
+    
+    # Calculate frame number splits (80% for training, 20% for validation)
+    train_frame_max = int(max_frame_number * 0.8)  # e.g., frame 7200 for 4 minutes
+    val_frame_max = max_frame_number  # e.g., frame 9000 for 5 minutes total
     
     for child_id in child_ids:
         child_train_frames = []
@@ -385,7 +387,7 @@ def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes
         # Find all video folders for this child
         for video_folder in sorted(image_folder.iterdir()):
             if video_folder.is_dir() and child_id in video_folder.name:
-                # Get all frames from this video folder and sort them by frame number
+                # Get all frames from this video folder and filter by frame number
                 video_frames = []
                 for frame in video_folder.iterdir():
                     if frame.is_file() and frame.suffix.lower() in ['.jpg', '.jpeg', '.png']:
@@ -395,22 +397,19 @@ def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes
                         if len(parts) >= 9:
                             try:
                                 frame_number = int(parts[-1])  # Last part should be frame number
-                                video_frames.append((frame, frame_number))
+                                
+                                # Only include frames within the first N minutes
+                                if frame_number <= max_frame_number:
+                                    video_frames.append((frame, frame_number))
                             except ValueError:
                                 logging.warning(f"Could not extract frame number from {frame.name}")
                                 continue
                 
-                # Sort by frame number to ensure we get the FIRST frames chronologically
+                # Sort by frame number to ensure chronological order
                 video_frames.sort(key=lambda x: x[1])
                 
-                current_train_count = len(child_train_frames)
-                current_val_count = len(child_val_frames)
-                
+                # Assign frames based on frame number thresholds
                 for frame_path, frame_number in video_frames:
-                    # Stop if we've collected enough frames for both sets
-                    if current_train_count >= train_frame_limit and current_val_count >= val_frame_limit:
-                        break
-                    
                     # Extract image ID
                     parts = frame_path.name.split("_")
                     if len(parts) > 3 and parts[3].startswith('id'):
@@ -418,13 +417,11 @@ def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes
                     else:
                         image_id = frame_path.stem
                     
-                    # First assign to training, then to validation
-                    if current_train_count < train_frame_limit:
+                    # Assign to training (first 80% of time) or validation (remaining 20%)
+                    if frame_number <= train_frame_max:
                         child_train_frames.append((str(frame_path.resolve()), image_id))
-                        current_train_count += 1
-                    elif current_val_count < val_frame_limit:
+                    elif frame_number <= val_frame_max:
                         child_val_frames.append((str(frame_path.resolve()), image_id))
-                        current_val_count += 1
         
         train_frames.extend(child_train_frames)
         val_frames.extend(child_val_frames)
