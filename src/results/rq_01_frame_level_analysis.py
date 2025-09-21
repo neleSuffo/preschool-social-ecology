@@ -231,6 +231,7 @@ def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_windo
 def classify_frames(row, results_df, included_rules=None):
     """
     Hierarchical social interaction classifier with dynamic proximity and audio priority.
+    Also returns individual rule activations for analysis.
     
     CLASSIFICATION LOGIC:
     1. INTERACTING: Active social engagement
@@ -255,12 +256,14 @@ def classify_frames(row, results_df, included_rules=None):
         
     Returns
     -------
-    str
-        Interaction category ('Interacting', 'Available', 'Alone')
+    tuple
+        (interaction_category, rule1_active, rule2_active, rule3_active, rule4_active)
+        where interaction_category is str ('Interacting', 'Available', 'Alone')
+        and rule flags are boolean
     """
-    # Default rules if none specified (currently excluding rule 1 - turn taking)
+    # Default rules if none specified
     if included_rules is None:
-        included_rules = [1, 2, 3, 4]  # Default: turn taking, proximity, other speaking, adult face + recent speech
+        included_rules = [1, 2, 3, 4]  # Default: all rules
     
     # Calculate recent speech activity once at the beginning
     current_index = row.name
@@ -270,78 +273,36 @@ def classify_frames(row, results_df, included_rules=None):
     # Check if a person is present at all, using the combined flags
     person_is_present = (row['child_present'] == 1) or (row['adult_present'] == 1)
     
-    # Tier 1: INTERACTING (Active engagement) - evaluate only included rules
+    # Evaluate all rules and track their activation
+    rule1_turn_taking = bool(row['is_audio_interaction'])
+    rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
+    rule3_cds_speaking = bool(row['has_cds'])
+    rule4_person_recent_speech = bool(person_is_present and recent_speech_exists)
+    
+    # Tier 1: INTERACTING (Active engagement) - check only included rules
     active_rules = []
     
-    # Rule 1: Turn-taking audio interaction (highest priority)
-    if 1 in included_rules and row['is_audio_interaction']:
+    if 1 in included_rules and rule1_turn_taking:
         active_rules.append(1)
     
-    # Rule 2: Very close proximity (>= PROXIMITY_THRESHOLD)
-    if 2 in included_rules and (row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD):
+    if 2 in included_rules and rule2_close_proximity:
         active_rules.append(2)
     
-    # Rule 3: Key Child-directed speech present
-    if 3 in included_rules and row['has_cds']:
+    if 3 in included_rules and rule3_cds_speaking:
         active_rules.append(3)
     
-    # Rule 4: Face or Person + recent speech
-    if 4 in included_rules and (person_is_present and recent_speech_exists):
+    if 4 in included_rules and rule4_person_recent_speech:
         active_rules.append(4)
 
+    # Determine interaction category
     if active_rules:
-        return "Interacting"
-
-    # Tier 2: Available (Passive presence)
-    if person_is_present:
-        return "Available"
-
-    # Tier 3: ALONE (No presence)
-    return "Alone"
-
-def add_interaction_rules(row, results_df):
-    """
-    Classify which specific interaction rules are active for each frame.
+        interaction_category = "Interacting"
+    elif person_is_present:
+        interaction_category = "Available"
+    else:
+        interaction_category = "Alone"
     
-    This function evaluates each of the four interaction rules separately
-    to enable analysis of which rules are most commonly triggering interactions.
-    
-    Rules:
-    1. Turn-taking  (KCHI + KCDS)
-    2. Very close proximity (>= PROXIMITY_THRESHOLD)
-    3. KCDS present
-    4. Face/Person + recent speech
-    
-    Parameters
-    ----------
-    row : pd.Series
-        DataFrame row with detection flags and proximity values
-    results_df : pd.DataFrame
-        The full DataFrame to enable window-based lookups for recent speech
-        
-    Returns
-    -------
-    tuple
-        (rule1_active, rule2_active, rule3_active, rule4_active) - all boolean
-    """
-    # Calculate recent speech for rule 4
-    current_index = row.name
-    window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
-    recent_speech_exists = (results_df.loc[window_start:current_index, 'has_cds'] == 1).any()
-    
-    # Rule 1: Turn-taking audio interaction detected (highest priority)
-    rule1_turn_taking = bool(row['is_audio_interaction'])
-    
-    # Rule 2: Very close proximity (>= PROXIMITY_THRESHOLD)
-    rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
-    
-    # Rule 3: Key Child-directedspeech present
-    rule3_cds_speaking = bool(row['has_cds'])
-    
-    # Rule 4: Adult face + recent speech
-    rule4_adult_face_recent_speech = bool(row['has_adult_face'] == 1 and recent_speech_exists)
-    
-    return rule1_turn_taking, rule2_close_proximity, rule3_cds_speaking, rule4_adult_face_recent_speech
+    return interaction_category, rule1_turn_taking, rule2_close_proximity, rule3_cds_speaking, rule4_person_recent_speech
 
 def classify_face_category(row):
     """Categorize face detection patterns for attention analysis."""
@@ -423,11 +384,10 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
     
     1. Data Integration: Combines person, audio, and face data into a unified dataset.
     2. Audio Turn-Taking Analysis: Detects turn-taking interactions with adaptive windows.
-    3. Social Interaction Classification: Classifies frames into interaction categories using specified rules.
-    4. Interaction Rule Analysis: Tracks which specific rules are active for each frame.
-    5. Presence Pattern Categorization: Categorizes face and person detection patterns.
-    6. Age Information Merging: Integrates age data from subjects CSV.
-    7. Result Saving: Outputs detailed frame-level analysis to CSV with rule info in filename
+    3. Social Interaction Classification: Classifies frames into interaction categories and tracks individual rule activations in a single pass.
+    4. Presence Pattern Categorization: Categorizes face and person detection patterns.
+    5. Age Information Merging: Integrates age data from subjects CSV.
+    6. Result Saving: Outputs detailed frame-level analysis to CSV with rule info in filename
     
     Parameters
     ----------
@@ -468,20 +428,16 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         )
         
         # Social interaction classification with specified rules
-        all_data['interaction_type'] = all_data.apply(
+        classification_results = all_data.apply(
             lambda row: classify_frames(row, all_data, included_rules), axis=1
         )
         
-        # Interaction rule analysis - track which specific rules are active
-        rule_results = all_data.apply(
-            lambda row: add_interaction_rules(row, all_data), axis=1
-        )
-        
-        # Unpack the rule results into separate columns
-        all_data['rule1_turn_taking'] = [result[0] for result in rule_results]
-        all_data['rule2_close_proximity'] = [result[1] for result in rule_results]
-        all_data['rule3_cds_speaking'] = [result[2] for result in rule_results]
-        all_data['rule4_adult_face_recent_speech'] = [result[3] for result in rule_results]
+        # Unpack the classification results into separate columns
+        all_data['interaction_type'] = [result[0] for result in classification_results]
+        all_data['rule1_turn_taking'] = [result[1] for result in classification_results]
+        all_data['rule2_close_proximity'] = [result[2] for result in classification_results]
+        all_data['rule3_cds_speaking'] = [result[3] for result in classification_results]
+        all_data['rule4_person_recent_speech'] = [result[4] for result in classification_results]
 
         # Step 5: Presence pattern categorization       
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
