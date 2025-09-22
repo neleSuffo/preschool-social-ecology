@@ -5,10 +5,8 @@ import pandas as pd
 import re
 from pathlib import Path
 from constants import DataPaths, Inference
-
-def extract_child_id(video_name):
-    match = re.search(r'id(\d{6})', video_name)
-    return match.group(1) if match else None
+from config import DataConfig
+from utils import extract_child_id
 
 def merge_overlapping_intervals(intervals):
     """
@@ -126,14 +124,10 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     """
     # Load segments DataFrame
     segments_df = pd.read_csv(segments_csv_path)
-    
-    # Load age data
     age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
 
     # Connect to the SQLite database and query KCHI audio classifications with video names
     conn = sqlite3.connect(db_path)
-    
-    # Get KCHI audio classifications directly from the AudioClassifications table
     audio_query = """
     SELECT ac.video_id, vid.video_name, ac.frame_number, ac.has_kchi
     FROM AudioClassifications ac
@@ -150,9 +144,8 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
         return pd.DataFrame()  # Return empty DataFrame
     
     # Convert frame numbers to time using fps
-    fps = 30  # frames per second
-    kchi_frames['start_time_seconds'] = kchi_frames['frame_number'] / fps
-    kchi_frames['end_time_seconds'] = (kchi_frames['frame_number'] + 1) / fps  # Each frame represents 1/fps seconds
+    kchi_frames['start_time_seconds'] = kchi_frames['frame_number'] / DataConfig.FPS
+    kchi_frames['end_time_seconds'] = (kchi_frames['frame_number'] + 1) / DataConfig.FPS  # Each frame represents 1/fps seconds
     
     # Add vocalization_id for compatibility (just use index)
     kchi_frames['vocalization_id'] = range(len(kchi_frames))
@@ -209,7 +202,6 @@ def main():
     print("Analyzing key child audio classifications by interaction context...")
     
     # Step 1: Map audio classifications to interaction segments
-    print("\n🔄 Step 1: Mapping KCHI frame detections to interaction contexts...")
     mapped_vocalizations = map_vocalizations_to_segments()
     
     # Handle empty result
@@ -217,9 +209,7 @@ def main():
         print("❌ No KCHI speech data found. Exiting analysis.")
         return pd.DataFrame()
 
-    # Step 2: Use mapped vocalizations directly
-    print("\n📋 Step 2: Processing mapped frame-level speech data...")
-    
+    # Step 2: Use mapped vocalizations directly    
     # Convert seconds to minutes
     mapped_vocalizations['kchi_speech_minutes'] = mapped_vocalizations['seconds'] / 60
     
@@ -236,11 +226,8 @@ def main():
     # Sort by child, age, and start time
     final_data = final_data.drop(columns=['seconds', 'total_segment_duration'])
     final_data = final_data.sort_values(['child_id', 'age_at_recording', 'start_time_seconds']).reset_index(drop=True)    
-    # No filtering needed - we want to keep all segments, even those with 0 KCHI minutes
     
-    # Step 2.5: Remove overlapping vocalizations and calculate true speech time per segment
-    print("\n📊 Step 2.5: Removing frame overlaps and aggregating KCHI speech by interaction segment...")
-    
+    # Step 3: Remove overlapping vocalizations and calculate true speech time per segment
     segment_results = []
     
     # Process each unique segment separately to handle overlaps
@@ -297,9 +284,9 @@ def main():
         'child_id', 'age_at_recording', 'segment_start_time'
     ]).reset_index(drop=True)
     
-    # Step 3: Save results
-    print(f"\n💾 Step 3: Saving segment totals...")
-    
+    # Step 4: Save results
+    print(f"\n💾 Saving segment totals...")
+
     # Select final columns for output
     final_output = segment_totals[[
         'child_id', 'age_at_recording', 'interaction_type', 
@@ -310,13 +297,11 @@ def main():
     # Save aggregated segment totals only
     final_output.to_csv(Inference.KCS_SUMMARY_CSV, index=False)
     
-    print(f"\n✅ ANALYSIS COMPLETED SUCCESSFULLY!")
+    print(f"\n✅ Analysis completed successfully!")
     print(f"📄 Aggregated segment totals saved to: {Inference.KCS_SUMMARY_CSV}")
-    print(f"📊 Total unique segments: {len(segment_totals)}")
     print("=" * 70)
     
     return segment_totals
 
 if __name__ == "__main__":
-    # Run the analysis with default parameters
     main()
