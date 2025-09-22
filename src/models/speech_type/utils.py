@@ -962,9 +962,14 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         confusion_matrices_dir = output_dir / 'confusion_matrices'
         confusion_matrices_dir.mkdir(exist_ok=True)
         
-        # Define class order for confusion matrix (actual classes + no speech)
-        class_names_list = list(class_names)  # ['KCHI', 'CDS', 'OHS'] or similar
-        matrix_classes = ['no speech'] + class_names_list  # ['no speech', 'KCHI', 'CDS', 'OHS']
+        # Define class order for confusion matrix
+        class_names_list = list(class_names)
+        
+        # Only add "no speech" if it's not already in the class names
+        if 'no speech' in class_names_list:
+            matrix_classes = class_names_list  # Use as-is if "no speech" already exists
+        else:
+            matrix_classes = ['no speech'] + class_names_list  # Add "no speech" as first class
         
         # Create confusion matrix by counting frame occurrences for each label
         # Each frame can contribute multiple times if it has multiple labels
@@ -976,6 +981,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
             
             # Handle frames with no ground truth labels first (true "no speech" frames)
             if true_labels.sum() == 0:
+                # Find the "no speech" index in matrix_classes
                 no_speech_true_idx = matrix_classes.index('no speech')
                 
                 # Check what was predicted for this "no speech" frame
@@ -987,14 +993,33 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                     # Incorrectly predicted some speech class for a silent frame
                     for pred_idx, pred_val in enumerate(pred_labels):
                         if pred_val == 1:
-                            pred_class_name = class_names_list[pred_idx]
+                            # Map from expanded array index to original class name
+                            if 'no speech' in class_names_list:
+                                # If "no speech" was already in class_names, use direct mapping
+                                pred_class_name = class_names_list[pred_idx]
+                            else:
+                                # If we added "no speech", skip index 0 for speech classes
+                                if pred_idx > 0:  # Skip the "no speech" prediction column
+                                    pred_class_name = class_names_list[pred_idx - 1]
+                                else:
+                                    continue  # Skip "no speech" predictions in this case
                             pred_matrix_idx = matrix_classes.index(pred_class_name)
                             cm[no_speech_true_idx, pred_matrix_idx] += 1
             else:
                 # Handle frames with ground truth labels
                 for true_idx, true_val in enumerate(true_labels):
                     if true_val == 1:  # This class is present in ground truth
-                        true_class_name = class_names_list[true_idx]
+                        # Map from expanded array index to original class name
+                        if 'no speech' in class_names_list:
+                            # If "no speech" was already in class_names, use direct mapping
+                            true_class_name = class_names_list[true_idx]
+                        else:
+                            # If we added "no speech", skip index 0 for speech classes
+                            if true_idx > 0:  # Skip the "no speech" true column
+                                true_class_name = class_names_list[true_idx - 1]
+                            else:
+                                continue  # Skip "no speech" true labels in this case
+                                
                         true_matrix_idx = matrix_classes.index(true_class_name)
                         
                         # Check what was predicted for this frame
@@ -1006,7 +1031,16 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                             # Something was predicted
                             for pred_idx, pred_val in enumerate(pred_labels):
                                 if pred_val == 1:  # This class was predicted
-                                    pred_class_name = class_names_list[pred_idx]
+                                    # Map from expanded array index to original class name
+                                    if 'no speech' in class_names_list:
+                                        # If "no speech" was already in class_names, use direct mapping
+                                        pred_class_name = class_names_list[pred_idx]
+                                    else:
+                                        # If we added "no speech", skip index 0 for speech classes
+                                        if pred_idx > 0:  # Skip the "no speech" prediction column
+                                            pred_class_name = class_names_list[pred_idx - 1]
+                                        else:
+                                            pred_class_name = 'no speech'
                                     pred_matrix_idx = matrix_classes.index(pred_class_name)
                                     cm[true_matrix_idx, pred_matrix_idx] += 1
         
