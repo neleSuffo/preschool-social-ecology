@@ -565,11 +565,105 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
         return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
 
 # ---- Evaluation Functions ----
-def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir, generate_confusion_matrices=False):
+def aggregate_windows_to_seconds(window_predictions, window_true_labels, window_metadata):
+    """
+    Aggregate sliding window predictions to second-level predictions.
+    
+    For each second in the test set, this function:
+    1. Finds all overlapping windows
+    2. Averages their probability predictions
+    3. Aggregates their ground truth labels (union of all labels in overlapping windows)
+    
+    Parameters:
+    ----------
+    window_predictions (ndarray): 
+        Raw probability predictions from model (n_windows, n_classes)
+    window_true_labels (ndarray): 
+        Ground truth binary labels for windows (n_windows, n_classes)
+    window_metadata (list): 
+        List of dictionaries with 'start_time', 'end_time' for each window
+        
+    Returns:
+    -------
+    tuple: (second_predictions, second_true_labels, second_metadata)
+        - second_predictions: Averaged probabilities per second
+        - second_true_labels: Aggregated ground truth per second  
+        - second_metadata: List of {'second': int} for each output second
+    """
+    if len(window_predictions) != len(window_true_labels) or len(window_predictions) != len(window_metadata):
+        raise ValueError("Predictions, labels, and metadata must have same length")
+    
+    # Find the range of seconds covered by all windows
+    all_starts = [meta['start_time'] for meta in window_metadata]
+    all_ends = [meta['end_time'] for meta in window_metadata]
+    min_second = int(np.floor(min(all_starts)))
+    max_second = int(np.ceil(max(all_ends)))
+    
+    # Initialize aggregated data structures
+    second_data = {}
+    
+    for second in range(min_second, max_second):
+        second_data[second] = {
+            'predictions': [],
+            'true_labels': [],
+            'window_count': 0
+        }
+    
+    # Aggregate data from overlapping windows
+    for i, meta in enumerate(window_metadata):
+        window_start = meta['start_time']
+        window_end = meta['end_time']
+        
+        # Find which seconds this window overlaps with
+        start_second = int(np.floor(window_start))
+        end_second = int(np.ceil(window_end))
+        
+        for second in range(start_second, min(end_second, max_second)):
+            # Calculate overlap between window and current second
+            second_start = second
+            second_end = second + 1
+            
+            overlap_start = max(window_start, second_start)
+            overlap_end = min(window_end, second_end)
+            overlap_duration = max(0, overlap_end - overlap_start)
+            
+            # Only include windows with meaningful overlap (>0.1 seconds)
+            if overlap_duration > 0.1:
+                second_data[second]['predictions'].append(window_predictions[i])
+                second_data[second]['true_labels'].append(window_true_labels[i])
+                second_data[second]['window_count'] += 1
+    
+    # Convert aggregated data to arrays
+    valid_seconds = []
+    second_predictions = []
+    second_true_labels = []
+    second_metadata = []
+    
+    for second in sorted(second_data.keys()):
+        data = second_data[second]
+        
+        if data['window_count'] > 0:  # Only include seconds with overlapping windows
+            # Average predictions across overlapping windows
+            avg_predictions = np.mean(data['predictions'], axis=0)
+            
+            # Aggregate ground truth: union of all labels (max across windows)
+            # This means if any overlapping window has a label, the second gets that label
+            agg_true_labels = np.max(data['true_labels'], axis=0).astype(int)
+            
+            valid_seconds.append(second)
+            second_predictions.append(avg_predictions)
+            second_true_labels.append(agg_true_labels)
+            second_metadata.append({'second': second})
+    
+    return (np.array(second_predictions), 
+            np.array(second_true_labels), 
+            second_metadata)
+
+def evaluate_model(model, test_generator, mlb, thresholds, output_dir, generate_confusion_matrices=False, aggregate_to_seconds=True):
     """
     Perform comprehensive multi-label classification evaluation with detailed analysis. 
     
-    Parameters:
+    Parameters
     ----------
     model (tf.keras.Model): 
         Trained multi-label audio classification model
@@ -581,17 +675,8 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
         Dictionary mapping class names to decision thresholds for binary classification
     output_dir (str or Path): 
         Directory to save evaluation results and visualizations
-        
-    Outputs:
-    -------
-    Files Created:
-    - evaluation_summary.json: Comprehensive metrics summary
-    - detailed_predictions.csv: Per-sample predictions and probabilities
-    
-    Raises:
-    ------
-    ValueError: If test generator is empty or predictions fail
-    RuntimeError: If evaluation cannot complete due to data issues
+    aggregate_to_seconds (bool):
+        If True, aggregate sliding windows to second-level predictions before evaluation
     """    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -603,12 +688,25 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
     print("📊 Generating predictions for test set...")
     test_predictions = model.predict(test_generator, verbose=1)
     
-    # Stage 2: Collect true labels with progress tracking
+    # Stage 2: Collect true labels and metadata with progress tracking
     test_true_labels = []
+    test_metadata = []
     for i in tqdm(range(len(test_generator)), desc="Processing batches"):
         _, labels = test_generator[i]
         if len(labels) > 0:  # Skip empty batches
             test_true_labels.extend(labels)
+            
+            # Extract metadata from test generator if available
+            batch_segments = test_generator.segments_data[
+                i * test_generator.batch_size:(i + 1) * test_generator.batch_size
+            ]
+            for segment in batch_segments[:len(labels)]:  # Match actual batch size
+                test_metadata.append({
+                    'start_time': segment.get('start', 0.0),
+                    'end_time': segment.get('start', 0.0) + segment.get('duration', AudioConfig.WINDOW_DURATION),
+                    'audio_path': segment.get('audio_path', 'unknown')
+                })
+    
     test_true_labels = np.array(test_true_labels)
     
     # Stage 3: Handle potential shape mismatches between predictions and labels
@@ -621,59 +719,94 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
         min_samples = min(test_predictions.shape[0], test_true_labels.shape[0])
         test_predictions = test_predictions[:min_samples]
         test_true_labels = test_true_labels[:min_samples]
+        test_metadata = test_metadata[:min_samples]
         
         print(f"✂️ Adjusted evaluation set to {min_samples} samples")
         
         if min_samples == 0:
             raise ValueError("No samples available for evaluation after shape adjustment")
     
-    # Stage 4: Apply class-specific thresholds to convert probabilities to predictions
+    # Stage 4: Aggregate to second-level predictions if requested
+    if aggregate_to_seconds:
+        print("🔄 Aggregating sliding windows to second-level predictions...")
+        test_predictions, test_true_labels, test_metadata = aggregate_windows_to_seconds(
+            test_predictions, test_true_labels, test_metadata
+        )
+        evaluation_level = "second"
+    else:
+        evaluation_level = "window"
+    
+    # Stage 5: Apply class-specific thresholds to convert probabilities to predictions
     test_pred_binary = np.array([
         (test_predictions[:, i] > thresholds[mlb.classes_[i]]).astype(int) 
         for i in range(len(mlb.classes_))
     ]).T
     
-    # Stage 5: Calculate comprehensive evaluation metrics
-    if test_true_labels.sum() > 0:        
+    # Stage 6: Calculate comprehensive evaluation metrics
+    if test_true_labels.sum() > 0 or len(test_true_labels) > 0:  # Include silent frames
+        
+        # Create expanded labels to include "no speech" class for consistent metrics
+        # Add "no speech" as the first column (index 0)
+        expanded_true_labels = np.zeros((len(test_true_labels), len(test_true_labels[0]) + 1), dtype=int)
+        expanded_pred_labels = np.zeros((len(test_pred_binary), len(test_pred_binary[0]) + 1), dtype=int)
+        
+        # Fill in the speech classes (columns 1, 2, 3, ...)
+        expanded_true_labels[:, 1:] = test_true_labels
+        expanded_pred_labels[:, 1:] = test_pred_binary
+        
+        # Fill in the "no speech" class (column 0)
+        for i in range(len(test_true_labels)):
+            # True "no speech" if no other classes are active
+            if test_true_labels[i].sum() == 0:
+                expanded_true_labels[i, 0] = 1
+                
+            # Predicted "no speech" if no other classes were predicted
+            if test_pred_binary[i].sum() == 0:
+                expanded_pred_labels[i, 0] = 1
+        
+        # Calculate metrics on expanded labels (including "no speech")
+        class_names_expanded = ['no speech'] + list(mlb.classes_)
+        
         # Per-class detailed metrics
         precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
-            test_true_labels, test_pred_binary, average=None, zero_division=0
+            expanded_true_labels, expanded_pred_labels, average=None, zero_division=0
         )
         
         # Macro-averaged metrics (equal weight per class)
-        macro_precision = precision_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
-        macro_recall = recall_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
-        macro_f1 = f1_score(test_true_labels, test_pred_binary, average='macro', zero_division=0)
+        macro_precision = precision_score(expanded_true_labels, expanded_pred_labels, average='macro', zero_division=0)
+        macro_recall = recall_score(expanded_true_labels, expanded_pred_labels, average='macro', zero_division=0)
+        macro_f1 = f1_score(expanded_true_labels, expanded_pred_labels, average='macro', zero_division=0)
         
         # Micro-averaged metrics (global performance)
-        micro_precision = precision_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
-        micro_recall = recall_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
-        micro_f1 = f1_score(test_true_labels, test_pred_binary, average='micro', zero_division=0)
+        micro_precision = precision_score(expanded_true_labels, expanded_pred_labels, average='micro', zero_division=0)
+        micro_recall = recall_score(expanded_true_labels, expanded_pred_labels, average='micro', zero_division=0)
+        micro_f1 = f1_score(expanded_true_labels, expanded_pred_labels, average='micro', zero_division=0)
         
         # Subset accuracy (exact multi-label match)
-        subset_accuracy = accuracy_score(test_true_labels, test_pred_binary)
+        subset_accuracy = accuracy_score(expanded_true_labels, expanded_pred_labels)
         
-        # Stage 6: Save comprehensive results to files
+        # Stage 7: Save comprehensive results to files
         save_evaluation_results(
-            output_dir, mlb.classes_, thresholds,
-            test_true_labels, test_pred_binary, test_predictions,
+            output_dir, class_names_expanded, thresholds,
+            expanded_true_labels, expanded_pred_labels, test_predictions,
             precision_per_class, recall_per_class, f1_per_class, support_per_class,
             macro_precision, macro_recall, macro_f1,
             micro_precision, micro_recall, micro_f1, subset_accuracy,
-            generate_confusion_matrices
+            generate_confusion_matrices, evaluation_level, test_metadata
         )
     else:
         print("⚠️ Warning: No positive instances found in test set")
         print("❌ Cannot compute meaningful evaluation metrics")
     
-    print(f"\n✅ Evaluation completed!")
+    print(f"\n✅ Evaluation completed at {evaluation_level} level!")
     print(f"📁 Results saved to: {output_dir}")
 
 def save_evaluation_results(output_dir, class_names, thresholds,
                         test_true_labels, test_pred_binary, test_predictions,
                         precision_per_class, recall_per_class, f1_per_class, support_per_class,
                         macro_precision, macro_recall, macro_f1,
-                        micro_precision, micro_recall, micro_f1, subset_accuracy, generate_confusion_matrices=False):
+                        micro_precision, micro_recall, micro_f1, subset_accuracy, 
+                        generate_confusion_matrices=False, evaluation_level="window", metadata=None):
     """
     Save comprehensive evaluation results in multiple formats for analysis and reporting.
     
@@ -716,6 +849,10 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         Micro-averaged F1 score
     subset_accuracy (float): 
         Subset accuracy (exact match rate)
+    evaluation_level (str):
+        Level of evaluation ("window" or "second")
+    metadata (list):
+        Optional metadata for each sample
     """    
     output_dir = Path(output_dir)
     
@@ -725,6 +862,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
             'test_set_size': len(test_true_labels),
             'num_classes': len(class_names),
             'class_names': list(class_names),
+            'evaluation_level': evaluation_level,
             'evaluation_timestamp': datetime.now().isoformat()
         },
         'overall_metrics': {
@@ -787,13 +925,19 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     ], axis=1)
     
     # Add derived columns for quick analysis
-    detailed_results['sample_id'] = range(len(detailed_results))
+    if evaluation_level == "second" and metadata:
+        detailed_results['sample_id'] = [meta.get('second', i) for i, meta in enumerate(metadata)]
+        detailed_results['sample_type'] = 'second'
+    else:
+        detailed_results['sample_id'] = range(len(detailed_results))
+        detailed_results['sample_type'] = evaluation_level
+        
     detailed_results['num_true_labels'] = test_true_labels.sum(axis=1)
     detailed_results['num_pred_labels'] = test_pred_binary.sum(axis=1)
     detailed_results['exact_match'] = (test_true_labels == test_pred_binary).all(axis=1).astype(int)
     
     # Save detailed predictions for manual inspection and error analysis
-    predictions_path = output_dir / 'detailed_predictions.csv'
+    predictions_path = output_dir / f'detailed_predictions_{evaluation_level}_level.csv'
     detailed_results.to_csv(predictions_path, index=False, float_format='%.4f')
     
     # Generate confusion matrices if requested
@@ -872,8 +1016,8 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         cm_percent_df.columns.name = 'Predicted'
         
         # Save confusion matrices to CSV
-        counts_path = confusion_matrices_dir / 'confusion_matrix_counts.csv'
-        percent_path = confusion_matrices_dir / 'confusion_matrix_percentages.csv'
+        counts_path = confusion_matrices_dir / f'confusion_matrix_counts_{evaluation_level}_level.csv'
+        percent_path = confusion_matrices_dir / f'confusion_matrix_percentages_{evaluation_level}_level.csv'
         
         cm_counts_df.to_csv(counts_path)
         cm_percent_df.to_csv(percent_path, float_format='%.2f')
@@ -913,17 +1057,74 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                     ha="center", va="center", color="white" if cm_percent[i_cm, j_cm] > cm_percent.max() / 2 else "black")
         
         plt.tight_layout()
-        viz_path = confusion_matrices_dir / 'confusion_matrix.png'
+        viz_path = confusion_matrices_dir / f'confusion_matrix_{evaluation_level}_level.png'
         plt.savefig(viz_path, dpi=300, bbox_inches='tight')
         plt.close()
         
         print(f"  📊 Confusion matrix: {confusion_matrices_dir}")
     
-    
-    
     print(f"✅ Results saved:")
     print(f"  📊 Summary: {summary_path}")
     print(f"  📋 Detailed: {predictions_path}")
+    print(f"  🎯 Evaluation level: {evaluation_level}")
+
+def evaluate_model_both_levels(model, test_generator, mlb, thresholds, output_dir, generate_confusion_matrices=False):
+    """
+    Evaluate model at both window-level and second-level for comparison.
+    
+    This function runs the evaluation twice:
+    1. At the original window level (no aggregation)
+    2. At the second level (with sliding window aggregation)
+    
+    This allows for direct comparison of how aggregation affects performance metrics.
+    
+    Parameters:
+    ----------
+    model: Trained classification model
+    test_generator: Test data generator  
+    mlb: MultiLabelBinarizer
+    thresholds: Optimized decision thresholds
+    output_dir: Base output directory
+    generate_confusion_matrices: Whether to generate confusion matrices
+    """
+    base_output_dir = Path(output_dir)
+    
+    print("🔍 Running evaluation at both window and second levels...")
+    print("=" * 70)
+    
+    # Evaluate at window level
+    print("\n📊 WINDOW-LEVEL EVALUATION")
+    print("=" * 40)
+    window_output_dir = base_output_dir / 'window_level'
+    evaluate_model(
+        model=model,
+        test_generator=test_generator,
+        mlb=mlb, 
+        thresholds=thresholds,
+        output_dir=window_output_dir,
+        generate_confusion_matrices=generate_confusion_matrices,
+        aggregate_to_seconds=False
+    )
+    
+    # Evaluate at second level  
+    print("\n📊 SECOND-LEVEL EVALUATION")
+    print("=" * 40)
+    second_output_dir = base_output_dir / 'second_level'
+    evaluate_model(
+        model=model,
+        test_generator=test_generator,
+        mlb=mlb,
+        thresholds=thresholds, 
+        output_dir=second_output_dir,
+        generate_confusion_matrices=generate_confusion_matrices,
+        aggregate_to_seconds=True
+    )
+    
+    print("\n✅ EVALUATION COMPARISON COMPLETE")
+    print("=" * 70)
+    print(f"📁 Window-level results: {window_output_dir}")
+    print(f"📁 Second-level results: {second_output_dir}")
+    print("\n💡 Compare the evaluation_summary.json files to see the difference in metrics!")
 
 # ---- Inference Functions ----
 def classify_audio_windows(audio_path, model, mlb, batch_size=32):
