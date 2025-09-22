@@ -309,7 +309,7 @@ def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_du
     return segment_files, segment_counts, sorted(list(all_unique_labels)), label_counts_per_split
 
 
-def save_data_preparation_summary(segment_files, segment_counts, unique_labels, label_counts_per_split):
+def save_data_preparation_summary(segment_files, segment_counts, unique_labels, label_counts_per_split, splits):
     """
     Generate comprehensive data preparation summary report in human-readable format.
     
@@ -334,6 +334,8 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
         All voice type labels discovered in dataset
     label_counts_per_split (dict): 
         Label frequency counts organized by data split
+    splits (dict):
+        Participant-based data splits with file information including participant IDs
     """
     # Create timestamped summary file for tracking multiple preparation runs
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -388,6 +390,47 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
     
     lines.append("")
     lines.append(f"Unique Labels ({len(unique_labels)}): {', '.join(unique_labels)}")
+    lines.append("")
+    
+    # Extract unique participant IDs for each split
+    split_participant_ids = {}
+    split_mapping = {'dev': 'val', 'train': 'train', 'test': 'test'}
+    
+    for original_split_name, files_in_split in splits.items():
+        split_name = split_mapping.get(original_split_name, original_split_name)
+        participant_ids = set()
+        for file_info in files_in_split:
+            if file_info.get('participant_id'):
+                participant_ids.add(file_info['participant_id'])
+        split_participant_ids[split_name] = sorted(list(participant_ids))
+    
+    # ID Distribution
+    lines.append("ID Distribution:")
+    for split_name in ['train', 'val', 'test']:
+        if split_name in split_participant_ids:
+            ids = split_participant_ids[split_name]
+            lines.append(f"  {split_name.title()} IDs: {len(ids)}, {ids}")
+    lines.append("")
+    
+    # ID Overlap Check
+    lines.append("ID Overlap Check:")
+    train_ids = set(split_participant_ids.get('train', []))
+    val_ids = set(split_participant_ids.get('val', []))
+    test_ids = set(split_participant_ids.get('test', []))
+    
+    train_val_overlap = train_ids.intersection(val_ids)
+    train_test_overlap = train_ids.intersection(test_ids)
+    val_test_overlap = val_ids.intersection(test_ids)
+    
+    if train_val_overlap or train_test_overlap or val_test_overlap:
+        if train_val_overlap:
+            lines.append(f"  Train-Val overlap: {sorted(list(train_val_overlap))}")
+        if train_test_overlap:
+            lines.append(f"  Train-Test overlap: {sorted(list(train_test_overlap))}")
+        if val_test_overlap:
+            lines.append(f"  Val-Test overlap: {sorted(list(val_test_overlap))}")
+    else:
+        lines.append("  Overlap found: No")
     lines.append("")
     
     # Label counts and percentages per split
@@ -552,15 +595,6 @@ def create_participant_splits():
         "test": test_files
     }
 
-    print(f"\n📊 ID-based Split Results:")
-    print(f"Train: {len(train_ids)} IDs, {len(train_files)} files, {train_duration:.1f}s ({train_duration/total_duration*100:.1f}%)")
-    print(f"Dev:   {len(dev_ids)} IDs, {len(dev_files)} files, {dev_duration:.1f}s ({dev_duration/total_duration*100:.1f}%)")
-    print(f"Test:  {len(test_ids)} IDs, {len(test_files)} files, {test_duration:.1f}s ({test_duration/total_duration*100:.1f}%)")
-
-    print(f"\nTrain IDs: {train_ids}")
-    print(f"Dev IDs: {dev_ids}")
-    print(f"Test IDs: {test_ids}")
-
     return splits
 
 def main():
@@ -637,7 +671,7 @@ def main():
             raise ValueError("No training segments were created. Check your annotations and audio files.")
         
         # Stage 3: Generate comprehensive data preparation summary report
-        save_data_preparation_summary(segment_files, segment_counts, unique_labels, label_counts_per_split)
+        save_data_preparation_summary(segment_files, segment_counts, unique_labels, label_counts_per_split, splits)
         
         print(f"\n✅ Streamlined data preparation pipeline completed successfully!")
 
