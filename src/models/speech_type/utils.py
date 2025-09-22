@@ -15,8 +15,8 @@ from constants import AudioClassification
 from models.speech_type.audio_classifier import build_model_multi_label, ThresholdOptimizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
-from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
-    
+from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score, confusion_matrix
+
 # --- Data Generator ---
 class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
     """
@@ -942,7 +942,6 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     
     # Generate confusion matrices if requested
     if generate_confusion_matrices:
-        from sklearn.metrics import confusion_matrix
         print("📊 Generating multi-class confusion matrix...")
         
         confusion_matrices_dir = output_dir / 'confusion_matrices'
@@ -1022,43 +1021,49 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         cm_counts_df.to_csv(counts_path)
         cm_percent_df.to_csv(percent_path, float_format='%.2f')
         
-        # Create and save visualization
-        plt.figure(figsize=(12, 5))
-        
-        # Counts subplot
-        plt.subplot(1, 2, 1)
-        plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-        plt.title('Confusion Matrix - Counts')
-        plt.colorbar()
+        # Create and save individual visualizations
         tick_marks = np.arange(len(matrix_classes))
-        plt.xticks(tick_marks, matrix_classes, rotation=45)
+        
+        # Create counts visualization
+        plt.figure(figsize=(8, 6))
+        plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+        plt.title('Confusion Matrix - Counts', fontsize=14, fontweight='bold')
+        plt.colorbar()
+        plt.xticks(tick_marks, matrix_classes, rotation=45, ha='right')
         plt.yticks(tick_marks, matrix_classes)
-        plt.ylabel('Ground Truth')
-        plt.xlabel('Predicted')
+        plt.ylabel('Ground Truth', fontsize=12)
+        plt.xlabel('Predicted', fontsize=12)
         
         # Add text annotations for counts
         for i_cm, j_cm in np.ndindex(cm.shape):
             plt.text(j_cm, i_cm, f'{cm[i_cm, j_cm]}',
-                    ha="center", va="center", color="white" if cm[i_cm, j_cm] > cm.max() / 2 else "black")
+                    ha="center", va="center", fontsize=10,
+                    color="white" if cm[i_cm, j_cm] > cm.max() / 2 else "black")
         
-        # Percentages subplot
-        plt.subplot(1, 2, 2)
+        plt.tight_layout()
+        counts_viz_path = confusion_matrices_dir / f'confusion_matrix_counts_{evaluation_level}_level.png'
+        plt.savefig(counts_viz_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Create percentages visualization
+        plt.figure(figsize=(8, 6))
         plt.imshow(cm_percent, interpolation='nearest', cmap=plt.cm.Blues)
-        plt.title('Confusion Matrix - Percentages')
+        plt.title('Confusion Matrix - Percentages', fontsize=14, fontweight='bold')
         plt.colorbar()
-        plt.xticks(tick_marks, matrix_classes, rotation=45)
+        plt.xticks(tick_marks, matrix_classes, rotation=45, ha='right')
         plt.yticks(tick_marks, matrix_classes)
-        plt.ylabel('Ground Truth')
-        plt.xlabel('Predicted')
+        plt.ylabel('Ground Truth', fontsize=12)
+        plt.xlabel('Predicted', fontsize=12)
         
         # Add text annotations for percentages
         for i_cm, j_cm in np.ndindex(cm_percent.shape):
             plt.text(j_cm, i_cm, f'{cm_percent[i_cm, j_cm]:.1f}%',
-                    ha="center", va="center", color="white" if cm_percent[i_cm, j_cm] > cm_percent.max() / 2 else "black")
+                    ha="center", va="center", fontsize=10,
+                    color="white" if cm_percent[i_cm, j_cm] > cm_percent.max() / 2 else "black")
         
         plt.tight_layout()
-        viz_path = confusion_matrices_dir / f'confusion_matrix_{evaluation_level}_level.png'
-        plt.savefig(viz_path, dpi=300, bbox_inches='tight')
+        percent_viz_path = confusion_matrices_dir / f'confusion_matrix_percentages_{evaluation_level}_level.png'
+        plt.savefig(percent_viz_path, dpi=300, bbox_inches='tight')
         plt.close()
         
         print(f"  📊 Confusion matrix: {confusion_matrices_dir}")
