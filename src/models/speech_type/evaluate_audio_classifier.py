@@ -55,8 +55,8 @@ def main():
         if test_generator is None or len(test_generator) == 0:
             raise ValueError("Test generator is empty. Check test data file and paths.")
 
-        # Stage 5: Execute comprehensive model evaluation
-        evaluate_model_comprehensive(model, test_generator, mlb, thresholds, folder_name)
+        # Stage 5: Execute comprehensive model evaluation with confusion matrices
+        evaluate_model_comprehensive(model, test_generator, mlb, thresholds, folder_name, generate_confusion_matrices=True)
         
     except FileNotFoundError as e:
         print(f"❌ File not found: {e}")
