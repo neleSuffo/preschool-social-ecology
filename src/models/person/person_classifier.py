@@ -159,7 +159,7 @@ class VideoFrameDataset(Dataset):
         along with the reason for skipping (file not found, loading error, etc.).
         """
         if self.log_dir and self.skipped_files:
-            log_path = os.path.join(self.log_dir, "skipped_frames.txt")
+            log_path = self.log_dir / "skipped_frames.txt"
             with open(log_path, 'w') as f:
                 f.write(f"Total skipped frames: {len(self.skipped_files)}\n\n")
                 f.write("Skipped files:\n")
@@ -221,10 +221,10 @@ class VideoFrameDataset(Dataset):
                 while frames_loaded < self.sequence_length and current_idx < len(group):
                     row = group.iloc[current_idx]
                     file_path = row['file_path']
-                    
+
                     try:
                         # Check if file exists
-                        if not os.path.exists(file_path):
+                        if not Path(file_path).exists():
                             self.skipped_files.append((file_path, "File not found"))
                             current_idx += 1
                             continue
