@@ -681,23 +681,40 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     
     Parameters:
     ----------
-    output_dir (Path): Target directory for result files
-    class_names (list): Names of classification classes
-    thresholds (dict): Dictionary mapping class names to decision thresholds
-    test_true_labels (ndarray): Ground truth binary labels (n_samples, n_classes)
-    test_pred_binary (ndarray): Binary predictions (n_samples, n_classes)
-    test_predictions (ndarray): Probability predictions (n_samples, n_classes)
-    precision_per_class (ndarray): Per-class precision scores
-    recall_per_class (ndarray): Per-class recall scores  
-    f1_per_class (ndarray): Per-class F1 scores
-    support_per_class (ndarray): Per-class positive sample counts
-    macro_precision (float): Macro-averaged precision
-    macro_recall (float): Macro-averaged recall
-    macro_f1 (float): Macro-averaged F1 score
-    micro_precision (float): Micro-averaged precision
-    micro_recall (float): Micro-averaged recall
-    micro_f1 (float): Micro-averaged F1 score
-    subset_accuracy (float): Subset accuracy (exact match rate)
+    output_dir (Path): 
+        Target directory for result files
+    class_names (list): 
+        Names of classification classes
+    thresholds (dict): 
+        Dictionary mapping class names to decision thresholds
+    test_true_labels (ndarray): 
+        Ground truth binary labels (n_samples, n_classes)
+    test_pred_binary (ndarray): 
+        Binary predictions (n_samples, n_classes)
+    test_predictions (ndarray): 
+        Probability predictions (n_samples, n_classes)
+    precision_per_class (ndarray): 
+        Per-class precision scores
+    recall_per_class (ndarray): 
+        Per-class recall scores  
+    f1_per_class (ndarray): 
+        Per-class F1 scores
+    support_per_class (ndarray): 
+        Per-class positive sample counts
+    macro_precision (float): 
+        Macro-averaged precision
+    macro_recall (float): 
+        Macro-averaged recall
+    macro_f1 (float): 
+        Macro-averaged F1 score
+    micro_precision (float): 
+        Micro-averaged precision
+    micro_recall (float):   
+        Micro-averaged recall
+    micro_f1 (float): 
+        Micro-averaged F1 score
+    subset_accuracy (float): 
+        Subset accuracy (exact match rate)
     """    
     output_dir = Path(output_dir)
     
