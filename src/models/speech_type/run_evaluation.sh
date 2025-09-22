@@ -41,8 +41,6 @@ CUBLAS_LIB_PATH="/home/nele_pauline_suffo/projects/naturalistic-social-analysis/
 export LD_PRELOAD="${CUBLAS_LIB_PATH}/libcublasLt.so.12:${CUBLAS_LIB_PATH}/libcublas.so.12"
 
 echo "🔧 CUDA environment configured"
-echo "🔍 LD_LIBRARY_PATH has $(echo $LD_LIBRARY_PATH | tr ':' '\n' | wc -l) paths"
-echo "🔧 LD_PRELOAD set for cuBLAS libraries"
 
 # Activate virtual environment and run the evaluation
 cd /home/nele_pauline_suffo/projects/naturalistic-social-analysis
