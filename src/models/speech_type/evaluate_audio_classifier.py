@@ -35,7 +35,7 @@ def main():
         
         # Create timestamped output directory for this evaluation run
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = AudioClassification.TRAINED_WEIGHTS_PATH.parent.parent
+        output_dir = AudioClassification.TRAINED_WEIGHTS_PATH.parent
         folder_name = output_dir / f'evaluation_{timestamp}'
 
         # Stage 2: Load trained model with Lambda layer handling
