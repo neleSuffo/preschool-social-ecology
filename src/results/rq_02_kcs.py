@@ -285,8 +285,6 @@ def main():
     ]).reset_index(drop=True)
     
     # Step 4: Save results
-    print(f"\n💾 Saving segment totals...")
-
     # Select final columns for output
     final_output = segment_totals[[
         'child_id', 'age_at_recording', 'interaction_type', 
@@ -298,7 +296,7 @@ def main():
     final_output.to_csv(Inference.KCS_SUMMARY_CSV, index=False)
     
     print(f"\n✅ Analysis completed successfully!")
-    print(f"📄 Aggregated segment totals saved to: {Inference.KCS_SUMMARY_CSV}")
+    print(f"📄 Output saved to: {Inference.KCS_SUMMARY_CSV}")
     print("=" * 70)
     
     return segment_totals
