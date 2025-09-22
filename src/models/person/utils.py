@@ -174,9 +174,10 @@ def setup_training_environment():
         GradScaler for mixed precision training if using CUDA, else None.
     """
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(PersonClassification.OUTPUT_DIR, f"{PersonConfig.MODEL_NAME}_{timestamp}")
-    os.makedirs(out_dir, exist_ok=True)
-
+    out_dir = PersonClassification.OUTPUT_DIR / f"{PersonConfig.MODEL_NAME}_{timestamp}"
+    # ensure out_dir exists
+    mkdir(out_dir)
+    
     save_script_and_hparams(out_dir)
 
     # use cuda if available
