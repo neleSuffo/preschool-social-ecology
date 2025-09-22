@@ -792,7 +792,8 @@ def evaluate_model(model, test_generator, mlb, thresholds, output_dir, generate_
             precision_per_class, recall_per_class, f1_per_class, support_per_class,
             macro_precision, macro_recall, macro_f1,
             micro_precision, micro_recall, micro_f1, subset_accuracy,
-            generate_confusion_matrices, evaluation_level, test_metadata
+            generate_confusion_matrices, evaluation_level, test_metadata,
+            expanded_true_labels, expanded_pred_labels  # Pass expanded arrays
         )
     else:
         print("⚠️ Warning: No positive instances found in test set")
@@ -806,7 +807,8 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                         precision_per_class, recall_per_class, f1_per_class, support_per_class,
                         macro_precision, macro_recall, macro_f1,
                         micro_precision, micro_recall, micro_f1, subset_accuracy, 
-                        generate_confusion_matrices=False, evaluation_level="window", metadata=None):
+                        generate_confusion_matrices=False, evaluation_level="window", metadata=None,
+                        expanded_true_labels=None, expanded_pred_labels=None):
     """
     Save comprehensive evaluation results in multiple formats for analysis and reporting.
     
@@ -855,6 +857,12 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         Optional metadata for each sample
     """    
     output_dir = Path(output_dir)
+    
+    # Use expanded arrays if provided, otherwise fall back to original arrays
+    if expanded_true_labels is None:
+        expanded_true_labels = test_true_labels
+    if expanded_pred_labels is None:
+        expanded_pred_labels = test_pred_binary
     
     # Create comprehensive metrics summary for programmatic analysis
     summary = {
