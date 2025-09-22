@@ -286,7 +286,7 @@ def eval_on_loader(models, criterion, dataloader, device):
 # ---------------------------
 
 def initialize_training_logging(out_dir: str):
-    csv_log_path = os.path.join(out_dir, "training_metrics.csv")
+    csv_log_path = out_dir / "training_metrics.csv"
     csv_headers = [
         'epoch', 'train_loss', 'val_loss',
         'train_adult_precision', 'train_adult_recall', 'train_adult_f1',
@@ -343,16 +343,16 @@ def handle_checkpointing_and_early_stopping(out_dir, epoch, cnn, rnn_model, opt_
         'train_metrics': train_metrics,
     }
 
-    # Periodic checkpointing
-    if epoch % 10 == 0 or epoch == PersonConfig.NUM_EPOCHS:
-        ckpt_path = os.path.join(out_dir, f'ckpt_epoch{epoch:03d}.pth')
-        torch.save(ckpt, ckpt_path)
+    # Save last model weights
+    if epoch == PersonConfig.NUM_EPOCHS:
+        last_path = out_dir / 'last.pth'
+        torch.save(ckpt, last_path)
 
     should_stop = False
     if val_metrics['macro_f1'] > best_val_f1:
         best_val_f1 = val_metrics['macro_f1']
         patience_counter = 0
-        best_path = os.path.join(out_dir, 'best.pth')
+        best_path = out_dir / 'best.pth'
         torch.save(ckpt, best_path)
         print(f"  ⭐ New best macro F1: {best_val_f1:.3f}!")
     else:
