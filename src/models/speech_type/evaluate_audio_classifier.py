@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from config import AudioConfig
 from constants import AudioClassification
-from utils import load_thresholds, load_model, create_data_generators, evaluate_model_comprehensive, setup_gpu_config
+from utils import load_thresholds, load_model, create_data_generators, evaluate_model_comprehensive, evaluate_model_at_both_levels, setup_gpu_config
 
 # Setup GPU configuration
 gpu_available = setup_gpu_config()
@@ -55,8 +55,43 @@ def main():
         if test_generator is None or len(test_generator) == 0:
             raise ValueError("Test generator is empty. Check test data file and paths.")
 
-        # Stage 5: Execute comprehensive model evaluation with confusion matrices
-        evaluate_model_comprehensive(model, test_generator, mlb, thresholds, folder_name, generate_confusion_matrices=True)
+        # Stage 5: Execute comprehensive model evaluation at both levels
+        print("\n🎯 EVALUATION OPTIONS:")
+        print("1. Window-level only (original sliding windows)")
+        print("2. Second-level only (aggregated predictions)")  
+        print("3. Both levels for comparison (recommended)")
+        
+        evaluation_choice = input("\nChoose evaluation level (1/2/3, default=3): ").strip() or "3"
+        
+        if evaluation_choice == "1":
+            evaluate_model_comprehensive(
+                model=model, 
+                test_generator=test_generator, 
+                mlb=mlb, 
+                thresholds=thresholds, 
+                output_dir=folder_name,
+                generate_confusion_matrices=True,
+                aggregate_to_seconds=False
+            )
+        elif evaluation_choice == "2":
+            evaluate_model_comprehensive(
+                model=model,
+                test_generator=test_generator, 
+                mlb=mlb,
+                thresholds=thresholds,
+                output_dir=folder_name,
+                generate_confusion_matrices=True, 
+                aggregate_to_seconds=True
+            )
+        else:
+            evaluate_model_at_both_levels(
+                model=model,
+                test_generator=test_generator,
+                mlb=mlb, 
+                thresholds=thresholds,
+                output_dir=folder_name,
+                generate_confusion_matrices=True
+            )
         
     except FileNotFoundError as e:
         print(f"❌ File not found: {e}")
