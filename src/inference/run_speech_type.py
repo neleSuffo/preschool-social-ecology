@@ -186,7 +186,7 @@ def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor):
     logging.info(f"Processing audio for video: {video_name}")
     
     # Load optimized thresholds from training
-    thresholds = load_thresholds(AudioClassification.RESULTS_DIR, mlb.classes_)
+    thresholds = load_thresholds(mlb.classes_)
     
     # Get video_id from database
     video_id = get_video_id(video_name, cursor)
