@@ -78,7 +78,7 @@ class Proximity:
     ADULT_FAR_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_0.jpg")
     
 class Inference:
-    BASE_OUTPUT_DIR = BasePaths.HOME_DIR / "src/results"
+    BASE_OUTPUT_DIR = BasePaths.OUTPUT_DIR / "quantex_inference"
     PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
     SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
@@ -91,7 +91,6 @@ class Inference:
     CDS_SUMMARY_CSV = BASE_OUTPUT_DIR / "04_cds_summary.csv"
     PRESENCE_CSV = BASE_OUTPUT_DIR / "05_presence.csv"
     INTERACTION_COMPOSITION_CSV = BASE_OUTPUT_DIR / "06_interaction_composition.csv"
-    INTERACTION_COMPOSITION_FRAMES_CSV = BASE_OUTPUT_DIR / "06_interaction_composition_frames.csv"
     HYPERPARAMETER_OUTPUT_DIR = BASE_OUTPUT_DIR / "hyperparameter_tuning"
     CONF_MATRIX_COUNTS = BASE_OUTPUT_DIR / "confusion_matrix_counts.png"
     CONF_MATRIX_PERCENTAGES = BASE_OUTPUT_DIR / "confusion_matrix_percentages.png"
