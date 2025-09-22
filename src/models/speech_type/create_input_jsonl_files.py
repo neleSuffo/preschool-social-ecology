@@ -278,15 +278,16 @@ def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_du
                         if max(window_start, ann['start']) < min(window_end, ann['end']):
                             active_labels.add(ann['speaker_id'])
                     
-                    # Only create segments with valid labels and duration
-                    # This ensures all training data contains meaningful speech events
-                    if active_labels and (window_end - window_start) > 0:
-                        # Update global label tracking for dataset statistics
-                        all_unique_labels.update(active_labels)
-                        
-                        # Update per-split label frequency counts for distribution analysis
-                        for label in active_labels:
-                            label_counts_per_split[split_name][label] += 1
+                    # Create segments for all windows (including silent ones)
+                    # This ensures realistic audio classification with both speech and silence
+                    if (window_end - window_start) > 0:
+                        # Update global label tracking for dataset statistics (only if labels exist)
+                        if active_labels:
+                            all_unique_labels.update(active_labels)
+                            
+                            # Update per-split label frequency counts for distribution analysis
+                            for label in active_labels:
+                                label_counts_per_split[split_name][label] += 1
                         
                         # Create segment data structure for JSONL output
                         segment_data = {
@@ -542,7 +543,6 @@ def create_participant_splits():
             print(f"Skipping file {json_file} due to error: {e}")
 
     print(f"\nFound {len(id_to_files)} unique participant IDs")
-    print(f"Files without ID: {len(files_without_id)}")
 
     # Calculate total duration per participant for duration-balanced splitting
     id_durations = {}
