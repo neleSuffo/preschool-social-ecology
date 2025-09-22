@@ -565,7 +565,7 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
         return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
 
 # ---- Evaluation Functions ----
-def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir):
+def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_dir, generate_confusion_matrices=False):
     """
     Perform comprehensive multi-label classification evaluation with detailed analysis. 
     
@@ -659,7 +659,8 @@ def evaluate_model_comprehensive(model, test_generator, mlb, thresholds, output_
             test_true_labels, test_pred_binary, test_predictions,
             precision_per_class, recall_per_class, f1_per_class, support_per_class,
             macro_precision, macro_recall, macro_f1,
-            micro_precision, micro_recall, micro_f1, subset_accuracy
+            micro_precision, micro_recall, micro_f1, subset_accuracy,
+            generate_confusion_matrices
         )
     else:
         print("⚠️ Warning: No positive instances found in test set")
@@ -672,7 +673,7 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                         test_true_labels, test_pred_binary, test_predictions,
                         precision_per_class, recall_per_class, f1_per_class, support_per_class,
                         macro_precision, macro_recall, macro_f1,
-                        micro_precision, micro_recall, micro_f1, subset_accuracy):
+                        micro_precision, micro_recall, micro_f1, subset_accuracy, generate_confusion_matrices=False):
     """
     Save comprehensive evaluation results in multiple formats for analysis and reporting.
     
@@ -794,6 +795,131 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     # Save detailed predictions for manual inspection and error analysis
     predictions_path = output_dir / 'detailed_predictions.csv'
     detailed_results.to_csv(predictions_path, index=False, float_format='%.4f')
+    
+    # Generate confusion matrices if requested
+    if generate_confusion_matrices:
+        from sklearn.metrics import confusion_matrix
+        print("📊 Generating multi-class confusion matrix...")
+        
+        confusion_matrices_dir = output_dir / 'confusion_matrices'
+        confusion_matrices_dir.mkdir(exist_ok=True)
+        
+        # Define class order for confusion matrix (actual classes + no speech)
+        class_names_list = list(class_names)  # ['KCHI', 'CDS', 'OHS'] or similar
+        matrix_classes = ['no speech'] + class_names_list  # ['no speech', 'KCHI', 'CDS', 'OHS']
+        
+        # Create confusion matrix by counting frame occurrences for each label
+        # Each frame can contribute multiple times if it has multiple labels
+        cm = np.zeros((len(matrix_classes), len(matrix_classes)), dtype=int)
+        
+        for i in range(len(test_true_labels)):
+            true_labels = test_true_labels[i]
+            pred_labels = test_pred_binary[i]
+            
+            # Handle frames with no ground truth labels first (true "no speech" frames)
+            if true_labels.sum() == 0:
+                no_speech_true_idx = matrix_classes.index('no speech')
+                
+                # Check what was predicted for this "no speech" frame
+                if pred_labels.sum() == 0:
+                    # Correctly predicted no speech
+                    no_speech_pred_idx = matrix_classes.index('no speech')
+                    cm[no_speech_true_idx, no_speech_pred_idx] += 1
+                else:
+                    # Incorrectly predicted some speech class for a silent frame
+                    for pred_idx, pred_val in enumerate(pred_labels):
+                        if pred_val == 1:
+                            pred_class_name = class_names_list[pred_idx]
+                            pred_matrix_idx = matrix_classes.index(pred_class_name)
+                            cm[no_speech_true_idx, pred_matrix_idx] += 1
+            else:
+                # Handle frames with ground truth labels
+                for true_idx, true_val in enumerate(true_labels):
+                    if true_val == 1:  # This class is present in ground truth
+                        true_class_name = class_names_list[true_idx]
+                        true_matrix_idx = matrix_classes.index(true_class_name)
+                        
+                        # Check what was predicted for this frame
+                        if pred_labels.sum() == 0:
+                            # Nothing was predicted, count as "no speech" prediction
+                            no_speech_idx = matrix_classes.index('no speech')
+                            cm[true_matrix_idx, no_speech_idx] += 1
+                        else:
+                            # Something was predicted
+                            for pred_idx, pred_val in enumerate(pred_labels):
+                                if pred_val == 1:  # This class was predicted
+                                    pred_class_name = class_names_list[pred_idx]
+                                    pred_matrix_idx = matrix_classes.index(pred_class_name)
+                                    cm[true_matrix_idx, pred_matrix_idx] += 1
+        
+        # Calculate percentages row-wise (based on ground truth counts for each class)
+        cm_percent = np.zeros_like(cm, dtype=float)
+        for i in range(cm.shape[0]):
+            row_sum = cm[i].sum()  # Total ground truth frames for this class
+            if row_sum > 0:
+                cm_percent[i] = (cm[i] / row_sum) * 100
+            else:
+                cm_percent[i] = 0.0
+        
+        # Create DataFrame for counts
+        cm_counts_df = pd.DataFrame(cm, index=matrix_classes, columns=matrix_classes)
+        cm_counts_df.index.name = 'Ground Truth'
+        cm_counts_df.columns.name = 'Predicted'
+        
+        # Create DataFrame for percentages
+        cm_percent_df = pd.DataFrame(cm_percent, index=matrix_classes, columns=matrix_classes)
+        cm_percent_df.index.name = 'Ground Truth'
+        cm_percent_df.columns.name = 'Predicted'
+        
+        # Save confusion matrices to CSV
+        counts_path = confusion_matrices_dir / 'confusion_matrix_counts.csv'
+        percent_path = confusion_matrices_dir / 'confusion_matrix_percentages.csv'
+        
+        cm_counts_df.to_csv(counts_path)
+        cm_percent_df.to_csv(percent_path, float_format='%.2f')
+        
+        # Create and save visualization
+        plt.figure(figsize=(12, 5))
+        
+        # Counts subplot
+        plt.subplot(1, 2, 1)
+        plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+        plt.title('Confusion Matrix - Counts')
+        plt.colorbar()
+        tick_marks = np.arange(len(matrix_classes))
+        plt.xticks(tick_marks, matrix_classes, rotation=45)
+        plt.yticks(tick_marks, matrix_classes)
+        plt.ylabel('Ground Truth')
+        plt.xlabel('Predicted')
+        
+        # Add text annotations for counts
+        for i_cm, j_cm in np.ndindex(cm.shape):
+            plt.text(j_cm, i_cm, f'{cm[i_cm, j_cm]}',
+                    ha="center", va="center", color="white" if cm[i_cm, j_cm] > cm.max() / 2 else "black")
+        
+        # Percentages subplot
+        plt.subplot(1, 2, 2)
+        plt.imshow(cm_percent, interpolation='nearest', cmap=plt.cm.Blues)
+        plt.title('Confusion Matrix - Percentages')
+        plt.colorbar()
+        plt.xticks(tick_marks, matrix_classes, rotation=45)
+        plt.yticks(tick_marks, matrix_classes)
+        plt.ylabel('Ground Truth')
+        plt.xlabel('Predicted')
+        
+        # Add text annotations for percentages
+        for i_cm, j_cm in np.ndindex(cm_percent.shape):
+            plt.text(j_cm, i_cm, f'{cm_percent[i_cm, j_cm]:.1f}%',
+                    ha="center", va="center", color="white" if cm_percent[i_cm, j_cm] > cm_percent.max() / 2 else "black")
+        
+        plt.tight_layout()
+        viz_path = confusion_matrices_dir / 'confusion_matrix.png'
+        plt.savefig(viz_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  📊 Confusion matrix: {confusion_matrices_dir}")
+    
+    
     
     print(f"✅ Results saved:")
     print(f"  📊 Summary: {summary_path}")
