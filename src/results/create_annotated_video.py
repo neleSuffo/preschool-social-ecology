@@ -126,9 +126,13 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
                 'has_child_face': row.get('has_child_face', 0),
                 'has_adult_face': row.get('has_adult_face', 0),
                 'proximity': row.get('proximity', None),
-                'speaker': row.get('speaker', ''),
-                'kchi_speech': 'KCHI' in str(row.get('speaker', '')),
-                'other_speech': 'FEM_MAL' in str(row.get('speaker', ''))
+                'has_kchi': row.get('has_kchi', 0),
+                'has_ohs': row.get('has_ohs', 0),
+                'has_cds': row.get('has_cds', 0),
+                'rule1_turn_taking': row.get('rule1_turn_taking', 0),
+                'rule2_close_proximity': row.get('rule2_close_proximity', 0),
+                'rule3_cds_speaking': row.get('rule3_cds_speaking', 0),
+                'rule4_person_recent_speech': row.get('rule4_person_recent_speech', 0),
             }
     
     print("🎬 Processing video frames and saving as images...")
@@ -212,13 +216,31 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
             
             # Speech detection
             speech_info = []
-            if current_detection['kchi_speech']:
+            if current_detection['has_kchi']:
                 speech_info.append("KCHI")
-            if current_detection['other_speech']:
-                speech_info.append("Other")
+            if current_detection['has_ohs']:
+                speech_info.append("OHS")
+            if current_detection['has_cds']:
+                speech_info.append("CDS")
             speech_text = f"Speech: {', '.join(speech_info) if speech_info else 'Silent'}"
             speech_color = (0, 255, 255) if speech_info else text_color  # Yellow if speech
             cv2.putText(frame, speech_text, (10, y_pos), font, font_scale, speech_color, 1)
+            y_pos += line_height
+            
+            # Interaction rules (active rules)
+            active_rules = []
+            if current_detection['rule1_turn_taking']:
+                active_rules.append("1:Turn-Taking")
+            if current_detection['rule2_close_proximity']:
+                active_rules.append("2:Close-Prox")
+            if current_detection['rule3_cds_speaking']:
+                active_rules.append("3:CDS")
+            if current_detection['rule4_person_recent_speech']:
+                active_rules.append("4:Person+Speech")
+            
+            rules_text = f"Rules: {', '.join(active_rules) if active_rules else 'None'}"
+            rules_color = (0, 255, 0) if active_rules else text_color  # Green if any rules active
+            cv2.putText(frame, rules_text, (300, y_pos), font, font_scale, rules_color, 1)
             
         # Save the annotated frame to the temporary directory
         image_path = temp_frames_dir / f"frame_{frame_number:05d}.png"
