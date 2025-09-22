@@ -54,7 +54,7 @@ def row_wise_mapping(voc_row, video_segments_df):
         ['vocalization_id', 'video_id', 'child_id', 'age_at_recording', 'start_time_seconds', 'end_time_seconds']
     video_segments_df : pd.DataFrame
         DataFrame containing interaction segments for one video_id with columns:
-        ['start_time_sec', 'end_time_sec', 'category']  
+        ['start_time_sec', 'end_time_sec', 'interaction_type']  
     
     Returns:
     -------
@@ -86,7 +86,7 @@ def row_wise_mapping(voc_row, video_segments_df):
             'end_time_seconds': voc_row['end_time_seconds'],
             'seconds': overlap_seconds,
             'speech_type': voc_row['speech_type'],  # Add speech type (CDS or OHS)
-            'interaction_type': seg['category'],
+            'interaction_type': seg['interaction_type'],
             'total_segment_duration': total_segment_duration,
             'segment_start_time': seg['start_time_sec'],
             'segment_end_time': seg['end_time_sec']
@@ -345,13 +345,9 @@ def main():
     
     if max_total_exposure > 1.0:
         print(f"⚠️  Warning: Maximum total exposure is {max_total_exposure:.1%}, which exceeds 100%")
-    else:
-        print(f"✅ Maximum total exposure: {max_total_exposure:.1%} (within valid range)")
         
     if max_cds_exposure > 1.0:
         print(f"⚠️  Warning: Maximum CDS exposure is {max_cds_exposure:.1%}, which exceeds 100%")  
-    else:
-        print(f"✅ Maximum CDS exposure: {max_cds_exposure:.1%} (within valid range)")
     
     # Sort and prepare final output
     segment_totals = segment_totals.sort_values([
