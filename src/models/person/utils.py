@@ -253,15 +253,12 @@ def setup_evaluation():
     """Setup output directory, device, and data loader."""   
     # Create timestamped evaluation directory
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    eval_dir = Path(PersonClassification.OUTPUT_DIR) / f"{PersonConfig.MODEL_NAME}_evaluation_{timestamp}"
+    eval_dir = PersonClassification.TRAINED_WEIGHTS_PATH.parent / f"{PersonConfig.MODEL_NAME}_evaluation_{timestamp}"
     eval_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"Results will be saved to: {eval_dir}")
     
     # use cuda if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    
+        
     # Load test dataset with same transforms as training (but without augmentation)
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -269,7 +266,6 @@ def setup_evaluation():
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    print("Loading test dataset...")
     test_ds = VideoFrameDataset(
         PersonClassification.TEST_CSV_PATH, 
         transform=transform,
@@ -288,7 +284,6 @@ def setup_evaluation():
         persistent_workers=True  # Keep workers alive between epochs
     )
     
-    print(f"Test dataset loaded: {len(test_ds)} sequences")
     return device, test_loader, test_ds, eval_dir
 
 def load_model(device):
@@ -315,7 +310,7 @@ def load_model(device):
         cleaned = {}
         for k, v in state_dict.items():
             if k.startswith('_orig_mod.'):
-                cleaned[k[10:]] = v  # Remove '_orig_mod.' prefix
+                cleaned[k[10:]] = v  # Remove '_orig_mod.' prefix  fv
             else:
                 cleaned[k] = v
         return cleaned
