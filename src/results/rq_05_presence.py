@@ -1,12 +1,5 @@
-import re
 import pandas as pd
 from pathlib import Path
-import sys
-
-# Get the src directory (2 levels up from current notebook location)
-src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
-sys.path.append(str(src_path))
-
 from constants import Inference
 
 def enhance_segments_with_presence(segments_df, frame_data_df):
@@ -53,9 +46,9 @@ def enhance_segments_with_presence(segments_df, frame_data_df):
 
 def main(frame_data_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV,
         segments_csv: Path = Inference.INTERACTION_SEGMENTS_CSV):
-    print("=" * 60)
-    print("RQ 05: ENHANCING SEGMENTS WITH PRESENCE INFORMATION")
-    print("=" * 60)
+    print("🗣️ RQ 05: PRESENCE ANALYSIS")
+    print("=" * 70)
+    print("ANALYZING PRESENCE OF ADULTS AND CHILDREN IN INTERACTION SEGMENTS")
     
     # Load frame-level data
     try:
@@ -70,7 +63,6 @@ def main(frame_data_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV,
     # Load existing segments
     try:
         segments_df = pd.read_csv(segments_csv)
-        print(f"� Loaded {len(segments_df):,} existing segments")
     except FileNotFoundError:
         print(f"❌ Error: Segments file not found at {segments_csv}")
         return
@@ -95,12 +87,11 @@ def main(frame_data_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV,
     enhanced_segments['interaction_partner'] = enhanced_segments.apply(categorize_interaction_partner, axis=1)
     
     filtered_segments = enhanced_segments[enhanced_segments['interaction_type'] != 'Alone']
-    print(f"✅ Enhanced {len(filtered_segments)} segments with presence information")
     
     # Save enhanced segments
     try:
         filtered_segments.to_csv(Inference.PRESENCE_CSV, index=False)
-        print(f"\n💾 Enhanced segments saved to: {Inference.PRESENCE_CSV}")        
+        print(f"\n💾 Output saved to: {Inference.PRESENCE_CSV}")        
     except Exception as e:
         print(f"❌ Error saving enhanced segments: {e}")
         return
