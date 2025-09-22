@@ -899,21 +899,28 @@ def save_evaluation_results(output_dir, class_names, thresholds,
     # Create detailed per-sample results for error analysis
     class_names_list = list(class_names)
     
-    # Probability predictions (raw model outputs)
+    # Create expanded predictions array to match class_names (including "no speech")
+    expanded_predictions = np.zeros((len(test_predictions), len(class_names_list)), dtype=float)
+    # Fill speech class predictions (skip index 0 which is "no speech")  
+    expanded_predictions[:, 1:] = test_predictions
+    # For "no speech" probability, use 1 - max(other_probs) as a simple heuristic
+    expanded_predictions[:, 0] = 1 - np.max(test_predictions, axis=1)
+    
+    # Probability predictions (raw model outputs + derived "no speech" prob)
     predictions_df = pd.DataFrame(
-        test_predictions, 
+        expanded_predictions, 
         columns=[f'{name}_prob' for name in class_names_list]
     )
     
-    # Binary predictions (after threshold application)
+    # Binary predictions (after threshold application) - already expanded in evaluate_model
     predictions_binary_df = pd.DataFrame(
-        test_pred_binary, 
+        expanded_pred_labels, 
         columns=[f'{name}_pred' for name in class_names_list]
     )
     
-    # True labels (ground truth)
+    # True labels (ground truth) - already expanded in evaluate_model
     true_labels_df = pd.DataFrame(
-        test_true_labels, 
+        expanded_true_labels, 
         columns=[f'{name}_true' for name in class_names_list]
     )
     
@@ -932,9 +939,9 @@ def save_evaluation_results(output_dir, class_names, thresholds,
         detailed_results['sample_id'] = range(len(detailed_results))
         detailed_results['sample_type'] = evaluation_level
         
-    detailed_results['num_true_labels'] = test_true_labels.sum(axis=1)
-    detailed_results['num_pred_labels'] = test_pred_binary.sum(axis=1)
-    detailed_results['exact_match'] = (test_true_labels == test_pred_binary).all(axis=1).astype(int)
+    detailed_results['num_true_labels'] = expanded_true_labels.sum(axis=1)
+    detailed_results['num_pred_labels'] = expanded_pred_labels.sum(axis=1)
+    detailed_results['exact_match'] = (expanded_true_labels == expanded_pred_labels).all(axis=1).astype(int)
     
     # Save detailed predictions for manual inspection and error analysis
     predictions_path = output_dir / f'detailed_predictions_{evaluation_level}_level.csv'
