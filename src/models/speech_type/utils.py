@@ -702,8 +702,8 @@ def evaluate_model(model, test_generator, mlb, thresholds, output_dir, generate_
             ]
             for segment in batch_segments[:len(labels)]:  # Match actual batch size
                 test_metadata.append({
-                    'start_time': segment.get('start', 0.0),
-                    'end_time': segment.get('start', 0.0) + segment.get('duration', AudioConfig.WINDOW_DURATION),
+                    'start_time': segment.get('start_time', segment.get('start', 0.0)),
+                    'end_time': segment.get('end_time', segment.get('start', 0.0) + segment.get('duration', AudioConfig.WINDOW_DURATION)),
                     'audio_path': segment.get('audio_path', 'unknown')
                 })
     
@@ -880,14 +880,14 @@ def save_evaluation_results(output_dir, class_names, thresholds,
                 'recall': float(recall_per_class[i]),
                 'f1_score': float(f1_per_class[i]),
                 'support': int(support_per_class[i]),
-                'threshold': float(thresholds[str(class_names[i])]),
+                'threshold': float(thresholds.get(str(class_names[i]), 0.5)),  # Use 0.5 default for "no speech"
                 'positive_rate': float(support_per_class[i] / len(test_true_labels))
             } for i in range(len(class_names))
         },
         'threshold_configuration': {
             'method': 'optimized_from_validation',
             'fallback': 0.5,
-            'per_class_thresholds': {str(class_name): float(thresholds[str(class_name)]) for class_name in class_names}
+            'per_class_thresholds': {str(class_name): float(thresholds.get(str(class_name), 0.5)) for class_name in class_names}
         }
     }
     
