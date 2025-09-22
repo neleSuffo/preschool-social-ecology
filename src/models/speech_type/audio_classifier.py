@@ -382,7 +382,7 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         threshold_dict['macro_f1'] = float(macro_f1)
         
         # use path instead of os
-        with self.model.log_dir is not None and Path(self.model.log_dir).exists():
+        if self.model.log_dir is not None and Path(self.model.log_dir).exists():
             with open(Path(self.model.log_dir) / 'thresholds.json', 'w') as f:
                 json.dump(threshold_dict, f, indent=2)
 
