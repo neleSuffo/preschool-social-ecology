@@ -1,9 +1,7 @@
 import sqlite3
 import pandas as pd
-import re
 from pathlib import Path
 from constants import DataPaths, Inference
-from config import InferenceConfig
 from utils import extract_child_id
 
 def count_turns_in_segments(vocalizations_df, segments_df, max_gap=5.0):
@@ -301,7 +299,7 @@ def main():
     final_df.to_csv(Inference.TURN_TAKING_CSV, index=False)
     
     print(f"\n✅ Analysis completed successfully!")
-    print(f"📄 Comprehensive speech analysis saved to: {Inference.TURN_TAKING_CSV}")
+    print(f"📄 Output saved to: {Inference.TURN_TAKING_CSV}")
     print("=" * 70)
     
     return final_df
