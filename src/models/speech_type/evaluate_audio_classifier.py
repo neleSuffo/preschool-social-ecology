@@ -1,9 +1,6 @@
-import tensorflow as tf
-from pathlib import Path
 from datetime import datetime
-from config import AudioConfig
 from constants import AudioClassification
-from utils import load_thresholds, load_model, create_data_generators, evaluate_model_comprehensive, evaluate_model_at_both_levels, setup_gpu_config
+from utils import load_thresholds, load_model, create_data_generators, evaluate_model, evaluate_model_both_levels, setup_gpu_config
 
 # Setup GPU configuration
 gpu_available = setup_gpu_config()
@@ -64,7 +61,7 @@ def main():
         evaluation_choice = input("\nChoose evaluation level (1/2/3, default=3): ").strip() or "3"
         
         if evaluation_choice == "1":
-            evaluate_model_comprehensive(
+            evaluate_model(
                 model=model, 
                 test_generator=test_generator, 
                 mlb=mlb, 
@@ -74,7 +71,7 @@ def main():
                 aggregate_to_seconds=False
             )
         elif evaluation_choice == "2":
-            evaluate_model_comprehensive(
+            evaluate_model(
                 model=model,
                 test_generator=test_generator, 
                 mlb=mlb,
@@ -84,7 +81,7 @@ def main():
                 aggregate_to_seconds=True
             )
         else:
-            evaluate_model_at_both_levels(
+            evaluate_model_both_levels(
                 model=model,
                 test_generator=test_generator,
                 mlb=mlb, 
