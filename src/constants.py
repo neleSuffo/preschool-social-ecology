@@ -23,7 +23,7 @@ class DataPaths:
     INFERENCE_DB_PATH = Path(INFERENCE_DIR/"inference.db")
 
 class AudioClassification:
-    RESULTS_DIR = Path("/home/nele_pauline_suffo/outputs/audio_classification/20250917-230755")
+    RESULTS_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification/20250922-205547")
     TRAINED_WEIGHTS_PATH = Path(RESULTS_DIR/"best_model.keras")
     ANNOTATIONS_INPUT_DIR = Path(BasePaths.DATA_DIR/"childlens_annotations/keeper/v1")
     CHILDLENS_PARTICIPANT_INFO = Path(ANNOTATIONS_INPUT_DIR/"childlens_participant_info.csv")
