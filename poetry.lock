@@ -3893,6 +3893,24 @@ files = [
 requests = ">=2.0.1,<3.0.0"
 
 [[package]]
+name = "retina-face"
+version = "0.0.17"
+description = "RetinaFace: Deep Face Detection Framework in TensorFlow for Python"
+optional = false
+python-versions = ">=3.5.5"
+files = [
+    {file = "retina-face-0.0.17.tar.gz", hash = "sha256:7532b136ed01fe9a8cba8dfbc5a046dd6fb1214b1a83e57f3210bd145a91cd73"},
+    {file = "retina_face-0.0.17-py3-none-any.whl", hash = "sha256:b43fdac4078678b9d8bc45b88a7090f05d81c44e1e10710e6c16d703bb7add41"},
+]
+
+[package.dependencies]
+gdown = ">=3.10.1"
+numpy = ">=1.14.0"
+opencv-python = ">=3.4.4"
+Pillow = ">=5.2.0"
+tensorflow = ">=1.9.0"
+
+[[package]]
 name = "rich"
 version = "13.8.1"
 description = "Render rich text, tables, progress bars, syntax highlighting, markdown and more to the terminal"
@@ -5461,4 +5479,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "~3.8"
-content-hash = "d4668234dee77014856c379fc9eb5a7864e919d9804c1ae6ec73fa5e1ed6aed3"
+content-hash = "0d1d381427617854a9a9eb07c78f2de525d6cd6e3708f7374524695dcf681464"
