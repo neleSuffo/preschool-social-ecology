@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from constants import Inference
 from collections import defaultdict
-#from sklearn.metrics import precision_recall_fscore_support, classification_report
 
 def create_frame_level_labels(segments_df, video_duration_frames, fps=30):
     """
