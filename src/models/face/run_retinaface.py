@@ -8,9 +8,9 @@ from tqdm import tqdm
 # CONFIG
 # =========================
 FRAMES_ROOT = "/home/nele_pauline_suffo/ProcessedData/quantex_videos_processed"
-OUTPUT_DB = "/home/nele_pauline_suffo/outputs/quantex_inference/inference_short.db"
+OUTPUT_DB = "/home/nele_pauline_suffo/outputs/quantex_inference/inference.db"
 
-VIDEOS_TO_PROCESS = ["quantex_at_home_id255237_2022_05_08_03",
+VIDEOS_TO_PROCESS_old = ["quantex_at_home_id255237_2022_05_08_03",
                      "quantex_at_home_id254922_2022_05_21_01",
                      "quantex_at_home_id254922_2022_04_12_01",
                      "quantex_at_home_id255237_2022_05_26_01",
@@ -22,6 +22,19 @@ VIDEOS_TO_PROCESS = ["quantex_at_home_id255237_2022_05_08_03",
                      "quantex_at_home_id255944_2022_03_25_02",
                      "quantex_at_home_id256354_2021_08_14_02",
                      "quantex_at_home_id255695_2022_02_12_02"]
+
+VIDEOS_TO_PROCESS = ["quantex_at_home_id255237_2022_05_08_01",
+                     "quantex_at_home_id255237_2022_05_08_02",
+                     "quantex_at_home_id255237_2022_05_08_04",
+                     "quantex_at_home_id257291_2022_03_19_01",
+                     "quantex_at_home_id257291_2022_03_19_02",
+                     "quantex_at_home_id257291_2022_03_22_01",
+                     "quantex_at_home_id257291_2022_03_22_03",
+                     "quantex_at_home_id262565_2022_05_08_01", 
+                     "quantex_at_home_id262565_2022_05_08_02", 
+                     "quantex_at_home_id262565_2022_05_08_03",
+                     "quantex_at_home_id262565_2022_05_08_04",
+                     "quantex_at_home_id262565_2022_05_26_01"]
 
 # =========================
 # DATABASE SETUP
