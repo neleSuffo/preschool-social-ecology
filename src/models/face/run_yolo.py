@@ -1,4 +1,3 @@
-import os
 import cv2
 import logging
 import argparse
@@ -9,7 +8,6 @@ from supervision import Detections
 from pathlib import Path
 from PIL import Image
 from constants import FaceDetection
-from config import DataConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -107,7 +105,8 @@ def main():
         #     raise FileNotFoundError(f"Image not found with valid extension in {FaceDetection.IMAGES_INPUT_DIR / video_folder}")
         
         logging.info(f"Using image: {args.image_path}")
-        label_path = FaceDetection.LABELS_INPUT_DIR / f"{args.image_path}.txt"
+        label_name = Path(args.image_path).stem + ".txt"
+        label_path = FaceDetection.LABELS_INPUT_DIR / label_name
         print(f"Label path: {label_path}")
         
         # Load model and process image
