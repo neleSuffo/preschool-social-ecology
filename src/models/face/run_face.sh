@@ -46,4 +46,5 @@ echo "🔧 CUDA environment configured"
 cd /home/nele_pauline_suffo/projects/naturalistic-social-analysis
 source .venv/bin/activate
 cd src/models/face
-python run_retinaface.py
+#python run_retinaface.py
+python run_retinaface_simple.py
