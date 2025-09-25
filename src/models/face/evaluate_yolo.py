@@ -1,19 +1,31 @@
 import logging
+import argparse
 from pathlib import Path
 from datetime import datetime
 from ultralytics import YOLO
 from constants import FaceDetection
 from config import FaceConfig
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Evaluate YOLO model for face detection')
+    parser.add_argument('--config', type=str, default=str(FaceDetection.DATA_CONFIG_PATH),
+                      help=f'Path to YOLO data config file (default: {FaceDetection.DATA_CONFIG_PATH})')
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
     model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
     # Set output directory to parent of trained weights path
     output_dir = Path(FaceDetection.TRAINED_WEIGHTS_PATH).parent.parent
     folder_name = Path(f"{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
 
+    # Determine config file path
+    if args.config:
+        config_file_path = FaceDetection.DATA_CONFIG_PATH.parent / args.config
+
     # Validate the model
     metrics = model.val(
-        data=FaceDetection.DATA_CONFIG_PATH,
+        data=config_file_path,
         save_json=True,
         iou=0.5,
         plots=True,
