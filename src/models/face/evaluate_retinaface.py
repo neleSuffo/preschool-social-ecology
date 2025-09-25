@@ -1,14 +1,27 @@
 import sqlite3
 import numpy as np
 import json
+import pandas as pd
 
 # =========================
 # CONFIG
 # =========================
 GT_DB_PATH = "/home/nele_pauline_suffo/ProcessedData/quantex_annotations/annotations.db"
-PREDICTIONS_DB_PATH = "/home/nele_pauline_suffo/outputs/quantex_inference/inference_short_copy.db"
+PREDICTIONS_DB_PATH = "/home/nele_pauline_suffo/outputs/quantex_inference/inference.db"
 IOU_THRESHOLD = 0.5
 
+VIDEOS_TO_PROCESS = ["quantex_at_home_id255237_2022_05_08_01",
+                     "quantex_at_home_id255237_2022_05_08_02",
+                     "quantex_at_home_id255237_2022_05_08_04",
+                     "quantex_at_home_id257291_2022_03_19_01",
+                     "quantex_at_home_id257291_2022_03_19_02",
+                     "quantex_at_home_id257291_2022_03_22_01",
+                     "quantex_at_home_id257291_2022_03_22_03",
+                     "quantex_at_home_id262565_2022_05_08_01", 
+                     "quantex_at_home_id262565_2022_05_08_02", 
+                     "quantex_at_home_id262565_2022_05_08_03",
+                     "quantex_at_home_id262565_2022_05_08_04",
+                     "quantex_at_home_id262565_2022_05_26_01"]
 # =========================
 # HELPERS
 # =========================
@@ -46,141 +59,197 @@ def unpack_bbox(bbox_data):
     elif isinstance(bbox_data, (tuple, list)) and len(bbox_data) == 4:
         return tuple(map(int, bbox_data))
     return None
-
-def compute_iou(box1, box2):
-    """
-    box format: (x1, y1, x2, y2)
-    """
-    x1 = max(box1[0], box2[0])
-    y1 = max(box1[1], box2[1])
-    x2 = min(box1[2], box2[2])
-    y2 = min(box1[3], box2[3])
-
-    inter_w = max(0, x2 - x1 + 1)
-    inter_h = max(0, y2 - y1 + 1)
-    inter_area = inter_w * inter_h
-
-    box1_area = (box1[2] - box1[0] + 1) * (box1[3] - box1[1] + 1)
-    box2_area = (box2[2] - box2[0] + 1) * (box2[3] - box2[1] + 1)
-
-    union_area = box1_area + box2_area - inter_area
-    if union_area == 0:
-        return 0.0
-
-    return inter_area / union_area
-
-
-def match_detections(gt_boxes, pred_boxes, iou_threshold=0.5):
-    """
-    Greedy matching between predictions and ground truth boxes.
-    """
-    matched_gt = set()
-    matched_pred = set()
-
-    for pi, pbox in enumerate(pred_boxes):
-        for gi, gtbox in enumerate(gt_boxes):
-            if gi in matched_gt:
-                continue
-            iou = compute_iou(pbox, gtbox)
-            if iou >= iou_threshold:
-                matched_gt.add(gi)
-                matched_pred.add(pi)
-                break
-
-    tp = len(matched_pred)
-    fp = len(pred_boxes) - tp
-    fn = len(gt_boxes) - tp
-    return tp, fp, fn
-
 # =========================
-# EVALUATION
+# DATA EXPORT
 # =========================
-def evaluate(db_path_gt, db_path_pred, iou_threshold=0.5):
+def save_data_to_csv(db_path_gt, db_path_pred):
+    """
+    Save ground truth and predictions data to CSV files for inspection.
+    """
+    import pandas as pd
+    
     conn_gt = sqlite3.connect(db_path_gt)
     cursor_gt = conn_gt.cursor()
 
     conn_pred = sqlite3.connect(db_path_pred)
     cursor_pred = conn_pred.cursor()
 
-    # Get all frame IDs from annotations with category_id = 10
-    cursor_gt.execute("""
-        SELECT DISTINCT a.image_id, v.file_name
+    # Save Ground Truth data
+    video_filter = "', '".join([video + ".mp4" for video in VIDEOS_TO_PROCESS])
+    cursor_gt.execute(f"""
+        SELECT a.image_id, v.file_name, a.bbox
         FROM annotations a 
         JOIN videos v ON a.video_id = v.id 
-        WHERE a.category_id = 10
+        WHERE a.category_id = 10 AND v.file_name IN ('{video_filter}')
+        ORDER BY v.file_name, a.image_id
     """)
     gt_data = cursor_gt.fetchall()
-    gt_frame_ids = {str(row[0]): row[1] for row in gt_data}  # frame_id -> video_name mapping
-
-    # Get all frame paths from predictions and extract frame IDs
-    cursor_pred.execute("SELECT DISTINCT frame_path FROM RetinaFace")
-    pred_frame_paths = cursor_pred.fetchall()
     
-    pred_frame_ids = {}
-    for (frame_path,) in pred_frame_paths:
+    gt_rows = []
+    for image_id, video_name, bbox_json in gt_data:
+        video_name = video_name.replace('.mp4', '')
+        bbox = unpack_bbox(bbox_json)
+        if bbox is not None:
+            gt_rows.append({
+                'video_name': video_name,
+                'frame_id': image_id,
+                'x1': bbox[0],
+                'y1': bbox[1],
+                'x2': bbox[2],
+                'y2': bbox[3]
+            })
+    
+    gt_df = pd.DataFrame(gt_rows)
+    gt_output_path = '/home/nele_pauline_suffo/outputs/face_retinaface/ground_truth_data.csv'
+    gt_df.to_csv(gt_output_path, index=False)
+    print(f"Ground truth data saved to '{gt_output_path}' ({len(gt_rows)} bounding boxes)")
+
+    # Save Predictions data
+    video_like_conditions = " OR ".join([f"frame_path LIKE '%{video}%'" for video in VIDEOS_TO_PROCESS])
+    cursor_pred.execute(f"""
+        SELECT frame_path, x1, y1, x2, y2
+        FROM RetinaFace 
+        WHERE {video_like_conditions}
+        ORDER BY frame_path
+    """)
+    pred_data = cursor_pred.fetchall()
+    
+    pred_rows = []
+    for frame_path, x1, y1, x2, y2 in pred_data:
         frame_id = extract_frame_id_from_path(frame_path)
-        pred_frame_ids[frame_id] = frame_path
-
-    # Find common frame IDs
-    common_frame_ids = set(gt_frame_ids.keys()) & set(pred_frame_ids.keys())
-    print(f"Found {len(common_frame_ids)} frames with both GT and predictions.")
-    print(f"GT frames: {len(gt_frame_ids)}, Pred frames: {len(pred_frame_ids)}")
-
-    total_tp, total_fp, total_fn = 0, 0, 0
-
-    for frame_id in common_frame_ids:
-        video_name = gt_frame_ids[frame_id]
-        frame_path = pred_frame_ids[frame_id]
+        video_name = frame_path.split('/')[-2] if '/' in frame_path else 'unknown'
         
-        # Load GT boxes using image_id
-        cursor_gt.execute("""
-            SELECT a.bbox
-            FROM annotations a 
-            JOIN videos v ON a.video_id = v.id 
-            WHERE a.image_id = ? AND a.category_id = 10
-        """, (int(frame_id),))
-        
-        gt_bbox_data = cursor_gt.fetchall()
-        gt_boxes = []
-        
-        # Unpack bbox data
-        for bbox_row in gt_bbox_data:
-            bbox = unpack_bbox(bbox_row[0])
-            if bbox is not None:
-                gt_boxes.append(bbox)
-            else:
-                print(f"Warning: Could not unpack bbox data: {bbox_row[0]} for frame_id {frame_id}")
-
-        # Load Pred boxes using frame_path
-        cursor_pred.execute("""
-            SELECT x1, y1, x2, y2 FROM RetinaFace WHERE frame_path = ?
-        """, (frame_path,))
-        pred_boxes = cursor_pred.fetchall()
-
-        pred_boxes = [tuple(map(int, b)) for b in pred_boxes]
-
-        tp, fp, fn = match_detections(gt_boxes, pred_boxes, iou_threshold)
-        total_tp += tp
-        total_fp += fp
-        total_fn += fn
+        # Only include frames that are multiples of 30 and from specified videos
+        if frame_id.isdigit() and int(frame_id) % 30 == 0 and video_name in VIDEOS_TO_PROCESS:
+            pred_rows.append({
+                'video_name': video_name,
+                'frame_id': int(frame_id),
+                'x1': int(x1),
+                'y1': int(y1),
+                'x2': int(x2),
+                'y2': int(y2)
+            })
+    
+    pred_df = pd.DataFrame(pred_rows)
+    pred_output_path = '/home/nele_pauline_suffo/outputs/face_retinaface/predictions_data.csv'
+    pred_df.to_csv(pred_output_path, index=False)
+    print(f"Predictions data saved to '{pred_output_path}' ({len(pred_rows)} bounding boxes)")
 
     conn_gt.close()
     conn_pred.close()
+    
+    return gt_df, pred_df
 
-    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
-    recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
-    f1 = (2 * precision * recall / (precision + recall)
-          if (precision + recall) > 0 else 0)
+# =========================
+# EVALUATION
+# =========================
+def iou_score(boxA, boxB):
+    """
+    Calculates the Intersection over Union (IoU) of two bounding boxes.
+    The boxes are expected in the format [x1, y1, x2, y2].
+    """
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
 
-    print("=== Evaluation Results ===")
-    print(f"Frames evaluated: {len(common_frames)}")
-    print(f"TP: {total_tp}, FP: {total_fp}, FN: {total_fn}")
-    print(f"Precision@IoU={iou_threshold}: {precision:.4f}")
-    print(f"Recall@IoU={iou_threshold}: {recall:.4f}")
-    print(f"F1-score: {f1:.4f}")
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+
+    iou = interArea / float(boxAArea + boxBArea - interArea)
+
+    return iou
+
+def calculate_metrics(gt_df, pred_df, iou_threshold=0.5):
+    """
+    Calculates confusion matrix components, precision, recall, F1 score,
+    and generates CSV files for false positive and false negative frames.
+    """
+    tp = 0
+    fp = 0
+    fn = 0
+    
+    # Initialize lists to store false positive and false negative frames
+    false_positives_frames = []
+    false_negatives_frames = []
+
+    unique_ids = pd.concat([gt_df[['video_name', 'frame_id']], pred_df[['video_name', 'frame_id']]]).drop_duplicates()
+
+    for _, row in unique_ids.iterrows():
+        video_name = row['video_name']
+        frame_id = row['frame_id']
+
+        gt_boxes = gt_df[(gt_df['video_name'] == video_name) & (gt_df['frame_id'] == frame_id)]
+        pred_boxes = pred_df[(pred_df['video_name'] == video_name) & (pred_df['frame_id'] == frame_id)]
+
+        gt_used = np.zeros(len(gt_boxes), dtype=bool)
+        pred_used = np.zeros(len(pred_boxes), dtype=bool)
+
+        for i, pred_row in pred_boxes.iterrows():
+            best_iou = 0
+            best_gt_idx = -1
+            pred_box = pred_row[['x1', 'y1', 'x2', 'y2']].values
+            
+            for j, gt_row in gt_boxes.iterrows():
+                gt_box = gt_row[['x1', 'y1', 'x2', 'y2']].values
+                current_iou = iou_score(pred_box, gt_box)
+
+                if current_iou > best_iou:
+                    best_iou = current_iou
+                    best_gt_idx = j
+
+            if best_iou >= iou_threshold and not gt_used[gt_boxes.index.get_loc(best_gt_idx)]:
+                tp += 1
+                gt_used[gt_boxes.index.get_loc(best_gt_idx)] = True
+                pred_used[pred_boxes.index.get_loc(i)] = True
+
+        # Append false positive frames
+        if np.sum(~pred_used) > 0:
+            false_positives_frames.append({'video_name': video_name, 'frame_id': frame_id})
+        
+        # Append false negative frames
+        if np.sum(~gt_used) > 0:
+            false_negatives_frames.append({'video_name': video_name, 'frame_id': frame_id})
+        
+        # Update FP and FN counts
+        fp += np.sum(~pred_used)
+        fn += np.sum(~gt_used)
+
+    # Calculate metrics
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+    print("Confusion Matrix:")
+    print(f"True Positives (TP): {tp}")
+    print(f"False Positives (FP): {fp}")
+    print(f"False Negatives (FN): {fn}")
+    print("\nMetrics:")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1 Score: {f1_score:.4f}")
+
+    # Create DataFrames and save to CSV
+    false_positives_df = pd.DataFrame(false_positives_frames).drop_duplicates()
+    false_negatives_df = pd.DataFrame(false_negatives_frames).drop_duplicates()
+
+    false_positives_df.to_csv('/home/nele_pauline_suffo/outputs/face_retinaface/false_positives_frames.csv', index=False)
+    false_negatives_df.to_csv('/home/nele_pauline_suffo/outputs/face_retinaface/false_negatives_frames.csv', index=False)
+
+    print("\nGenerated CSV files:")
+    print(" - false_positives_frames.csv")
+    print(" - false_negatives_frames.csv")
 
 # =========================
 # MAIN
 # =========================
 if __name__ == "__main__":
-    evaluate(GT_DB_PATH, PREDICTIONS_DB_PATH, IOU_THRESHOLD)
+    # First, save data to CSV files for inspection
+    print("Saving ground truth and predictions data to CSV files...")
+    gt_df, pred_df = save_data_to_csv(GT_DB_PATH, PREDICTIONS_DB_PATH)
+    
+    # Then run the evaluation
+    print("\n" + "="*50)
+    print("Starting evaluation...")
+    #calculate_metrics(gt_df, pred_df, iou_threshold=0.5)
