@@ -8,7 +8,7 @@ import pandas as pd
 # =========================
 GT_DB_PATH = "/home/nele_pauline_suffo/ProcessedData/quantex_annotations/annotations.db"
 PREDICTIONS_DB_PATH = "/home/nele_pauline_suffo/outputs/quantex_inference/inference.db"
-IOU_THRESHOLD = 0.5
+IOU_THRESHOLD = 0.1
 
 VIDEOS_TO_PROCESS = ["quantex_at_home_id255237_2022_05_08_01",
                      "quantex_at_home_id255237_2022_05_08_02",
@@ -80,7 +80,7 @@ def save_data_to_csv(db_path_gt, db_path_pred):
         SELECT a.image_id, v.file_name, a.bbox
         FROM annotations a 
         JOIN videos v ON a.video_id = v.id 
-        WHERE a.category_id = 10 AND v.file_name IN ('{video_filter}')
+        WHERE a.category_id = 10 AND v.file_name IN ('{video_filter}') AND a.outside = 0
         ORDER BY v.file_name, a.image_id
     """)
     gt_data = cursor_gt.fetchall()
@@ -161,7 +161,7 @@ def iou_score(boxA, boxB):
 
     return iou
 
-def calculate_metrics(gt_df, pred_df, iou_threshold=0.5):
+def calculate_metrics(gt_df, pred_df, iou_threshold):
     """
     Calculates confusion matrix components, precision, recall, F1 score,
     and generates CSV files for false positive and false negative frames.
@@ -237,9 +237,8 @@ def calculate_metrics(gt_df, pred_df, iou_threshold=0.5):
     false_positives_df.to_csv('/home/nele_pauline_suffo/outputs/face_retinaface/false_positives_frames.csv', index=False)
     false_negatives_df.to_csv('/home/nele_pauline_suffo/outputs/face_retinaface/false_negatives_frames.csv', index=False)
 
-    print("\nGenerated CSV files:")
-    print(" - false_positives_frames.csv")
-    print(" - false_negatives_frames.csv")
+    print(f"Saved false positive frames to {'/home/nele_pauline_suffo/outputs/face_retinaface/false_positives_frames.csv'}")
+    print(f"Saved false negative frames to {'/home/nele_pauline_suffo/outputs/face_retinaface/false_negatives_frames.csv'}")
 
 # =========================
 # MAIN
@@ -252,4 +251,4 @@ if __name__ == "__main__":
     # Then run the evaluation
     print("\n" + "="*50)
     print("Starting evaluation...")
-    #calculate_metrics(gt_df, pred_df, iou_threshold=0.5)
+    calculate_metrics(gt_df, pred_df, IOU_THRESHOLD)
