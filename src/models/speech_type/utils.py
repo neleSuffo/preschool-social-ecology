@@ -747,15 +747,19 @@ def evaluate_model(model, test_generator, mlb, thresholds, output_dir, generate_
         
         # Create expanded labels to include "no speech" class for consistent metrics
         # Add "no speech" as the first column (index 0)
-        expanded_true_labels = np.zeros((len(test_true_labels), len(test_true_labels[0]) + 1), dtype=int)
-        expanded_pred_labels = np.zeros((len(test_pred_binary), len(test_pred_binary[0]) + 1), dtype=int)
+        n_samples = len(test_true_labels)
+        n_speech_classes = len(mlb.classes_)
+        
+        # Create expanded arrays with "no speech" as first class
+        expanded_true_labels = np.zeros((n_samples, n_speech_classes + 1), dtype=int)
+        expanded_pred_labels = np.zeros((n_samples, n_speech_classes + 1), dtype=int)
         
         # Fill in the speech classes (columns 1, 2, 3, ...)
         expanded_true_labels[:, 1:] = test_true_labels
         expanded_pred_labels[:, 1:] = test_pred_binary
         
-        # Fill in the "no speech" class (column 0)
-        for i in range(len(test_true_labels)):
+        # Fill in the "no speech" class (column 0) - mutually exclusive with speech classes
+        for i in range(n_samples):
             # True "no speech" if no other classes are active
             if test_true_labels[i].sum() == 0:
                 expanded_true_labels[i, 0] = 1
@@ -764,10 +768,14 @@ def evaluate_model(model, test_generator, mlb, thresholds, output_dir, generate_
             if test_pred_binary[i].sum() == 0:
                 expanded_pred_labels[i, 0] = 1
         
-        # Calculate metrics on expanded labels (including "no speech")
+        # Define consistent class names for all calculations
         class_names_expanded = ['no speech'] + list(mlb.classes_)
         
-        # Per-class detailed metrics
+        # Verify data consistency
+        print(f"Debug: Expanded labels shape - True: {expanded_true_labels.shape}, Pred: {expanded_pred_labels.shape}")
+        print(f"Debug: Class names: {class_names_expanded}")
+        
+        # Calculate all metrics using the same expanded arrays
         precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
             expanded_true_labels, expanded_pred_labels, average=None, zero_division=0
         )
@@ -786,6 +794,19 @@ def evaluate_model(model, test_generator, mlb, thresholds, output_dir, generate_
         subset_accuracy = accuracy_score(expanded_true_labels, expanded_pred_labels)
         
         # Stage 7: Save comprehensive results to files
+        print("📊 Metrics Summary:")
+        print("=" * 50)
+        for i, class_name in enumerate(class_names_expanded):
+            print(f"{class_name}:")
+            print(f"  Support: {support_per_class[i]}")
+            print(f"  Precision: {precision_per_class[i]:.3f}")
+            print(f"  Recall: {recall_per_class[i]:.3f}")
+            print(f"  F1-Score: {f1_per_class[i]:.3f}")
+        print("=" * 50)
+        print(f"Macro F1: {macro_f1:.3f}")
+        print(f"Micro F1: {micro_f1:.3f}")
+        print(f"Subset Accuracy: {subset_accuracy:.3f}")
+        
         save_evaluation_results(
             output_dir, class_names_expanded, thresholds,
             expanded_true_labels, expanded_pred_labels, test_predictions,
@@ -898,513 +919,3 @@ def save_evaluation_results(output_dir, class_names, thresholds,
             'per_class_thresholds': {str(class_name): float(thresholds.get(str(class_name), 0.5)) for class_name in class_names}
         }
     }
-    
-    # Save structured JSON summary for automated analysis
-    summary_path = output_dir / 'evaluation_summary.json'
-    with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=4, ensure_ascii=False)
-    
-    # Create detailed per-sample results for error analysis
-    class_names_list = list(class_names)
-    
-    # Create expanded predictions array to match class_names (including "no speech")
-    expanded_predictions = np.zeros((len(test_predictions), len(class_names_list)), dtype=float)
-    # Fill speech class predictions (skip index 0 which is "no speech")  
-    expanded_predictions[:, 1:] = test_predictions
-    # For "no speech" probability, use 1 - max(other_probs) as a simple heuristic
-    expanded_predictions[:, 0] = 1 - np.max(test_predictions, axis=1)
-    
-    # Probability predictions (raw model outputs + derived "no speech" prob)
-    predictions_df = pd.DataFrame(
-        expanded_predictions, 
-        columns=[f'{name}_prob' for name in class_names_list]
-    )
-    
-    # Binary predictions (after threshold application) - already expanded in evaluate_model
-    predictions_binary_df = pd.DataFrame(
-        expanded_pred_labels, 
-        columns=[f'{name}_pred' for name in class_names_list]
-    )
-    
-    # True labels (ground truth) - already expanded in evaluate_model
-    true_labels_df = pd.DataFrame(
-        expanded_true_labels, 
-        columns=[f'{name}_true' for name in class_names_list]
-    )
-    
-    # Combine all information for comprehensive per-sample analysis
-    detailed_results = pd.concat([
-        predictions_df, 
-        predictions_binary_df, 
-        true_labels_df
-    ], axis=1)
-    
-    # Add derived columns for quick analysis
-    if evaluation_level == "second" and metadata:
-        detailed_results['sample_id'] = [meta.get('second', i) for i, meta in enumerate(metadata)]
-        detailed_results['sample_type'] = 'second'
-    else:
-        detailed_results['sample_id'] = range(len(detailed_results))
-        detailed_results['sample_type'] = evaluation_level
-        
-    detailed_results['num_true_labels'] = expanded_true_labels.sum(axis=1)
-    detailed_results['num_pred_labels'] = expanded_pred_labels.sum(axis=1)
-    detailed_results['exact_match'] = (expanded_true_labels == expanded_pred_labels).all(axis=1).astype(int)
-    
-    # Save detailed predictions for manual inspection and error analysis
-    predictions_path = output_dir / f'detailed_predictions_{evaluation_level}_level.csv'
-    detailed_results.to_csv(predictions_path, index=False, float_format='%.4f')
-    
-    # Generate confusion matrices if requested
-    if generate_confusion_matrices:
-        print("📊 Generating multi-class confusion matrix...")
-        
-        confusion_matrices_dir = output_dir / 'confusion_matrices'
-        confusion_matrices_dir.mkdir(exist_ok=True)
-        
-        # Define class order for confusion matrix
-        class_names_list = list(class_names)
-        
-        # Only add "no speech" if it's not already in the class names
-        if 'no speech' in class_names_list:
-            matrix_classes = class_names_list  # Use as-is if "no speech" already exists
-        else:
-            matrix_classes = ['no speech'] + class_names_list  # Add "no speech" as first class
-        
-        # Create confusion matrix by counting frame occurrences for each label
-        # Each frame can contribute multiple times if it has multiple labels
-        cm = np.zeros((len(matrix_classes), len(matrix_classes)), dtype=int)
-        
-        for i in range(len(test_true_labels)):
-            true_labels = test_true_labels[i]
-            pred_labels = test_pred_binary[i]
-            
-            # Handle frames with no ground truth labels first (true "no speech" frames)
-            if true_labels.sum() == 0:
-                # Find the "no speech" index in matrix_classes
-                no_speech_true_idx = matrix_classes.index('no speech')
-                
-                # Check what was predicted for this "no speech" frame
-                if pred_labels.sum() == 0:
-                    # Correctly predicted no speech
-                    no_speech_pred_idx = matrix_classes.index('no speech')
-                    cm[no_speech_true_idx, no_speech_pred_idx] += 1
-                else:
-                    # Incorrectly predicted some speech class for a silent frame
-                    for pred_idx, pred_val in enumerate(pred_labels):
-                        if pred_val == 1:
-                            # Map from expanded array index to original class name
-                            if 'no speech' in class_names_list:
-                                # If "no speech" was already in class_names, use direct mapping
-                                pred_class_name = class_names_list[pred_idx]
-                            else:
-                                # If we added "no speech", skip index 0 for speech classes
-                                if pred_idx > 0:  # Skip the "no speech" prediction column
-                                    pred_class_name = class_names_list[pred_idx - 1]
-                                else:
-                                    continue  # Skip "no speech" predictions in this case
-                            pred_matrix_idx = matrix_classes.index(pred_class_name)
-                            cm[no_speech_true_idx, pred_matrix_idx] += 1
-            else:
-                # Handle frames with ground truth labels
-                for true_idx, true_val in enumerate(true_labels):
-                    if true_val == 1:  # This class is present in ground truth
-                        # Map from expanded array index to original class name
-                        if 'no speech' in class_names_list:
-                            # If "no speech" was already in class_names, use direct mapping
-                            true_class_name = class_names_list[true_idx]
-                        else:
-                            # If we added "no speech", skip index 0 for speech classes
-                            if true_idx > 0:  # Skip the "no speech" true column
-                                true_class_name = class_names_list[true_idx - 1]
-                            else:
-                                continue  # Skip "no speech" true labels in this case
-                                
-                        true_matrix_idx = matrix_classes.index(true_class_name)
-                        
-                        # Check what was predicted for this frame
-                        if pred_labels.sum() == 0:
-                            # Nothing was predicted, count as "no speech" prediction
-                            no_speech_idx = matrix_classes.index('no speech')
-                            cm[true_matrix_idx, no_speech_idx] += 1
-                        else:
-                            # Something was predicted
-                            for pred_idx, pred_val in enumerate(pred_labels):
-                                if pred_val == 1:  # This class was predicted
-                                    # Map from expanded array index to original class name
-                                    if 'no speech' in class_names_list:
-                                        # If "no speech" was already in class_names, use direct mapping
-                                        pred_class_name = class_names_list[pred_idx]
-                                    else:
-                                        # If we added "no speech", skip index 0 for speech classes
-                                        if pred_idx > 0:  # Skip the "no speech" prediction column
-                                            pred_class_name = class_names_list[pred_idx - 1]
-                                        else:
-                                            pred_class_name = 'no speech'
-                                    pred_matrix_idx = matrix_classes.index(pred_class_name)
-                                    cm[true_matrix_idx, pred_matrix_idx] += 1
-        
-        # Calculate percentages row-wise (based on ground truth counts for each class)
-        cm_percent = np.zeros_like(cm, dtype=float)
-        for i in range(cm.shape[0]):
-            row_sum = cm[i].sum()  # Total ground truth frames for this class
-            if row_sum > 0:
-                cm_percent[i] = (cm[i] / row_sum) * 100
-            else:
-                cm_percent[i] = 0.0
-        
-        # Create DataFrame for counts
-        cm_counts_df = pd.DataFrame(cm, index=matrix_classes, columns=matrix_classes)
-        cm_counts_df.index.name = 'Ground Truth'
-        cm_counts_df.columns.name = 'Predicted'
-        
-        # Create DataFrame for percentages
-        cm_percent_df = pd.DataFrame(cm_percent, index=matrix_classes, columns=matrix_classes)
-        cm_percent_df.index.name = 'Ground Truth'
-        cm_percent_df.columns.name = 'Predicted'
-        
-        # Save confusion matrices to CSV
-        counts_path = confusion_matrices_dir / f'confusion_matrix_counts_{evaluation_level}_level.csv'
-        percent_path = confusion_matrices_dir / f'confusion_matrix_percentages_{evaluation_level}_level.csv'
-        
-        cm_counts_df.to_csv(counts_path)
-        cm_percent_df.to_csv(percent_path, float_format='%.2f')
-        
-        # Create and save individual visualizations
-        tick_marks = np.arange(len(matrix_classes))
-        
-        # Create counts visualization
-        plt.figure(figsize=(8, 6))
-        plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-        plt.title('Confusion Matrix - Counts', fontsize=14, fontweight='bold')
-        plt.colorbar()
-        plt.xticks(tick_marks, matrix_classes, rotation=45, ha='right')
-        plt.yticks(tick_marks, matrix_classes)
-        plt.ylabel('Ground Truth', fontsize=12)
-        plt.xlabel('Predicted', fontsize=12)
-        
-        # Add text annotations for counts
-        for i_cm, j_cm in np.ndindex(cm.shape):
-            plt.text(j_cm, i_cm, f'{cm[i_cm, j_cm]}',
-                    ha="center", va="center", fontsize=10,
-                    color="white" if cm[i_cm, j_cm] > cm.max() / 2 else "black")
-        
-        plt.tight_layout()
-        counts_viz_path = confusion_matrices_dir / f'confusion_matrix_counts_{evaluation_level}_level.png'
-        plt.savefig(counts_viz_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        # Create percentages visualization
-        plt.figure(figsize=(8, 6))
-        plt.imshow(cm_percent, interpolation='nearest', cmap=plt.cm.Blues)
-        plt.title('Confusion Matrix - Percentages', fontsize=14, fontweight='bold')
-        plt.colorbar()
-        plt.xticks(tick_marks, matrix_classes, rotation=45, ha='right')
-        plt.yticks(tick_marks, matrix_classes)
-        plt.ylabel('Ground Truth', fontsize=12)
-        plt.xlabel('Predicted', fontsize=12)
-        
-        # Add text annotations for percentages
-        for i_cm, j_cm in np.ndindex(cm_percent.shape):
-            plt.text(j_cm, i_cm, f'{cm_percent[i_cm, j_cm]:.1f}%',
-                    ha="center", va="center", fontsize=10,
-                    color="white" if cm_percent[i_cm, j_cm] > cm_percent.max() / 2 else "black")
-        
-        plt.tight_layout()
-        percent_viz_path = confusion_matrices_dir / f'confusion_matrix_percentages_{evaluation_level}_level.png'
-        plt.savefig(percent_viz_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"  📊 Confusion matrix: {confusion_matrices_dir}")
-    
-    print(f"✅ Results saved:")
-    print(f"  📊 Summary: {summary_path}")
-    print(f"  📋 Detailed: {predictions_path}")
-    print(f"  🎯 Evaluation level: {evaluation_level}")
-
-def evaluate_model_both_levels(model, test_generator, mlb, thresholds, output_dir, generate_confusion_matrices=False):
-    """
-    Evaluate model at both window-level and second-level for comparison.
-    
-    This function runs the evaluation twice:
-    1. At the original window level (no aggregation)
-    2. At the second level (with sliding window aggregation)
-    
-    This allows for direct comparison of how aggregation affects performance metrics.
-    
-    Parameters:
-    ----------
-    model: Trained classification model
-    test_generator: Test data generator  
-    mlb: MultiLabelBinarizer
-    thresholds: Optimized decision thresholds
-    output_dir: Base output directory
-    generate_confusion_matrices: Whether to generate confusion matrices
-    """
-    base_output_dir = Path(output_dir)
-    
-    print("🔍 Running evaluation at both window and second levels...")
-    print("=" * 70)
-    
-    # Evaluate at window level
-    print("\n📊 WINDOW-LEVEL EVALUATION")
-    print("=" * 40)
-    window_output_dir = base_output_dir / 'window_level'
-    evaluate_model(
-        model=model,
-        test_generator=test_generator,
-        mlb=mlb, 
-        thresholds=thresholds,
-        output_dir=window_output_dir,
-        generate_confusion_matrices=generate_confusion_matrices,
-        aggregate_to_seconds=False
-    )
-    
-    # Evaluate at second level  
-    print("\n📊 SECOND-LEVEL EVALUATION")
-    print("=" * 40)
-    second_output_dir = base_output_dir / 'second_level'
-    evaluate_model(
-        model=model,
-        test_generator=test_generator,
-        mlb=mlb,
-        thresholds=thresholds, 
-        output_dir=second_output_dir,
-        generate_confusion_matrices=generate_confusion_matrices,
-        aggregate_to_seconds=True
-    )
-    
-    print("\n✅ EVALUATION COMPARISON COMPLETE")
-    print("=" * 70)
-    print(f"📁 Window-level results: {window_output_dir}")
-    print(f"📁 Second-level results: {second_output_dir}")
-    print("\n💡 Compare the evaluation_summary.json files to see the difference in metrics!")
-
-# ---- Inference Functions ----
-def classify_audio_windows(audio_path, model, mlb, batch_size=32):
-    """
-    Classifies audio windows using the trained model.
-
-    Parameters
-    ----------
-    audio_path : Path
-        Path to the audio file to be classified.
-    model : tf.keras.Model
-        The trained audio classification model.
-    mlb : sklearn.preprocessing.MultiLabelBinarizer
-        MultiLabelBinarizer fitted on the training data.
-    batch_size : int, optional
-        Batch size for prediction, by default 32
-
-    Returns
-    -------
-    results : list of dict
-        List of dictionaries containing start_time, end_time, and probabilities for each window.
-    class_names : list
-        List of class names corresponding to the model outputs.
-    audio_duration : float
-        Duration of the audio file in seconds.
-    """    
-    y_audio, sr_audio = librosa.load(audio_path, sr=AudioConfig.SR)
-    audio_duration = librosa.get_duration(y=y_audio, sr=sr_audio)
-    all_window_data = []
-    current_time = 0.0
-    while current_time < audio_duration:
-        window_start = current_time
-        window_end = min(current_time + AudioConfig.WINDOW_DURATION, audio_duration)
-        if (window_end - window_start) > 0.01:
-            mel = extract_features(
-                audio_path, window_start, AudioConfig.WINDOW_DURATION, 
-                sr=AudioConfig.SR, n_mels=min(AudioConfig.N_MELS, 128), hop_length=AudioConfig.HOP_LENGTH
-            )
-            all_window_data.append({
-                'start_time': window_start,
-                'end_time': window_end,
-                'mel_spec': mel
-            })
-        current_time += AudioConfig.WINDOW_STEP
-    if not all_window_data:
-        print("No valid windows extracted for classification.")
-        return [], [], []
-    mel_specs_batch = np.array([d['mel_spec'] for d in all_window_data])
-    mel_specs_batch = np.expand_dims(mel_specs_batch, -1)
-    predictions = model.predict(mel_specs_batch, batch_size=batch_size)
-    results = []
-    for i, data_point in enumerate(all_window_data):
-        results.append({
-            'start_time': data_point['start_time'],
-            'end_time': data_point['end_time'],
-            'probabilities': predictions[i]
-        })
-    return results, mlb.classes_, audio_duration
-
-def aggregate_and_save_results(audio_file, predictions, class_names, output_writer, thresholds):
-    """
-    Aggregates overlapping window predictions and writes the final results to a CSV file.
-    For each second of audio, averages the probabilities from all overlapping windows
-    and assigns binary labels based on the class-specific optimized thresholds.
-    
-    Parameters
-    ----------
-    audio_file : str
-        Path to the audio file being processed.
-    predictions : list of dict
-        List of dictionaries containing start_time, end_time, and probabilities for each window.
-    class_names : list
-        List of class names corresponding to the model outputs.
-    output_writer : csv.DictWriter
-        CSV writer object to write the results.
-    thresholds : dict
-        Dictionary mapping class names to optimal thresholds
-    """    
-    video_id = Path(audio_file).stem
-    
-    # Organize predictions by second
-    second_predictions = {}
-    for p in predictions:
-        start_second = int(np.floor(p['start_time']))
-        end_second = int(np.ceil(p['end_time']))
-        
-        for second in range(start_second, end_second):
-            if second not in second_predictions:
-                second_predictions[second] = {'probabilities': [], 'count': 0}
-            second_predictions[second]['probabilities'].append(p['probabilities'])
-            second_predictions[second]['count'] += 1
-
-    # Aggregate and write results using class-specific thresholds
-    for second in sorted(second_predictions.keys()):
-        avg_probs = np.mean(second_predictions[second]['probabilities'], axis=0)
-        
-        # Apply class-specific thresholds
-        binary_labels = []
-        for i, class_name in enumerate(class_names):
-            threshold = thresholds[str(class_name)]
-            binary_labels.append(1 if avg_probs[i] > threshold else 0)
-        
-        row = {'video_id': video_id, 'second': second}
-        for i, class_name in enumerate(class_names):
-            row[class_name] = binary_labels[i]
-        
-        output_writer.writerow(row)
-
-def process_audio_folder(folder_path, model, mlb, thresholds):
-    """
-    Process a folder of audio files and save classification results using optimized thresholds.
-
-    Parameters
-    ----------
-    folder_path : str
-        Path to the folder containing audio files.
-    model : tf.keras.Model
-        The trained audio classification model.
-    mlb : sklearn.preprocessing.MultiLabelBinarizer
-        MultiLabelBinarizer fitted on the training data.
-    thresholds : dict
-        Dictionary mapping class names to optimal thresholds
-    """    
-    output_file = AudioClassification.OUTPUT_DIR / 'classification_results.csv'
-    
-    audio_files = list(folder_path.glob('*.wav'))
-    if not audio_files:
-        print(f"⚠️ No WAV audio files found in {folder_path}")
-        return
-    
-    print(f"✅ Found {len(audio_files)} audio files to process.")
-    
-    # Prepare CSV file
-    class_names = mlb.classes_
-    fieldnames = ['video_id', 'second'] + list(class_names)
-    
-    with open(output_file, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        
-        for i, audio_file in enumerate(audio_files):
-            print("\n" + "="*50)
-            print(f"Processing file {i+1}/{len(audio_files)}: {audio_file.name}")
-            print("="*50)
-            
-            try:
-                prediction_results, _, _ = classify_audio_windows(str(audio_file), model, mlb)
-                
-                if prediction_results:
-                    aggregate_and_save_results(str(audio_file), prediction_results, class_names, writer, thresholds)
-                else:
-                    print(f"No prediction results for {audio_file.name}")
-            except Exception as e:
-                print(f"❌ An error occurred while processing {audio_file.name}: {e}")
-
-    print(f"\n✅ All processing complete. Results saved to {output_file}")
-
-def load_model(model_path: Path = AudioClassification.TRAINED_WEIGHTS_PATH):
-    """
-    Load trained model for inference by building the architecture and loading weights.
-    
-    Parameters:
-    ----------
-    model_path (Path): 
-        Path to the saved model weights file (.keras)
-        
-    Returns:
-    -------
-    tuple: (model, mlb) where:
-        - model: Loaded Keras model ready for inference
-        - mlb: Fitted MultiLabelBinarizer for decoding predictions
-    """
-    if not model_path.exists():
-        print(f"❌ Model file not found: {model_path}")
-        print("💡 Please train the model first using train_audio_classifier.py")
-        return None, None
-        
-    # Setup multi-label binarizer consistent with training
-    mlb = MultiLabelBinarizer(classes=AudioConfig.VALID_RTTM_CLASSES)
-    mlb.fit([[]])  # Initialize with empty list to set up classes
-    num_classes = len(mlb.classes_)
-
-    # Use centralized calculation for consistent time steps across all components
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-
-    try:
-        # Build the model architecture first
-        model = build_model_multi_label(
-            n_mels=AudioConfig.N_MELS,
-            fixed_time_steps=fixed_time_steps,
-            num_classes=num_classes
-        )
-        
-        # Load only the weights from the saved .keras file
-        model.load_weights(model_path)
-    
-    except Exception as e:
-        print(f"❌ Failed to load model: {e}")
-        return None, None
-    
-    return model, mlb
-
-# ---- GPU Configuration ----
-def setup_gpu_config():
-    """
-    Configure GPU settings with proper error handling.
-    """
-    try:
-        # Check for GPU devices
-        physical_devices = tf.config.list_physical_devices('GPU')
-        
-        if not physical_devices:
-            print("⚠️ No GPU devices found")
-            return False
-        
-        # Configure GPU memory growth
-        for device in physical_devices:
-            tf.config.experimental.set_memory_growth(device, True)
-        
-        # Test GPU functionality
-        with tf.device('/GPU:0'):
-            test_tensor = tf.constant([1.0, 2.0, 3.0])
-            test_result = tf.reduce_sum(test_tensor)
-        
-        return True
-        
-    except Exception as e:
-        print(f"⚠️ GPU configuration failed: {e}")
-        return False
