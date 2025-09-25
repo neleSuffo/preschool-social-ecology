@@ -501,10 +501,7 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
         return None
     
     df['child_id'] = df['filename'].apply(get_child_id_from_filename)
-    
-    # Debug: Check child_id extraction
-    logging.info(f"Child IDs found: {df['child_id'].unique()}")
-    
+        
     df.dropna(subset=['child_id'], inplace=True)
 
     # --- Counts per child (including face coverage) ---
@@ -707,9 +704,16 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
                 additional_val_df = pd.DataFrame(additional_val_entries)
                 val_df = pd.concat([val_df, additional_val_df], ignore_index=True)
 
-    # For test set: Add ALL frames from test child videos (not just annotated ones)
+    # For test set: Add ALL frames from videos that have annotations for test children
     # But EXCLUDE the first N minutes if they were added to train/val
-    additional_test_frames = get_all_frames_for_children(test_ids, FaceDetection.IMAGES_INPUT_DIR)
+    
+    # First, get the list of videos that have annotations for test children
+    test_videos_with_annotations = set()
+    for filename in df[df['child_id'].isin(test_ids) & (df['has_annotation'] == True)]['filename']:
+        # Extract video name from filename (remove frame number)
+        # Example: quantex_at_home_id255237_2022_05_08_04_000240 -> quantex_at_home_id255237_2022_05_08_04
+        video_name = "_".join(filename.split("_")[:-1])
+        test_videos_with_annotations.add(video_name)
     
     # Create set of first-minutes frame names to exclude from test set
     first_minutes_frame_names = set()
@@ -717,29 +721,57 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
         for image_path, _ in first_minutes_train_frames + first_minutes_val_frames:
             first_minutes_frame_names.add(Path(image_path).stem)
     
-    # Add these additional frames to test_df (excluding first minutes if applicable)
-    if additional_test_frames:
-        additional_entries = []
-        for image_path, image_id in additional_test_frames:
-            image_file = Path(image_path)
-            # Skip if this frame is already in our DataFrame or is part of first minutes
-            if (image_file.stem not in test_df['filename'].values and 
-                image_file.stem not in first_minutes_frame_names):
-                # Create entry for this additional frame
-                entry = {
-                    "filename": image_file.stem,
-                    "id": image_id,
-                    "has_annotation": False,  # These are additional frames without annotations
-                    "child_id": get_child_id_from_filename(image_file.stem)
-                }
-                # Add zero values for all class columns (no annotations)
-                for class_name in class_columns:
-                    entry[class_name] = 0
-                additional_entries.append(entry)
-        
-        if additional_entries:
-            additional_df = pd.DataFrame(additional_entries)
-            test_df = pd.concat([test_df, additional_df], ignore_index=True)
+    # Add ALL frames from videos that have annotations (not just annotated frames)
+    additional_entries = []
+    for video_name in test_videos_with_annotations:
+        video_path = FaceDetection.IMAGES_INPUT_DIR / video_name
+        if video_path.exists() and video_path.is_dir():
+            for frame in video_path.iterdir():
+                if frame.is_file() and frame.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                    # Extract image ID
+                    parts = frame.name.split("_")
+                    if len(parts) > 3 and parts[3].startswith('id'):
+                        image_id = parts[3].replace("id", "")
+                    else:
+                        image_id = frame.stem
+                    
+                    # Skip if this frame is already in our DataFrame or is part of first minutes
+                    if (frame.stem not in test_df['filename'].values and 
+                        frame.stem not in first_minutes_frame_names):
+                        
+                        # Check if this frame has annotations
+                        annotation_file = labels_input_dir / f"{frame.stem}.txt"
+                        has_annotation = annotation_file.exists() and annotation_file.stat().st_size > 0
+                        
+                        entry = {
+                            "filename": frame.stem,
+                            "id": image_id,
+                            "has_annotation": has_annotation,
+                            "child_id": get_child_id_from_filename(frame.stem)
+                        }
+                        
+                        # Get annotation labels if they exist
+                        labels = []
+                        if has_annotation:
+                            try:
+                                with open(annotation_file, 'r') as f:
+                                    content = f.read().strip()
+                                    if content:
+                                        lines = content.split('\n')
+                                        class_ids = {int(line.split()[0]) for line in lines if line.strip()}
+                                        labels = [FaceConfig.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceConfig.MODEL_CLASS_ID_TO_LABEL]
+                            except Exception as e:
+                                logging.warning(f"Error reading annotation file {annotation_file}: {e}")
+                        
+                        # Add class labels
+                        for class_name in class_columns:
+                            entry[class_name] = 1 if class_name in labels else 0
+                        
+                        additional_entries.append(entry)
+    
+    if additional_entries:
+        additional_df = pd.DataFrame(additional_entries)
+        test_df = pd.concat([test_df, additional_df], ignore_index=True)
 
     # Log final split information
     for split_name, split_df in zip(["Train", "Val", "Test"], [train_df, val_df, test_df]):
