@@ -1,43 +1,28 @@
 """
 Evaluation script for CNN-RNN person classification model on test set.
-Based on the improved training script architecture with utility functions moved to utils.py.
 """
 import json
 import torch
-import torch.nn as nn
 import pandas as pd
 from tqdm import tqdm
-from sklearn.metrics import precision_recall_fscore_support
-
 from config import PersonConfig
-from utils import (
-    load_model, 
-    setup_evaluation, 
-    calculate_metrics, 
-    sequence_features_from_cnn,
-    plot_confusion_matrices,
-    plot_metrics_comparison
-)
+from constants import PersonClassification
+from utils import setup_environment, setup_data_loaders, load_model, calculate_metrics, plot_confusion_matrices, plot_metrics_comparison
+
+def sequence_features_from_cnn(cnn, images_padded, lengths, device):
+    """
+    Extracts features from padded image sequences using the CNN encoder.
+    """
+    bs, max_seq, C, H, W = images_padded.shape
+    images_flat = images_padded.view(bs * max_seq, C, H, W).to(device)
+    feats_flat = cnn(images_flat)
+    feat_dim = feats_flat.shape[-1]
+    feats = feats_flat.view(bs, max_seq, feat_dim)
+    return feats
+
 
 def evaluate_model(models, dataloader, device, output_dir):
-    """Evaluate the model on test data and generate comprehensive results.
-    
-    Parameters
-    ----------
-    models : Tuple[nn.Module, nn.Module]
-        Tuple containing (CNN encoder, RNN classifier) models.
-    dataloader : DataLoader
-        Test data loader.
-    device : torch.device
-        Device to run evaluation on.
-    output_dir : Path
-        Directory to save results.
-        
-    Returns
-    -------
-    Dict[str, float]
-        Dictionary containing all evaluation metrics.
-    """
+    """Evaluate the model on test data and generate comprehensive results."""
     cnn, rnn = models
     cnn.eval()
     rnn.eval()
@@ -57,20 +42,16 @@ def evaluate_model(models, dataloader, device, output_dir):
             lengths = lengths.to(device)
             mask = (labels_padded != -100)
             
-            # Forward pass
             feats = sequence_features_from_cnn(cnn, images_padded, lengths, device)
             logits = rnn(feats, lengths)
             
-            # Get predictions and probabilities
             probs = torch.sigmoid(logits)
             preds = (probs > 0.5).float()
             
-            # Collect results per video (minimal processing)
             for i, video_id in enumerate(video_ids):
                 seq_len = lengths[i].item()
                 video_labels = labels_padded[i, :seq_len].cpu().numpy()
                 
-                # Store basic video information only
                 video_results.append({
                     'video_id': video_id,
                     'num_frames': seq_len,
@@ -79,9 +60,8 @@ def evaluate_model(models, dataloader, device, output_dir):
                     'no_face_frames': seq_len - int(video_labels[:, 0].sum()) - int(video_labels[:, 1].sum())
                 })
             
-            # Only keep valid predictions (not masked) - optimized
             valid_mask = mask.view(-1, 2)[:, 0]
-            if valid_mask.sum() > 0:  # Only process if there are valid samples
+            if valid_mask.sum() > 0:
                 valid_preds = preds.view(-1, 2)[valid_mask]
                 valid_labels = labels_padded.view(-1, 2)[valid_mask]
                 valid_probs = probs.view(-1, 2)[valid_mask]
@@ -89,63 +69,36 @@ def evaluate_model(models, dataloader, device, output_dir):
                 all_preds.append(valid_preds.cpu())
                 all_labels.append(valid_labels.cpu())
                 all_probs.append(valid_probs.cpu())
-            
-            # Update progress bar less frequently for better performance
-            if len(all_preds) % 10 == 0:  # Update every 10 batches
-                progress_bar.set_postfix({
-                    'batches_processed': len(all_preds)
-                })
     
-    # Concatenate all results
     all_preds = torch.cat(all_preds, dim=0).numpy()
     all_labels = torch.cat(all_labels, dim=0).numpy()
     all_probs = torch.cat(all_probs, dim=0).numpy()
     
-    # avg_loss = total_loss / len(dataloader.dataset)
-    
-    # Calculate comprehensive metrics
     metrics = calculate_metrics(all_labels, all_preds)
-    # metrics['test_loss'] = avg_loss
     
-    # Add additional metrics
     metrics['total_samples'] = len(all_labels)
     metrics['adult_samples'] = int(all_labels[:, 1].sum())
     metrics['child_samples'] = int(all_labels[:, 0].sum())
     metrics['adult_prevalence'] = float(all_labels[:, 1].mean())
     metrics['child_prevalence'] = float(all_labels[:, 0].mean())
     
-    # Save detailed results
     print(f"\nSaving results to {output_dir}")
     
-    # Save frame-level predictions
     frame_results = pd.DataFrame({
-        'child_true': all_labels[:, 0],
-        'adult_true': all_labels[:, 1],
-        'child_pred': all_preds[:, 0],
-        'adult_pred': all_preds[:, 1],
-        'child_prob': all_probs[:, 0],
-        'adult_prob': all_probs[:, 1]
+        'child_true': all_labels[:, 0], 'adult_true': all_labels[:, 1],
+        'child_pred': all_preds[:, 0], 'adult_pred': all_preds[:, 1],
+        'child_prob': all_probs[:, 0], 'adult_prob': all_probs[:, 1]
     })
     frame_results.to_csv(output_dir / 'frame_level_results.csv', index=False)
 
-    # Generate plots
     plot_confusion_matrices(all_labels, all_preds, PersonConfig.TARGET_LABELS, output_dir)
     plot_metrics_comparison(metrics, output_dir)
     
-    # Save essential metrics only
     summary_stats = {
         'performance_metrics': {
-            # Per-class metrics
-            'child_precision': metrics['child_precision'],
-            'child_recall': metrics['child_recall'], 
-            'child_f1': metrics['child_f1'],
-            'adult_precision': metrics['adult_precision'],
-            'adult_recall': metrics['adult_recall'],
-            'adult_f1': metrics['adult_f1'],
-            # Overall metrics
-            'macro_precision': metrics['macro_precision'],
-            'macro_recall': metrics['macro_recall'],
-            'macro_f1': metrics['macro_f1']
+            'child_precision': metrics['child_precision'], 'child_recall': metrics['child_recall'], 'child_f1': metrics['child_f1'],
+            'adult_precision': metrics['adult_precision'], 'adult_recall': metrics['adult_recall'], 'adult_f1': metrics['adult_f1'],
+            'macro_precision': metrics['macro_precision'], 'macro_recall': metrics['macro_recall'], 'macro_f1': metrics['macro_f1']
         },
         'dataset_stats': {
             'total_videos': len(video_results),
@@ -162,18 +115,25 @@ def evaluate_model(models, dataloader, device, output_dir):
     return metrics
 
 def main():
-    """Main evaluation function."""
-    # Setup evaluation components
-    device, test_loader, test_ds, eval_dir = setup_evaluation()
+    _, device, _ = setup_environment(is_training=False)
+    test_loader, test_ds = setup_data_loaders(
+        PersonClassification.TEST_CSV_PATH, 
+        PersonConfig.BATCH_SIZE_INFERENCE, 
+        is_training=False,
+        log_dir=PersonClassification.TRAINED_WEIGHTS_PATH.parent
+    )
     
-    # Load model
     cnn, rnn_model = load_model(device)
     
-    # Run evaluation
-    metrics = evaluate_model((cnn, rnn_model), test_loader, device, eval_dir)
+    eval_dir = PersonClassification.TRAINED_WEIGHTS_PATH.parent / f"{PersonConfig.MODEL_NAME}_evaluation_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    eval_dir.mkdir(parents=True, exist_ok=True)
     
-    # Print and log results
-    test_ds.log_skipped_files()
+    evaluate_model((cnn, rnn_model), test_loader, device, eval_dir)
+    
+    try:
+        test_ds.log_skipped_files()
+    except Exception as e:
+        print(f"Warning: could not log skipped files: {e}")
     
     print(f"\nEvaluation complete! Results saved to: {eval_dir}")
 
