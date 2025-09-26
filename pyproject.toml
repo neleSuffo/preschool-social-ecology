@@ -68,6 +68,7 @@ nvidia-cudnn-cu11 = "8.6.0.163"
 natsort = "^8.4.0"
 librosa = "^0.11.0"
 retina-face = "^0.0.17"
+deepface = "^0.0.95"
 
 
 [tool.poetry.group.dev.dependencies]
