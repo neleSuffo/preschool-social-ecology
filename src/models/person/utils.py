@@ -17,7 +17,7 @@ from tqdm import tqdm
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
 from config import PersonConfig
 from constants import PersonClassification
-from .person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
+from person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -176,7 +176,7 @@ def setup_training_environment():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = PersonClassification.OUTPUT_DIR / f"{PersonConfig.MODEL_NAME}_{timestamp}"
     # ensure out_dir exists
-    mkdir(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     
     save_script_and_hparams(out_dir)
 
@@ -191,7 +191,7 @@ def setup_training_environment():
 # Data Loaders
 # ---------------------------
 def setup_data_loaders(out_dir):
-    """Setup train and validation data loaders.
+    """Setup data loaders.
     
     Parameters:
     -----------
@@ -204,10 +204,14 @@ def setup_data_loaders(out_dir):
         DataLoader for training dataset.
     val_loader: DataLoader
         DataLoader for validation dataset.
+    test_loader: DataLoader
+        DataLoader for test dataset.
     train_ds: VideoFrameDataset
         Training dataset instance.
     val_ds: VideoFrameDataset
         Validation dataset instance.
+    test_ds: VideoFrameDataset
+        Test dataset instance.
     """
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -218,13 +222,16 @@ def setup_data_loaders(out_dir):
 
     train_ds = VideoFrameDataset(PersonClassification.TRAIN_CSV_PATH, transform=transform, log_dir=out_dir)
     val_ds = VideoFrameDataset(PersonClassification.VAL_CSV_PATH, transform=transform, log_dir=out_dir)
+    test_ds = VideoFrameDataset(PersonClassification.TEST_CSV_PATH, transform=transform, log_dir=out_dir)
 
     train_loader = DataLoader(train_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=True, num_workers=4,
-                              collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                              pin_memory=True, persistent_workers=True)
     val_loader = DataLoader(val_ds, batch_size=PersonConfig.BATCH_SIZE, shuffle=False, num_workers=4,
-                            collate_fn=collate_fn, pin_memory=True, persistent_workers=True, prefetch_factor=4)
+                            pin_memory=True, persistent_workers=True)
+    test_loader = DataLoader(test_ds, batch_size=PersonConfig.BATCH_SIZE_INFERENCE, shuffle=False, num_workers=4,
+                             pin_memory=True, persistent_workers=True)
 
-    return train_loader, val_loader, train_ds, val_ds
+    return train_loader, val_loader, test_loader, train_ds, val_ds, test_ds
 
 
 # ---------------------------
