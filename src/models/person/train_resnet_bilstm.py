@@ -415,7 +415,7 @@ def main():
 
     out_dir, device, scaler = setup_training_environment()
 
-    train_loader, val_loader, train_ds, val_ds = setup_data_loaders(out_dir)
+    train_loader, val_loader, _, train_ds, val_ds, _ = setup_data_loaders(out_dir)
 
     cnn, rnn_model, opt_cnn, opt_rnn, criterion = setup_models_and_optimizers(device)
 
