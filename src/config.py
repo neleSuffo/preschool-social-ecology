@@ -110,7 +110,7 @@ class PersonConfig:
     RNN_LAYERS = 2
     BIDIRECTIONAL = True
     NUM_OUTPUTS = 2
-    BACKBONE = 'resnet18'
+    BACKBONE = 'efficientnet_b0'
     CONFIDENCE_THRESHOLD = 0.5
     BATCH_SIZE_INFERENCE = 64
     WINDOW_SIZE = 6 # frames (6 extracted frames = 60 original frames = 2 seconds)
