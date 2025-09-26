@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+from pathlib import Path
 from PIL import Image
 import torch
 import torch.nn as nn
@@ -72,7 +73,7 @@ class FrameRNNClassifier(nn.Module):
         return logits
 
 class CNNEncoder(nn.Module):
-    """CNN feature extractor using pretrained ResNet backbone.
+    """CNN feature extractor using pretrained ResNet backbone
     
     Extracts feature vectors from individual frames using a pretrained ResNet model.
     The final fully connected layer is removed to get feature representations.
@@ -142,7 +143,7 @@ class CNNEncoder(nn.Module):
 class VideoFrameDataset(Dataset):
     def __init__(self, csv_file, sequence_length=PersonConfig.SEQUENCE_LENGTH, transform=None, log_dir=None):
         self.data = pd.read_csv(csv_file)
-        self.sequence_length = sequence_length # number of frames per sequence
+        self.sequence_length = sequence_length
         self.transform = transform
         self.skipped_files = []
         self.log_dir = log_dir
@@ -152,110 +153,89 @@ class VideoFrameDataset(Dataset):
             sorted_group = group.sort_values('frame_id')
             self.grouped.append(sorted_group.reset_index(drop=True))
 
-    def log_skipped_files(self):
-        """Write skipped files to a log file for debugging purposes.
+        # Build a list of valid sequence start indices
+        self.sequence_indices = []
+        for group_idx, group in enumerate(self.grouped):
+            if len(group) >= self.sequence_length:
+                for start_idx in range(len(group) - self.sequence_length + 1):
+                    self.sequence_indices.append((group_idx, start_idx))
+
+    def __len__(self):
+        """Get the total number of sequences in the dataset."""
+        return len(self.sequence_indices)
+
+    def __getitem__(self, idx):
+        """Get a sequence of frames and labels for training."""
         
-        Creates a text file containing all frames that were skipped during dataset loading,
-        along with the reason for skipping (file not found, loading error, etc.).
-        """
+        # Get the group index and start index from the pre-built list
+        group_idx, start_idx = self.sequence_indices[idx]
+        group = self.grouped[group_idx]
+        
+        frames = []
+        labels = []
+        video_id = None
+        frames_loaded = 0
+        
+        # Determine the video_id and frame_ids for logging purposes
+        row_start = group.iloc[start_idx]
+        video_id = row_start['video_id']
+        start_frame_id = row_start['frame_id']
+        
+        frame_ids_in_sequence = []
+        for i in range(self.sequence_length):
+            current_idx = start_idx + i
+            row = group.iloc[current_idx]
+            file_path = row['file_path']
+            frame_ids_in_sequence.append(row['frame_id'])
+
+            try:
+                # Check if file exists
+                if not Path(file_path).exists():
+                    self.skipped_files.append((file_path, "File not found"))
+                    print(f"File not found: {file_path}")
+                    continue
+                
+                img = Image.open(file_path).convert('RGB')
+                if self.transform:
+                    img = self.transform(img)
+                frames.append(img)
+                labels.append([row['child'], row['adult']])
+                frames_loaded += 1
+            except Exception as e:
+                # This is the key change: print the error message
+                print(f"Error loading file {file_path}: {str(e)}")
+                self.skipped_files.append((file_path, f"Error loading: {str(e)}"))
+        
+        if frames_loaded == 0:
+            # Log the specific sequence details before raising the error
+            error_message = (
+                f"Could not load any frames for sequence {idx}. "
+                f"Video ID: {video_id}. "
+                f"Frames attempted: {frame_ids_in_sequence}"
+            )
+            # You can also write this to a log file if you prefer
+            print(f"ERROR: {error_message}")
+            raise ValueError(error_message)
+        
+        if frames_loaded < self.sequence_length:
+            # Pad with the last successfully loaded frame
+            while len(frames) < self.sequence_length:
+                frames.append(frames[-1].clone())
+                labels.append(labels[-1].copy())
+        
+        frames = torch.stack(frames)
+        labels = torch.tensor(labels).float()
+        
+        return frames, labels, frames_loaded, video_id
+
+    def log_skipped_files(self):
+        """Write skipped files to a log file for debugging purposes."""
+        # ... (This method remains the same)
         if self.log_dir and self.skipped_files:
-            log_path = self.log_dir / "skipped_frames.txt"
+            log_path = Path(self.log_dir) / "skipped_frames.txt"
             with open(log_path, 'w') as f:
                 f.write(f"Total skipped frames: {len(self.skipped_files)}\n\n")
                 f.write("Skipped files:\n")
                 for file_path, reason in self.skipped_files:
                     f.write(f"{file_path} - {reason}\n")
             print(f"Logged {len(self.skipped_files)} skipped frames to {log_path}")
-
-    def __len__(self):
-        """Get the total number of sequences in the dataset.
-        
-        Calculates the number of possible sequences that can be created from all video groups,
-        considering the sequence length parameter.
-        
-        Parameters
-        ----------
-        None
-        
-        Returns
-        -------
-        int
-            Total number of sequences available in the dataset.
-        """
-        return sum(max(0, len(g) - self.sequence_length + 1) for g in self.grouped)
-
-    def __getitem__(self, idx):
-        """Get a sequence of frames and labels for training.
-        
-        Extracts a sequence of consecutive frames from a video along with their corresponding labels.
-        Handles missing or corrupted files by skipping them and logging the issues.
-        
-        Parameters
-        ----------
-        idx : int
-            Index of the sequence to retrieve.
-            
-        Returns
-        -------
-        Tuple[torch.Tensor, torch.Tensor, int, str]
-            A tuple containing:
-            - frames: torch.Tensor of shape (seq_len, C, H, W) with frame images
-            - labels: torch.Tensor of shape (seq_len, 2) with adult/child labels  
-            - length: int indicating actual sequence length
-            - video_id: str identifier for the source video
-        """
-        total = 0
-        for group_idx, group in enumerate(self.grouped):
-            length = max(0, len(group) - self.sequence_length + 1)
-            if idx < total + length:
-                start_idx = idx - total
-                frames = []
-                labels = []
-                video_id = None
-                
-                # Try to load frames, skip broken ones
-                current_idx = start_idx
-                frames_loaded = 0
-                max_attempts = len(group) - start_idx  # Don't go beyond group bounds
-                
-                while frames_loaded < self.sequence_length and current_idx < len(group):
-                    row = group.iloc[current_idx]
-                    file_path = row['file_path']
-
-                    try:
-                        # Check if file exists
-                        if not Path(file_path).exists():
-                            self.skipped_files.append((file_path, "File not found"))
-                            current_idx += 1
-                            continue
-                        
-                        img = Image.open(file_path).convert('RGB')
-                        if self.transform:
-                            img = self.transform(img)
-                        frames.append(img)
-                        labels.append([row['child'], row['adult']])
-                        if video_id is None:
-                            video_id = row['video_id']
-                        frames_loaded += 1
-                        
-                    except Exception as e:
-                        self.skipped_files.append((file_path, f"Error loading: {str(e)}"))
-                        
-                    current_idx += 1
-                
-                # If we couldn't load enough frames, pad with the last valid frame or skip this sequence
-                if frames_loaded == 0:
-                    # No valid frames found, try next sequence
-                    total += length
-                    continue
-                elif frames_loaded < self.sequence_length:
-                    # Pad with last frame
-                    while len(frames) < self.sequence_length:
-                        frames.append(frames[-1].clone())
-                        labels.append(labels[-1].copy())
-                
-                frames = torch.stack(frames)  # shape: (seq_len, C, H, W)
-                labels = torch.tensor(labels).float()  # shape: (seq_len, 2)
-                return frames, labels, len(frames), video_id
-            total += length
-        raise IndexError("Index out of range")
