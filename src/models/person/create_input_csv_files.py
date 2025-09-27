@@ -50,6 +50,7 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
     JOIN videos v
         ON a.video_id = v.id
     WHERE a.category_id IN ({placeholders})
+      AND a.person_ID != 1  -- Exclude child body parts
       AND a.outside = 0  -- Only include people inside the frame
       AND v.file_name NOT IN ({excluded_videos_sql})
     ORDER BY i.video_id, i.frame_id
@@ -491,10 +492,11 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
     with open(file_path, "w") as f:
         f.write(f"Person Classification Dataset Split Report - {timestamp}\n\n")
         
-        # Overall dataset statistics
-        total_child = df['child'].sum()
-        total_adult = df['adult'].sum()
-        total_without_person = len(df[(df['child'] == 0) & (df['adult'] == 0)])
+        # Overall dataset statistics (use all frames in splits)
+        total_images = len(df_train) + len(df_val) + len(df_test)
+        total_child = df_train[PersonConfig.TARGET_LABELS[0]].sum() + df_val[PersonConfig.TARGET_LABELS[0]].sum() + df_test[PersonConfig.TARGET_LABELS[0]].sum()
+        total_adult = df_train[PersonConfig.TARGET_LABELS[1]].sum() + df_val[PersonConfig.TARGET_LABELS[1]].sum() + df_test[PersonConfig.TARGET_LABELS[1]].sum()
+        total_without_person = len(pd.concat([df_train, df_val, df_test]).query('child == 0 and adult == 0'))
 
         f.write(f"=== OVERALL DATASET STATISTICS ===\n")
         f.write(f"Total Images: {total_images}\n")
@@ -505,6 +507,7 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
         f.write("=== SPLIT DISTRIBUTION ===\n")
         f.write("-" * 50 + "\n\n")
 
+        
         def write_split_info(split_name, split_df):
             """Helper function to write statistics for each split."""
             total_split = len(split_df)
@@ -575,7 +578,6 @@ def main():
     to maintain temporal continuity, not just frames with annotations.
     """    
     # Step 1: Fetch annotations from database
-    logging.info("Step 1: Fetching annotations from database...")
     rows = fetch_all_annotations(PersonConfig.DATABASE_CATEGORY_IDS)
     
     if not rows:
@@ -583,7 +585,6 @@ def main():
         exit(1)
 
     # Step 2: Build frame-level labels
-    logging.info("Step 2: Building frame-level binary labels...")
     df = build_frame_level_labels(
         rows, 
         PersonConfig.AGE_GROUP_TO_CLASS_ID, 
@@ -597,7 +598,7 @@ def main():
         exit(1)
 
     # Step 3: Split data by child IDs (using annotated frames for assignment)
-    logging.info("Step 3: Splitting children by IDs using annotated frames...")
+    logging.info("Splitting children by IDs using annotated frames...")
     _, _, _, train_ids, val_ids, test_ids = split_by_child_id(df)
 
     # Validate child assignments
@@ -606,7 +607,6 @@ def main():
         exit(1)
 
     # Step 4: Build complete sequential datasets with ALL frames
-    logging.info("Step 4: Building complete sequential datasets with all frames...")
     df_train_full, df_val_full, df_test_full = build_sequential_dataset(df, train_ids, val_ids, test_ids)
 
     # Validate full datasets were created successfully
@@ -615,7 +615,7 @@ def main():
         exit(1)
 
     # Step 5: Save CSV files
-    logging.info("Step 5: Saving complete train/val/test CSV files...")
+    logging.info("Saving complete train/val/test CSV files...")
     PersonClassification.INPUT_DIR.mkdir(parents=True, exist_ok=True)
     
     df_train_full.to_csv(PersonClassification.TRAIN_CSV_PATH, index=False)
@@ -623,7 +623,6 @@ def main():
     df_test_full.to_csv(PersonClassification.TEST_CSV_PATH, index=False)
 
     # Step 6: Generate statistics report
-    logging.info("Step 6: Generating statistics report...")
     generate_statistics_file(df, df_train_full, df_val_full, df_test_full, train_ids, val_ids, test_ids)
 
     # Final summary with sequential dataset info
