@@ -120,19 +120,9 @@ class CNNEncoder(nn.Module):
             self.project = None
 
     def forward(self, x):
-        x = self.encoder(x)
-        # Global average pooling for ResNet
-        if isinstance(self.encoder[0], nn.Conv2d):
-            x = x.mean([2, 3])
-        
-        if self.project:
-            x = self.project(x)
-        return x
-
-    def forward(self, x):
         """Forward pass through the CNN encoder.
         
-        Processes a batch of images through the ResNet backbone to extract features.
+        Processes a batch of images through the backbone to extract features.
         
         Parameters
         ----------
@@ -144,12 +134,16 @@ class CNNEncoder(nn.Module):
         torch.Tensor
             Feature vectors of shape (batch_size * seq_len, feat_dim).
         """
-        # x: (batch*seq_len, C, H, W)
-        f = self.encoder(x)  # (N, feat_in, 1,1)
-        f = f.view(f.size(0), -1)  # (N, feat_in)
-        if self.project is not None:
-            f = self.project(f)
-        return f  # (N, feat_dim)
+        x = self.encoder(x)
+        
+        # Global average pooling for different architectures
+        if len(x.shape) == 4:  # If we have spatial dimensions (batch, channels, height, width)
+            x = x.mean([2, 3])  # Global average pooling: (batch, channels)
+        
+        # Apply projection if needed
+        if self.project:
+            x = self.project(x)
+        return x
 
 class VideoFrameDataset(Dataset):
     """
