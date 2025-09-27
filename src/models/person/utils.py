@@ -104,13 +104,12 @@ def setup_models_and_optimizers(device: torch.device):
 
     try:
         rnn_model = torch.compile(rnn_model)
-        print("Models compiled successfully!")
     except Exception as e:
         print(f"Model compilation skipped: {e}")
 
     opt_rnn = torch.optim.AdamW(
         rnn_model.parameters(),
-        lr=PersonConfig.LR * 2.0,
+        lr=PersonConfig.LR,
         weight_decay=PersonConfig.WEIGHT_DECAY,
         betas=(0.9, 0.999),
     )
