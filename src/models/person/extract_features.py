@@ -4,6 +4,7 @@ from tqdm import tqdm
 import os
 from pathlib import Path
 import pandas as pd
+from PIL import Image
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from person_classifier import CNNEncoder, VideoFrameDataset
@@ -48,40 +49,67 @@ def main():
             
         print(f"\nProcessing data from {csv_path}...")
         
-        # Create a simplified dataset for feature extraction
-        full_dataset = VideoFrameDataset(csv_path, transform=transform, is_feature_extraction=True)
-        data_loader = DataLoader(
-            full_dataset, 
-            batch_size=PersonConfig.BATCH_SIZE_INFERENCE, 
-            shuffle=False, 
-            num_workers=os.cpu_count(),
-            pin_memory=True
-        )
-
+        # Load CSV data directly for frame-by-frame processing
+        df = pd.read_csv(csv_path)
+        print(f"Found {len(df)} frames to process")
+        
+        # Process frames in batches
+        batch_size = PersonConfig.BATCH_SIZE_INFERENCE
+        total_batches = (len(df) + batch_size - 1) // batch_size
+        
         # 3. Create output directories
         split_name = Path(csv_path).stem
         output_dir = PersonClassification.TRAIN_CSV_PATH.parent / "extracted_features" / split_name
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 4. Extract features
+        # 4. Extract features batch by batch
         with torch.no_grad():
-            for images, _, _, video_ids, frame_ids in tqdm(data_loader, desc="Extracting features"):
-                images = images.to(device)
+            for batch_idx in tqdm(range(total_batches), desc=f"Extracting features from {split_name}"):
+                start_idx = batch_idx * batch_size
+                end_idx = min(start_idx + batch_size, len(df))
+                batch_df = df.iloc[start_idx:end_idx]
                 
-                # Forward pass through the CNN
-                features = cnn(images)
+                # Load images for this batch
+                images = []
+                valid_indices = []
+                video_names = []
+                frame_ids = []
+                
+                for idx, row in batch_df.iterrows():
+                    try:
+                        file_path = row['file_path']
+                        if not Path(file_path).exists():
+                            continue
+                            
+                        # Extract video name from file path (parent directory name)
+                        video_name = Path(file_path).parent.name
+                            
+                        img = Image.open(file_path).convert('RGB')
+                        img_tensor = transform(img)
+                        images.append(img_tensor)
+                        valid_indices.append(idx)
+                        video_names.append(video_name)
+                        frame_ids.append(row['frame_id'])
+                        
+                    except Exception as e:
+                        print(f"Error loading {row['file_path']}: {e}")
+                        continue
+                
+                if not images:
+                    continue
+                    
+                # Stack images and process
+                images_batch = torch.stack(images).to(device)
+                features_batch = cnn(images_batch)
                 
                 # Save features for each frame
-                for i in range(len(features)):
-                    video_id = video_ids[i]
-                    frame_id = frame_ids[i]
-                    
-                    video_output_dir = output_dir / video_id
+                for i, (video_name, frame_id, features) in enumerate(zip(video_names, frame_ids, features_batch)):
+                    video_output_dir = output_dir / video_name
                     video_output_dir.mkdir(exist_ok=True)
                     
-                    # Save each feature vector
+                    # Save feature vector
                     feature_path = video_output_dir / f"{frame_id:06d}.pt"
-                    torch.save(features[i].cpu(), feature_path)
+                    torch.save(features.cpu(), feature_path)
 
     print("\nFeature extraction complete for all datasets!")
 
