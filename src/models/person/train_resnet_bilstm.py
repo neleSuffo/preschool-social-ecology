@@ -23,7 +23,7 @@ from utils import (
     log_epoch_metrics,
     print_epoch_results,
 )
-from person_classifier import FrameRNNClassifier
+import numpy as np
 
 # Set conservative thread limits to avoid DataLoader hangs
 os.environ['OMP_NUM_THREADS'] = '8'
@@ -119,6 +119,7 @@ def eval_on_loader(rnn_model, criterion, dataloader, device):
 def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=None, accumulation_steps=4):
     """
     Train models for one epoch with gradient accumulation and optional AMP.
+    Adds diagnostic prints for feature and label statistics.
     """
     rnn_model.train()
 
@@ -134,12 +135,32 @@ def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=No
         labels_padded = labels_padded.to(device, non_blocking=True)
         mask = (labels_padded != -100)
 
+        # Diagnostic print for first batch of each epoch
+        if batch_idx == 0:
+            print("\n[DIAGNOSTIC] Feature stats:")
+            print(f"  mean: {features_padded.mean().item():.4f}, std: {features_padded.std().item():.4f}, min: {features_padded.min().item():.4f}, max: {features_padded.max().item():.4f}")
+            print("[DIAGNOSTIC] Label distribution:")
+            mask_flat = mask.view(-1, 2)[:, 0]
+            valid_labels = labels_padded.view(-1, 2)[mask_flat].cpu().numpy()
+            if valid_labels.ndim == 1:
+                valid_labels = valid_labels.reshape(-1, 2)
+            if valid_labels.shape[1] == 2:
+                child_count = int((valid_labels[:,0] == 1).sum())
+                adult_count = int((valid_labels[:,1] == 1).sum())
+                print(f"  child frames: {child_count}, adult frames: {adult_count}, total valid: {valid_labels.shape[0]}")
+            else:
+                print(f"  Unexpected label shape: {valid_labels.shape}")
+
         with torch.autocast(device_type='cuda', enabled=(scaler is not None)):
             logits = rnn_model(features_padded, lengths)
             mask_flat = mask.view(-1, 2)[:, 0]
             logits_flat = logits.view(-1, 2)[mask_flat]
             labels_flat = labels_padded.view(-1, 2)[mask_flat]
             loss = criterion(logits_flat, labels_flat) / accumulation_steps
+
+        # Diagnostic print for loss value
+        if batch_idx == 0:
+            print(f"[DIAGNOSTIC] First batch loss: {loss.item():.6f}")
 
         if scaler:
             scaler.scale(loss).backward()
