@@ -135,13 +135,23 @@ def load_model(device):
     return cnn, rnn_model
 
 def collate_fn(batch):
-    """Pads sequences to the max length in the batch."""
+    """Pads sequences to the max length in the batch. Handles both image and feature tensors."""
     batch_sizes = [item[2] for item in batch]
     max_len = max(batch_sizes)
     bs = len(batch)
-    C, H, W = batch[0][0].shape[1:]
+    first_shape = batch[0][0].shape
 
-    images_padded = torch.zeros((bs, max_len, C, H, W))
+    if len(first_shape) == 2:
+        # Features: (seq_len, feat_dim)
+        feat_dim = first_shape[1]
+        images_padded = torch.zeros((bs, max_len, feat_dim))
+    elif len(first_shape) == 3:
+        # Images: (seq_len, C, H, W)
+        C, H, W = first_shape[1:]
+        images_padded = torch.zeros((bs, max_len, C, H, W))
+    else:
+        raise ValueError(f"Unexpected input shape: {first_shape}")
+
     labels_padded = torch.full((bs, max_len, 2), -100.0, dtype=torch.float32)
     lengths, video_ids = [], []
 
@@ -216,12 +226,8 @@ def print_epoch_results(epoch, train_loss, val_loss, train_metrics, val_metrics)
     """Prints formatted training and validation results to the console."""
     print(f"\nEpoch {epoch}/{PersonConfig.NUM_EPOCHS}")
     print(f"  Train Loss: {train_loss:.4f}")
-    print(f"    Adult    - P: {train_metrics['adult_precision']:.3f}, R: {train_metrics['adult_recall']:.3f}, F1: {train_metrics['adult_f1']:.3f}")
-    print(f"    Child    - P: {train_metrics['child_precision']:.3f}, R: {train_metrics['child_recall']:.3f}, F1: {train_metrics['child_f1']:.3f}")
     print(f"    Macro    - P: {train_metrics['macro_precision']:.3f}, R: {train_metrics['macro_recall']:.3f}, F1: {train_metrics['macro_f1']:.3f}")
     print(f"  Val Loss: {val_loss:.4f}")
-    print(f"    Adult    - P: {val_metrics['adult_precision']:.3f}, R: {val_metrics['adult_recall']:.3f}, F1: {val_metrics['adult_f1']:.3f}")
-    print(f"    Child    - P: {val_metrics['child_precision']:.3f}, R: {val_metrics['child_recall']:.3f}, F1: {val_metrics['child_f1']:.3f}")
     print(f"    Macro    - P: {val_metrics['macro_precision']:.3f}, R: {val_metrics['macro_recall']:.3f}, F1: {val_metrics['macro_f1']:.3f}")
 
 def plot_confusion_matrices(y_true, y_pred, class_names, output_dir):
