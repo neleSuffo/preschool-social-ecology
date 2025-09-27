@@ -228,10 +228,10 @@ def main():
 
     # feature extraction is done once seperately with extract_features.py
     train_loader, train_ds = setup_data_loaders(
-        PersonClassification.TRAIN_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=True, log_dir=out_dir, is_feature_extraction=False
+        PersonClassification.TRAIN_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=True, log_dir=out_dir, is_feature_extraction=False, split_name='train'
     )
     val_loader, val_ds = setup_data_loaders(
-        PersonClassification.VAL_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=False, log_dir=out_dir, is_feature_extraction=False
+        PersonClassification.VAL_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=False, log_dir=out_dir, is_feature_extraction=False, split_name='val'
     )
 
     rnn_model, opt_rnn, criterion = setup_models_and_optimizers(device)
