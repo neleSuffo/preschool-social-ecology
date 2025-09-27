@@ -103,6 +103,90 @@ def extract_file_name_from_video_name(video_name):
     """
     return video_name.replace('.MP4', '').replace('.mp4', '')
 
+def create_per_second_jsonl_segments(splits, valid_rttm_classes, output_dir):
+    """
+    Creates JSONL segments of 1-second duration for per-second evaluation.
+    This function is a streamlined version of the sliding window function,
+    focused on generating a non-overlapping ground truth for the test set.
+    
+    Parameters:
+    ----------
+    splits (dict): 
+        Dictionary containing train/validation/test splits
+    valid_rttm_classes (list): 
+        List of valid RTTM speaker classes
+    output_dir (Path): 
+        Directory to save the output JSONL files
+        
+    Returns:
+    -------
+    Path: 
+        Path to the created JSONL file
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    per_second_test_file = output_dir / f'test_segments_per_second.jsonl'
+    
+    # Use the test split from your existing splits dictionary
+    test_files = splits['test']
+    
+    print(f"\n--- Processing Test Data for Per-Second Evaluation ({len(test_files)} files) ---")
+    
+    per_second_segments = []
+    
+    # The logic here is similar to your original function's annotation processing,
+    # but with a fixed 1-second window and step.
+    for f_info in tqdm(test_files, desc="Generating per-second segments"):
+        try:
+            with open(f_info["path"], "r") as file_handle:
+                data = json.load(file_handle)
+                
+            audio_path = Path(AudioClassification.AUDIO_FILES_DIR) / f"{data['video_name']}.wav"
+            if not audio_path.exists():
+                print(f"Warning: Audio file not found: {audio_path}. Skipping.")
+                continue
+
+            audio_duration = librosa.get_duration(path=audio_path)
+            
+            # Map annotations to 1-second bins
+            annotation_bins = defaultdict(list)
+            for annotation in data.get('annotations', []):
+                event_id = annotation.get('eventId', '')
+                if event_id not in AudioConfig.VALID_EVENT_IDS:
+                    continue
+                
+                start_sec = annotation.get('startTime', 0)
+                end_sec = annotation.get('endTime', 0)
+                
+                speaker_ids = map_event_to_speaker_ids(event_id)
+                
+                # Assign labels to each 1-second bin
+                for current_second in range(int(start_sec), int(end_sec)):
+                    if current_second < audio_duration:
+                        for speaker_id in speaker_ids:
+                            if speaker_id in valid_rttm_classes:
+                                annotation_bins[current_second].append(speaker_id)
+
+            # Create segment for each second
+            for current_second in range(int(audio_duration)):
+                labels = list(set(annotation_bins[current_second]))
+                segment_data = {
+                    'audio_path': str(audio_path),
+                    'second': float(current_second),
+                    'labels': sorted(labels)
+                }
+                per_second_segments.append(segment_data)
+                
+        except Exception as e:
+            print(f"Error processing file {f_info['path']}: {e}")
+
+    # Write all segments to the JSONL file
+    with open(per_second_test_file, 'w') as f_out:
+        for segment in per_second_segments:
+            f_out.write(json.dumps(segment) + '\n')
+            
+    print(f"✓ Generated {len(per_second_segments):,} per-second segments for testing.")
+    return per_second_test_file
+
 def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_duration, window_step, output_dir):
     """
     Create JSONL training segments directly from JSON annotations using sliding windows.
@@ -665,6 +749,16 @@ def main():
             output_dir
         )
         
+        print("\n📊 Creating a separate 1-second test file for evaluation...")
+        per_second_test_file = create_per_second_jsonl_segments(
+            splits,
+            AudioConfig.VALID_RTTM_CLASSES,
+            output_dir
+        )
+        
+        # Add the new file to the segment_files dictionary for reporting
+        segment_files['test_per_second'] = per_second_test_file
+
         # Validate that segments were successfully created
         total_segments = sum(segment_counts.values())
         if total_segments == 0:
