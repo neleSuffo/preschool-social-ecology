@@ -8,6 +8,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.utils.data import Dataset
 from torchvision import models
 from config import PersonConfig
+from constants import PersonClassification
 
 class FrameRNNClassifier(nn.Module):
     """Bidirectional LSTM classifier for sequence-level person classification.
