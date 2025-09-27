@@ -45,8 +45,6 @@ def setup_environment(is_training=True):
     scaler = torch.amp.GradScaler(device='cuda') if device.type == 'cuda' else None
 
     if device.type == 'cuda':
-        print(f"CUDA available: {torch.cuda.is_available()}")
-        print(f"GPU count: {torch.cuda.device_count()}")
         print(f"Using device: {device}")
         
     return out_dir, device, scaler
