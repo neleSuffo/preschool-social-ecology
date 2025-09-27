@@ -65,7 +65,7 @@ def save_script_and_hparams(out_dir):
     with open(hparams_path, "w") as f:
         json.dump(hparams, f, indent=4)
 
-def setup_data_loaders(csv_path, batch_size, is_training, log_dir):
+def setup_data_loaders(csv_path, batch_size, is_training, log_dir, is_feature_extraction=False, split_name=None):
     """Setup a single data loader based on parameters."""
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -73,8 +73,8 @@ def setup_data_loaders(csv_path, batch_size, is_training, log_dir):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    dataset = VideoFrameDataset(csv_path, transform=transform, log_dir=log_dir)
-    
+    dataset = VideoFrameDataset(csv_path, transform=transform, log_dir=log_dir, is_feature_extraction=is_feature_extraction, split_name=split_name)
+
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -88,8 +88,7 @@ def setup_data_loaders(csv_path, batch_size, is_training, log_dir):
 
 def setup_models_and_optimizers(device: torch.device):
     """Create models, initialize non-pretrained weights, compile and return optimizers."""
-    cnn = CNNEncoder(backbone=PersonConfig.BACKBONE, pretrained=True, feat_dim=PersonConfig.FEAT_DIM).to(device)
-    rnn_model = FrameRNNClassifier(feat_dim=cnn.feat_dim).to(device)
+    rnn_model = FrameRNNClassifier().to(device)
 
     def init_weights(m):
         if isinstance(m, nn.Linear):
@@ -106,20 +105,10 @@ def setup_models_and_optimizers(device: torch.device):
     rnn_model.apply(init_weights)
 
     try:
-        cnn = torch.compile(cnn)
         rnn_model = torch.compile(rnn_model)
         print("Models compiled successfully!")
     except Exception as e:
         print(f"Model compilation skipped: {e}")
-
-    opt_cnn = None
-    if not PersonConfig.FREEZE_CNN:
-        opt_cnn = torch.optim.AdamW(
-            cnn.parameters(),
-            lr=PersonConfig.LR * 0.01,
-            weight_decay=PersonConfig.WEIGHT_DECAY * 0.1,
-            betas=(0.9, 0.999),
-        )
 
     opt_rnn = torch.optim.AdamW(
         rnn_model.parameters(),
@@ -130,7 +119,7 @@ def setup_models_and_optimizers(device: torch.device):
 
     criterion = nn.BCEWithLogitsLoss()
 
-    return cnn, rnn_model, opt_cnn, opt_rnn, criterion
+    return rnn_model, opt_rnn, criterion
 
 def load_model(device):
     """Load trained model from checkpoint."""
