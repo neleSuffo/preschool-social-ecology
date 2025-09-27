@@ -919,3 +919,128 @@ def save_evaluation_results(output_dir, class_names, thresholds,
             'per_class_thresholds': {str(class_name): float(thresholds.get(str(class_name), 0.5)) for class_name in class_names}
         }
     }
+
+def load_model(model_path: Path = AudioClassification.TRAINED_WEIGHTS_PATH):
+    """
+    Load trained model for inference by building the architecture and loading weights.
+    
+    Parameters:
+    ----------
+    model_path (Path): 
+        Path to the saved model weights file (.keras)
+        
+    Returns:
+    -------
+    tuple: (model, mlb) where:
+        - model: Loaded Keras model ready for inference
+        - mlb: Fitted MultiLabelBinarizer for decoding predictions
+    """
+    if not model_path.exists():
+        print(f"❌ Model file not found: {model_path}")
+        print("💡 Please train the model first using train_audio_classifier.py")
+        return None, None
+
+    # Setup multi-label binarizer consistent with training
+    mlb = MultiLabelBinarizer(classes=AudioConfig.VALID_RTTM_CLASSES)
+    mlb.fit([[]])  # Initialize with empty list to set up classes
+    num_classes = len(mlb.classes_)
+
+    # Use centralized calculation for consistent time steps across all components
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+
+    try:
+        # Build the model architecture first
+        model = build_model_multi_label(
+            n_mels=AudioConfig.N_MELS,
+            fixed_time_steps=fixed_time_steps,
+            num_classes=num_classes
+        )
+
+        # Load only the weights from the saved .keras file
+        model.load_weights(model_path)
+
+    except Exception as e:
+        print(f"❌ Failed to load model: {e}")
+        return None, None
+
+    return model, mlb
+
+def evaluate_model_both_levels(model, test_generator, mlb, thresholds, output_dir, generate_confusion_matrices=False):
+    """
+    Evaluate model at both window-level and second-level for comparison.
+    
+    This function runs the evaluation twice:
+    1. At the original window level (no aggregation)
+    2. At the second level (with sliding window aggregation)
+    
+    This allows for direct comparison of how aggregation affects performance metrics.
+    
+    Parameters:
+    ----------
+    model: Trained classification model
+    test_generator: Test data generator  
+    mlb: MultiLabelBinarizer
+    thresholds: Optimized decision thresholds
+    output_dir: Base output directory
+    generate_confusion_matrices: Whether to generate confusion matrices
+    """
+    base_output_dir = Path(output_dir)
+
+    print("🔍 Running evaluation at both window and second levels...")
+    print("=" * 70)
+
+    # Evaluate at window level
+    print("\n📊 WINDOW-LEVEL EVALUATION")
+    print("=" * 40)
+    window_output_dir = base_output_dir / 'window_level'
+    evaluate_model(
+        model=model,
+        test_generator=test_generator,
+        mlb=mlb, 
+        thresholds=thresholds,
+        output_dir=window_output_dir,
+        generate_confusion_matrices=generate_confusion_matrices,
+        aggregate_to_seconds=False
+    )
+
+    # Evaluate at second level  
+    print("\n📊 SECOND-LEVEL EVALUATION")
+    print("=" * 40)
+    second_output_dir = base_output_dir / 'second_level'
+    evaluate_model(
+        model=model,
+        test_generator=test_generator,
+        mlb=mlb,
+        thresholds=thresholds, 
+        output_dir=second_output_dir,
+        generate_confusion_matrices=generate_confusion_matrices,
+        aggregate_to_seconds=True
+    )
+
+# ---- GPU Configuration ----
+def setup_gpu_config():
+    """
+    Configure GPU settings with proper error handling.
+    """
+    try:
+        # Check for GPU devices
+        physical_devices = tf.config.list_physical_devices('GPU')
+
+        if not physical_devices:
+            print("⚠️ No GPU devices found")
+            return False
+
+        # Configure GPU memory growth
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+
+        # Test GPU functionality
+        with tf.device('/GPU:0'):
+            test_tensor = tf.constant([1.0, 2.0, 3.0])
+            test_result = tf.reduce_sum(test_tensor)
+
+        return True
+
+    except Exception as e:
+        print(f"⚠️ GPU configuration failed: {e}")
+        return False
