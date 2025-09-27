@@ -155,7 +155,7 @@ class VideoFrameDataset(Dataset):
     
     This is designed to work with the custom collate function to handle sequences of varying lengths.
     """
-    def __init__(self, csv_file, transform=None, log_dir=None, is_feature_extraction=False):
+    def __init__(self, csv_file, transform=None, log_dir=None, is_feature_extraction=False, split_name=None):
         """
         Initializes the dataset.
 
@@ -165,12 +165,14 @@ class VideoFrameDataset(Dataset):
             log_dir (string, optional): Directory to save log files for skipped items.
             is_feature_extraction (bool, optional): If True, loads raw image files. If False,
                                                     assumes pre-extracted features will be loaded.
+            split_name (string, optional): The split name to use for loading features (if not using raw images).
         """
         self.csv_file = Path(csv_file)
         self.grouped = pd.read_csv(self.csv_file).groupby('video_id')
         self.transform = transform
         self.log_dir = Path(log_dir) if log_dir else None
         self.is_feature_extraction = is_feature_extraction
+        self.split_name = split_name
         self.skipped_files = []
         self._create_sequence_indices()
 
@@ -209,10 +211,8 @@ class VideoFrameDataset(Dataset):
         # Load each item in the sequence
         for i in range(sequence_length):
             row = self.grouped.get_group(video_id).iloc[i]
-            
-            # Use appropriate file path based on mode
+            file_path = row['file_path']
             if self.is_feature_extraction:
-                file_path = row['file_path']
                 try:
                     if not Path(file_path).exists():
                         self.skipped_files.append((file_path, "File not found"))
@@ -228,8 +228,8 @@ class VideoFrameDataset(Dataset):
                     self.skipped_files.append((file_path, f"Error loading: {str(e)}"))
                     continue
             else:
-                # Assuming features are saved in a subfolder named by the video ID
-                feature_dir = Path(f"/path/to/extracted_features/{video_id}")
+                video_name = Path(file_path).parent.name
+                feature_dir = PersonClassification.TRAIN_CSV_PATH.parent / "extracted_features" / self.split_name / video_name
                 feature_file = feature_dir / f"{row['frame_id']:06d}.pt"
                 
                 try:
