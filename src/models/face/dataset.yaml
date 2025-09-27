@@ -5,9 +5,11 @@ test: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/test
 
 
 # Number of classes
-nc: 2
+nc: 1
 
 # Class names
-names:
-  0: "child face"
-  1: "adult face"
+#names:
+  #0: "face"
+  #1: "adult face"
+
+names: ["face"]
