@@ -350,8 +350,7 @@ def create_data_generators(segment_files, mlb):
             continue
         
         # Use the standard window duration from AudioConfig
-        window_duration = AudioConfig.WINDOW_DURATION
-        fixed_time_steps = int(np.ceil(window_duration * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+        fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
         
         generator_params = {
             'file_path': file_path,
@@ -359,7 +358,7 @@ def create_data_generators(segment_files, mlb):
             'n_mels': AudioConfig.N_MELS,
             'hop_length': AudioConfig.HOP_LENGTH,
             'sr': AudioConfig.SR,
-            'window_duration': window_duration,
+            'window_duration': AudioConfig.WINDOW_DURATION,
             'fixed_time_steps': fixed_time_steps,
             'batch_size': 32,
             'shuffle': True if split == 'train' else False,
@@ -388,13 +387,13 @@ def create_data_generators(segment_files, mlb):
             print(f"Detected test segment duration: {test_window_duration}s")
             
             # Calculate time steps based on the detected test segment duration
-            fixed_time_steps_test = int(np.ceil(test_window_duration * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+            fixed_time_steps_test = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
             
             # Initialize the test generator with the correct parameters
             test_generator = AudioSegmentDataGenerator(
                 test_file_path, mlb,
                 AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-                test_window_duration, fixed_time_steps_test,
+                AudioConfig.WINDOW_DURATION, fixed_time_steps_test,
                 batch_size=32, shuffle=False, augment=False
             )
         except (json.JSONDecodeError, FileNotFoundError, ValueError) as e:
