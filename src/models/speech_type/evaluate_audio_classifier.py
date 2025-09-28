@@ -1,9 +1,9 @@
+import json
+import numpy as np
+from collections import defaultdict
 from datetime import datetime
 from constants import AudioClassification
 from utils import load_thresholds, load_model, create_data_generators, setup_gpu_config
-import json
-import numpy as np
-from pathlib import Path
 from tqdm import tqdm
 from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
 
