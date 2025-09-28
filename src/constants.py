@@ -37,6 +37,7 @@ class AudioClassification:
     TRAIN_SEGMENTS_FILE = Path(INPUT_DIR/"train_segments_w3p0_s1p0.jsonl")
     VAL_SEGMENTS_FILE = Path(INPUT_DIR/"val_segments_w3p0_s1p0.jsonl")
     TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments_w3p0_s1p0.jsonl")
+    TEST_SECONDS_FILE = Path(INPUT_DIR/"test_segments_per_second.jsonl")
 
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
@@ -57,7 +58,7 @@ class PersonClassification:
     TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
 class FaceDetection:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12l_20250918_104616/weights/best.pt")
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12l_20250927_223304/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_cvat")
