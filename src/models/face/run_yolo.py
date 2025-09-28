@@ -42,7 +42,8 @@ def draw_detections_and_ground_truth(image: np.ndarray, predictions: Detections,
     for i, (bbox, conf, class_id) in enumerate(zip(predictions.xyxy, predictions.confidence, predictions.class_id)):
         x1, y1, x2, y2 = map(int, bbox)
         cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        label = f"Child" if int(class_id) == 0 else f"Adult"
+        #label = f"Child" if int(class_id) == 0 else f"Adult"
+        label = "Face"
         cv2.putText(annotated_image, f"{label} {conf:.2f}", (x1+10, y2-10), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     
@@ -88,22 +89,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Parse image filename
-        # basename = os.path.basename(args.image_path)
-        # name, ext = os.path.splitext(basename)
-        # parts = name.split('_')
-        # video_folder = '_'.join(parts[:-1])
-        
-        # image_path = None
-        # for ext in DataConfig.VALID_EXTENSIONS:
-        #     potential_path = FaceDetection.IMAGES_INPUT_DIR / video_folder / (Path(args.image).stem + ext)
-        #     if potential_path.exists():
-        #         image_path = potential_path
-        #         break
-        
-        # if image_path is None:
-        #     raise FileNotFoundError(f"Image not found with valid extension in {FaceDetection.IMAGES_INPUT_DIR / video_folder}")
-        
         logging.info(f"Using image: {args.image_path}")
         label_name = Path(args.image_path).stem + ".txt"
         label_path = FaceDetection.LABELS_INPUT_DIR / label_name
@@ -126,10 +111,11 @@ def main():
 
             # Calculate IoU for each detection
             for i, (detected_bbox, conf, class_id) in enumerate(zip(results.xyxy, results.confidence, results.class_id)):
-                class_name = "Child" if int(class_id) == 0 else "Adult"
+                #class_name = "Child" if int(class_id) == 0 else "Adult"
                 iou_scores = [calculate_iou(detected_bbox, gt_bbox) for gt_bbox in ground_truth_boxes]
                 max_iou = max(iou_scores) if iou_scores else 0
-                logging.info(f"Detection {i+1} - {class_name} - Max IoU: {max_iou:.4f}")
+                #logging.info(f"Detection {i+1} - {class_name} - Max IoU: {max_iou:.4f}")
+                logging.info(f"Detection {i+1} - Max IoU: {max_iou:.4f}")
         else:
             logging.warning(f"No label file found for {args.image_path}. Skipping IoU and GT drawing.")
         
