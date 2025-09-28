@@ -31,7 +31,7 @@ def main():
     model_name = FaceConfig.MODEL_NAME
     print(f"Loading model: {model_name}")
 
-    model = YOLO(model_name)
+    model = YOLO("/home/nele_pauline_suffo/models/yolov12l-face.pt")
 
     experiment_name = f"{FaceConfig.MODEL_NAME}_{timestamp}"
     output_dir = base_output_dir / experiment_name
