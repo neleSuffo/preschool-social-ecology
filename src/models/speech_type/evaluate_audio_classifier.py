@@ -178,9 +178,82 @@ def compute_metrics_from_predictions(predictions_file, output_dir):
     plt.savefig(output_dir / "multilabel_confusion_matrix_percent.png")
     plt.close()
 
+    # Custom confusion matrix logic to match per-class metrics
+    cm_custom = {gt: {pred: 0 for pred in all_classes} for gt in all_classes}
+    silence_label = "silence"
+    with open(predictions_file, "r") as f:
+        for line in f:
+            record = json.loads(line)
+            gt_labels = record["true_labels"] or []
+            pred_labels = record["predicted_labels"] or []
+            if not gt_labels:
+                gt_labels = [silence_label]
+            if not pred_labels:
+                pred_labels = [silence_label]
+            # Silence-silence
+            if gt_labels == [silence_label] and pred_labels == [silence_label]:
+                cm_custom[silence_label][silence_label] += 1
+                continue
+            # For each class
+            for cls in classes:
+                gt_has = cls in gt_labels
+                pred_has = cls in pred_labels
+                # TP
+                if gt_has and pred_has:
+                    cm_custom[cls][cls] += 1
+                # FP
+                if not gt_has and pred_has:
+                    for gt in gt_labels:
+                        cm_custom[gt][cls] += 1
+                # FN
+                if gt_has and not pred_has:
+                    for pred in pred_labels:
+                        cm_custom[cls][pred] += 1
+    # Save custom confusion matrix to metrics file
+    with open(metrics_file, "a") as f:
+        f.write("\nCustom confusion matrix (GT rows, Pred cols):\n")
+        f.write("\t" + "\t".join(all_classes) + "\n")
+        for gt in all_classes:
+            f.write(f"{gt}\t" + "\t".join(str(cm_custom[gt][pred]) for pred in all_classes) + "\n")
+        # Add macro F1 for custom confusion matrix
+        f.write("\nMacro F1 (per-class metrics): ")
+        f1s = []
+        for cls in classes:
+            TP, FP, FN = counts[cls]["TP"], counts[cls]["FP"], counts[cls]["FN"]
+            precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+            recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+            f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
+            f1s.append(f1)
+        macro_f1 = np.mean(f1s)
+        f.write(f"{macro_f1:.3f}\n")
+    # Plot custom confusion matrix (absolute)
+    cm_custom_array = np.array([[cm_custom[gt][pred] for pred in all_classes] for gt in all_classes])
+    plt.figure(figsize=(6,5))
+    sns.heatmap(cm_custom_array, annot=True, fmt="d", cmap="Blues", xticklabels=all_classes, yticklabels=all_classes)
+    plt.xlabel("Predicted")
+    plt.ylabel("Ground Truth")
+    plt.title("Custom Multilabel Confusion Matrix")
+    plt.tight_layout()
+    plt.savefig(output_dir / "custom_multilabel_confusion_matrix.png")
+    plt.close()
+    # Plot custom confusion matrix (percentages, row-normalized)
+    cm_custom_percent = cm_custom_array.astype(float)
+    row_sums = cm_custom_percent.sum(axis=1, keepdims=True)
+    cm_custom_percent = np.divide(cm_custom_percent, row_sums, out=np.zeros_like(cm_custom_percent), where=row_sums!=0)
+    plt.figure(figsize=(6,5))
+    sns.heatmap(cm_custom_percent, annot=True, fmt=".2%", cmap="Blues", xticklabels=all_classes, yticklabels=all_classes)
+    plt.xlabel("Predicted")
+    plt.ylabel("Ground Truth")
+    plt.title("Custom Multilabel Confusion Matrix (Percentages)")
+    plt.tight_layout()
+    plt.savefig(output_dir / "custom_multilabel_confusion_matrix_percent.png")
+    plt.close()
+
     print(f"✅ Metrics saved to {metrics_file}")
     print(f"✅ Confusion matrix saved to {output_dir/'multilabel_confusion_matrix.png'}")
     print(f"✅ Percentage confusion matrix saved to {output_dir/'multilabel_confusion_matrix_percent.png'}")
+    print(f"✅ Custom confusion matrix saved to {output_dir/'custom_multilabel_confusion_matrix.png'}")
+    print(f"✅ Custom percentage confusion matrix saved to {output_dir/'custom_multilabel_confusion_matrix_percent.png'}")
 
     return counts, cm
 
