@@ -5,8 +5,10 @@ from datetime import datetime
 from constants import AudioClassification
 from utils import load_thresholds, load_model, create_data_generators, setup_gpu_config
 from tqdm import tqdm
-from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
+from config import AudioConfig
+
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Setup GPU configuration
 gpu_available = setup_gpu_config()
@@ -15,32 +17,19 @@ if gpu_available:
 else:
     print("⚠️ GPU configuration failed, will use CPU")
 
+
 def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output_dir):
     """
     Generate model predictions for all test samples, apply thresholds,
     and save the results to a JSONL file for per-second analysis.
-    
-    Parameters
-    ----------
-    model (tf.keras.Model):
-        Trained multi-label audio classification model
-    test_generator (EvaluationDataGenerator):
-        Test data generator with deterministic ordering
-    mlb (MultiLabelBinarizer):
-        Fitted label encoder from training pipeline
-    thresholds (dict):
-        Dictionary mapping class names to decision thresholds
-    output_dir (Path):
-        Directory to save the prediction results file
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     predictions_file = output_dir / "second_level_predictions.jsonl"
-    
     print("📊 Generating predictions and saving to file...")
-    
+
     test_true_labels = []
     test_metadata = []
-    
+
     for i in tqdm(range(len(test_generator)), desc="Processing batches"):
         _, labels = test_generator[i]
         if len(labels) > 0:
@@ -53,54 +42,39 @@ def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output
                     'start_time': segment.get('second', 0.0),
                     'audio_path': segment.get('audio_path', 'unknown')
                 })
-    
+
     test_predictions = model.predict(test_generator, verbose=1)
-    
-    # Ensure shapes match before processing
+
     min_samples = min(test_predictions.shape[0], len(test_true_labels))
     test_predictions = test_predictions[:min_samples]
     test_true_labels = np.array(test_true_labels[:min_samples])
     test_metadata = test_metadata[:min_samples]
-    
-    # Apply class-specific thresholds
+
     test_pred_binary = np.array([
-        (test_predictions[:, i] > thresholds[mlb.classes_[i]]).astype(int) 
+        (test_predictions[:, i] > thresholds[mlb.classes_[i]]).astype(int)
         for i in range(len(mlb.classes_))
     ]).T
-    
-    # Aggregate predictions to per-second level
+
     per_second_data = defaultdict(lambda: {'true': set(), 'pred': set(), 'audio_path': None})
-    
-    # Aggregate true labels and binary predictions
+
     for i in range(min_samples):
         metadata = test_metadata[i]
         start_time = metadata['start_time']
         audio_path = metadata['audio_path']
-        
-        # Round the start time to the nearest second to create a key
         second = round(start_time)
-        
-        # Add true labels
+
         true_labels_indices = np.where(test_true_labels[i] == 1)[0]
         for idx in true_labels_indices:
             per_second_data[audio_path, second]['true'].add(mlb.classes_[idx])
-        
-        # Add predicted labels
+
         pred_labels_indices = np.where(test_pred_binary[i] == 1)[0]
         for idx in pred_labels_indices:
             per_second_data[audio_path, second]['pred'].add(mlb.classes_[idx])
-            
+
         per_second_data[audio_path, second]['audio_path'] = audio_path
 
-    # Write predictions to JSONL file
     with open(predictions_file, 'w') as f:
         for (audio_path, second), data in sorted(per_second_data.items()):
-            # Infer 'no speech' label
-            if not data['true']:
-                data['true'].add('no speech')
-            if not data['pred']:
-                data['pred'].add('no speech')
-
             record = {
                 "audio_path": data['audio_path'],
                 "second": second,
@@ -108,92 +82,114 @@ def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output
                 "predicted_labels": sorted(list(data['pred'])),
             }
             f.write(json.dumps(record) + '\n')
-            
+
     print(f"✅ Predictions saved to: {predictions_file}")
     return predictions_file
 
 
-def compute_metrics_from_predictions(predictions_file, mlb, output_dir):
+def compute_metrics_from_predictions(predictions_file, output_dir):
     """
-    Loads per-second predictions from a JSONL file and computes precision, recall, and F1 for each speech class independently.
-    Also saves the metrics summary to a text file in the output directory.
+    Evaluate multilabel per-second predictions per class and generate confusion matrix.
+    Empty GT/prediction = 'silence'.
+    """
+    classes = AudioConfig.VALID_RTTM_CLASSES
+    all_classes = classes + ["silence"]
 
-    Parameters
-    ----------
-    predictions_file (Path):
-        Path to the JSONL file containing per-second predictions
-    mlb (MultiLabelBinarizer):
-        Fitted label encoder
-    output_dir (Path):
-        Directory to save the final evaluation report
-    """
-    print("\n📈 Computing metrics from saved predictions...")
-    
-    # Load predictions from file
-    true_labels_list = []
-    pred_labels_list = []
-    
-    with open(predictions_file, 'r') as f:
+    # Initialize per-class counts
+    counts = {cls: dict(TP=0, FP=0, FN=0, TN=0) for cls in classes}
+
+    # Initialize confusion matrix
+    cm = {gt: {pred: 0 for pred in all_classes} for gt in all_classes}
+
+    with open(predictions_file, "r") as f:
         for line in f:
             record = json.loads(line)
-            true_labels_list.append(record['true_labels'])
-            pred_labels_list.append(record['predicted_labels'])
-    
-    # Only use speech classes
-    speech_classes = list(mlb.classes_)
-    mlb_speech = MultiLabelBinarizer(classes=speech_classes)
-    mlb_speech.fit(None)
+            gt_labels = record["true_labels"] or []
+            pred_labels = record["predicted_labels"] or []
 
-    true_bin = mlb_speech.transform(true_labels_list)
-    pred_bin = mlb_speech.transform(pred_labels_list)
+            # If empty, consider as silence
+            if not gt_labels:
+                gt_labels = ["silence"]
+            if not pred_labels:
+                pred_labels = ["silence"]
 
-    # Collect metrics for each class
-    metrics_lines = []
-    metrics_lines.append("Speech Class Metrics:")
-    metrics_lines.append("=" * 50)
-    precisions = []
-    recalls = []
-    f1s = []
-    supports = []
-    for i, class_name in enumerate(speech_classes):
-        y_true = true_bin[:, i]
-        y_pred = pred_bin[:, i]
-        precision = precision_score(y_true, y_pred, zero_division=0)
-        recall = recall_score(y_true, y_pred, zero_division=0)
-        f1 = f1_score(y_true, y_pred, zero_division=0)
-        support = y_true.sum()
-        precisions.append(precision)
-        recalls.append(recall)
-        f1s.append(f1)
-        supports.append(support)
-        metrics_lines.append(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, Support={support}")
-    metrics_lines.append("=" * 50)
-    # Macro F1
-    macro_f1 = np.mean(f1s)
-    metrics_lines.append(f"Macro F1: {macro_f1:.3f}")
-    metrics_lines.append(f"Total Support: {sum(supports)}")
-    metrics_lines.append(f"✅ Evaluation completed. Metrics saved to {output_dir}")
+            # Update per-class TP/FP/FN/TN
+            for cls in classes:
+                gt_val = 1 if cls in gt_labels else 0
+                pred_val = 1 if cls in pred_labels else 0
 
-    # Print to console
-    for line in metrics_lines:
-        print(line)
-    
-    # Save to text file
+                if gt_val == 1 and pred_val == 1:
+                    counts[cls]["TP"] += 1
+                elif gt_val == 1 and pred_val == 0:
+                    counts[cls]["FN"] += 1
+                elif gt_val == 0 and pred_val == 1:
+                    counts[cls]["FP"] += 1
+                else:
+                    counts[cls]["TN"] += 1
+
+            # Update confusion matrix
+            for gt in gt_labels:
+                for pred in pred_labels:
+                    if gt not in all_classes:
+                        gt = "silence"
+                    if pred not in all_classes:
+                        pred = "silence"
+                    cm[gt][pred] += 1
+
+    # Save metrics and counts to text file
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_file = output_dir / "metrics_summary.txt"
-    with open(metrics_file, 'w') as f:
-        for line in metrics_lines:
-            f.write(line + '\n')
-    print(f"📄 Metrics summary saved to: {metrics_file}")
+    with open(metrics_file, "w") as f:
+        f.write("Per-class metrics:\n")
+        f.write("="*40 + "\n")
+        for cls in classes:
+            TP, FP, FN, TN = counts[cls]["TP"], counts[cls]["FP"], counts[cls]["FN"], counts[cls]["TN"]
+            precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+            recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+            f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
+            f.write(f"{cls}: TP={TP}, FP={FP}, FN={FN}, TN={TN}, P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}\n")
+
+        f.write("\nConfusion matrix (GT rows, Pred cols):\n")
+        f.write("\t" + "\t".join(all_classes) + "\n")
+        for gt in all_classes:
+            f.write(f"{gt}\t" + "\t".join(str(cm[gt][pred]) for pred in all_classes) + "\n")
+
+    # Plot confusion matrix (absolute)
+    cm_array = np.array([[cm[gt][pred] for pred in all_classes] for gt in all_classes])
+    plt.figure(figsize=(6,5))
+    sns.heatmap(cm_array, annot=True, fmt="d", cmap="Blues", xticklabels=all_classes, yticklabels=all_classes)
+    plt.xlabel("Predicted")
+    plt.ylabel("Ground Truth")
+    plt.title("Multilabel Confusion Matrix")
+    plt.tight_layout()
+    plt.savefig(output_dir / "multilabel_confusion_matrix.png")
+    plt.close()
+
+    # Plot confusion matrix (percentages, row-normalized)
+    cm_percent = cm_array.astype(float)
+    row_sums = cm_percent.sum(axis=1, keepdims=True)
+    cm_percent = np.divide(cm_percent, row_sums, out=np.zeros_like(cm_percent), where=row_sums!=0)
+    plt.figure(figsize=(6,5))
+    sns.heatmap(cm_percent, annot=True, fmt=".2%", cmap="Blues", xticklabels=all_classes, yticklabels=all_classes)
+    plt.xlabel("Predicted")
+    plt.ylabel("Ground Truth")
+    plt.title("Multilabel Confusion Matrix (Percentages)")
+    plt.tight_layout()
+    plt.savefig(output_dir / "multilabel_confusion_matrix_percent.png")
+    plt.close()
+
+    print(f"✅ Metrics saved to {metrics_file}")
+    print(f"✅ Confusion matrix saved to {output_dir/'multilabel_confusion_matrix.png'}")
+    print(f"✅ Percentage confusion matrix saved to {output_dir/'multilabel_confusion_matrix_percent.png'}")
+
+    return counts, cm
+
 
 def main():
-    """
-    Execute comprehensive audio classification model evaluation pipeline.
-    """   
     try:
         print("🚀 Starting Comprehensive Audio Classification Model Evaluation")
         print("=" * 70)
-        
+
         test_segments_file = AudioClassification.TEST_SECONDS_FILE
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = AudioClassification.TRAINED_WEIGHTS_PATH.parent
@@ -201,18 +197,13 @@ def main():
 
         model, mlb = load_model()
         thresholds = load_thresholds(mlb.classes_)
-        
-        segment_files = {
-            'train': None,
-            'val': None,
-            'test': test_segments_file
-        }
+
+        segment_files = {'train': None, 'val': None, 'test': test_segments_file}
         _, _, test_generator = create_data_generators(segment_files, mlb)
-        
+
         if test_generator is None or len(test_generator) == 0:
             raise ValueError("Test generator is empty. Check test data file and paths.")
-            
-        # Refactored: First generate predictions and save to file
+
         predictions_file = evaluate_and_save_predictions(
             model=model,
             test_generator=test_generator,
@@ -220,25 +211,19 @@ def main():
             thresholds=thresholds,
             output_dir=folder_name
         )
-        
-        # Then, compute metrics from the saved predictions
-        compute_metrics_from_predictions(
-            predictions_file=predictions_file,
-            mlb=mlb,
-            output_dir=folder_name
-        )
-        
+
+        compute_metrics_from_predictions(predictions_file, output_dir=folder_name)
+
     except FileNotFoundError as e:
         print(f"❌ File not found: {e}")
-        print("💡 Ensure training has completed and all required files exist")
         raise
     except ValueError as e:
         print(f"❌ Configuration or data error: {e}")
-        print("💡 Check model compatibility and data file formats")
         raise
     except Exception as e:
         print(f"❌ Unexpected evaluation error: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()
