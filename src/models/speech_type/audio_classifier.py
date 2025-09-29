@@ -2,14 +2,14 @@ import json
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
-from tensorflow.keras.metrics import Precision, Recall, Metric
+from tensorflow.keras.metrics import Precision, Recall
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import *
 from sklearn.metrics import f1_score
 
 # --- Deep Learning Model Architecture ---
-def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
+def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=False):
     """
     Build a deep learning model for multi-label voice type classification.
     
@@ -28,6 +28,8 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
         Fixed number of time steps in input spectrograms
     num_classes (int): 
         Number of voice type classes to predict
+    freeze_cnn (bool): 
+        If True, freeze CNN layers during training to use as fixed feature extractor
         
     Returns
     -------
@@ -58,43 +60,43 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     input_mel = Input(shape=input_shape, name='mel_spectrogram_input')
     x = input_mel
 
-    def conv_block(x, filters, kernel_size=(3, 3), strides=(1, 1)):
-        """ResNet-style convolutional block with skip connections."""
-        shortcut = x  # Store input for skip connection
+    # Define a helper function to create a trainable Conv2D block
+    def conv_block(x, filters, kernel_size=(3, 3), strides=(1, 1), trainable=True):
+        """ResNet-style convolutional block with a trainable flag."""
+        shortcut = x
         
         # First convolution + batch norm + activation
-        x = Conv2D(filters, kernel_size, strides=strides, padding='same')(x)
-        x = BatchNormalization()(x)
+        x = Conv2D(filters, kernel_size, strides=strides, padding='same', trainable=trainable)(x)
+        x = BatchNormalization(trainable=trainable)(x)
         x = Activation('relu')(x)
         
-        # Second convolution + batch norm (no activation yet)
-        x = Conv2D(filters, kernel_size, padding='same')(x)
-        x = BatchNormalization()(x)
+        # Second convolution + batch norm
+        x = Conv2D(filters, kernel_size, padding='same', trainable=trainable)(x)
+        x = BatchNormalization(trainable=trainable)(x)
         
-        # Adjust shortcut dimensions if needed for skip connection
+        # Adjust shortcut dimensions if needed
         if shortcut.shape[-1] != filters or strides != (1, 1):
-            shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same')(shortcut)
-            shortcut = BatchNormalization()(shortcut)
+            shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same', trainable=trainable)(shortcut)
+            shortcut = BatchNormalization(trainable=trainable)(shortcut)
         
-        # Add skip connection and final activation
-        x = Add()([x, shortcut])  # Element-wise addition enables gradient flow
+        x = Add()([x, shortcut])
         x = Activation('relu')(x)
         return x
     
-    # Build CNN backbone: 4 ResNet blocks with progressive filter sizes
-    x = conv_block(x, 32)      # First block: learn basic patterns
-    x = MaxPooling2D((2, 2))(x)  # Downsample by 2x
-    x = Dropout(0.25)(x)       # Prevent overfitting
-    
-    x = conv_block(x, 64)      # Second block: more complex features  
+    # Build CNN backbone with the new trainable flag
+    x = conv_block(x, 32, trainable=not freeze_cnn)
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.25)(x)
     
-    x = conv_block(x, 128)     # Third block: high-level patterns
+    x = conv_block(x, 64, trainable=not freeze_cnn)
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.25)(x)
+    
+    x = conv_block(x, 128, trainable=not freeze_cnn)
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.3)(x)
     
-    x = conv_block(x, 256)     # Fourth block: abstract representations
+    x = conv_block(x, 256, trainable=not freeze_cnn)
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.3)(x)
 
@@ -156,13 +158,14 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
 
     model = Model(inputs=input_mel, outputs=output)
     
+    # Recompile the model to apply the new trainable settings
     macro_f1 = MacroF1Score(num_classes=num_classes, name='macro_f1')
     model.compile(
         optimizer=Adam(learning_rate=0.0005),
-        loss=FocalLoss(gamma=2.0, alpha=0.25),
+        loss=FocalLoss(gamma=4.0, alpha=0.25),
         metrics=['accuracy', Precision(name='precision'), Recall(name='recall'), macro_f1]
     )
-    model.log_dir = None  # For ThresholdOptimizer
+    
     return model
 
 class FocalLoss(tf.keras.losses.Loss):
@@ -243,11 +246,10 @@ class MacroF1Score(tf.keras.metrics.Metric):
         super().__init__(name=name, **kwargs)
         self.num_classes = num_classes
         self.threshold = threshold
-        
-        # Use single confusion matrix variables instead of per-class metrics
-        self.true_positives = self.add_weight(name='tp', shape=(num_classes,), initializer='zeros')
-        self.false_positives = self.add_weight(name='fp', shape=(num_classes,), initializer='zeros')
-        self.false_negatives = self.add_weight(name='fn', shape=(num_classes,), initializer='zeros')
+        # Ensure metric variables are always float32 for mixed precision compatibility
+        self.true_positives = self.add_weight(name='tp', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
+        self.false_positives = self.add_weight(name='fp', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
+        self.false_negatives = self.add_weight(name='fn', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         # Convert to float and apply threshold for binary predictions
@@ -384,7 +386,7 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         # use path instead of os
         if self.model.log_dir is not None and Path(self.model.log_dir).exists():
             with open(Path(self.model.log_dir) / 'thresholds.json', 'w') as f:
-                json.dump(threshold_dict, f, indent=2)
+                json.dump(threshold_dict, build_model_multi_label, indent=2)
 
     def _compute_macro_f1(self, predictions, true_labels, thresholds):
         """Compute macro F1-score with given thresholds.
@@ -399,3 +401,17 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
             f1 = f1_score(y_true, y_pred, zero_division=0)
             f1_scores.append(f1)
         return np.mean(f1_scores)  # Equal weight to each class
+    
+    def reset_state(self):
+        self.best_thresholds = [0.5] * len(self.mlb_classes)
+        self.best_f1 = 0.0
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({'mlb_classes': self.mlb_classes})
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        mlb_classes = config.pop('mlb_classes', [])
+        return cls(validation_generator=None, mlb_classes=mlb_classes)
