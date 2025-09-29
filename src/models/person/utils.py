@@ -16,10 +16,21 @@ from torchvision import transforms
 from torch.utils.data import DataLoader
 from config import PersonConfig
 from constants import PersonClassification
-from person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
+from models.person.person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+def sequence_features_from_cnn(cnn, images_padded, lengths, device):
+    """
+    Extracts features from padded image sequences using the CNN encoder.
+    """
+    bs, max_seq, C, H, W = images_padded.shape
+    images_flat = images_padded.view(bs * max_seq, C, H, W).to(device)
+    feats_flat = cnn(images_flat)
+    feat_dim = feats_flat.shape[-1]
+    feats = feats_flat.view(bs, max_seq, feat_dim)
+    return feats
 
 def setup_environment(is_training=True):
     """Sets up the output directory, device, and mixed-precision scaler.
