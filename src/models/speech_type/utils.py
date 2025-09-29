@@ -324,8 +324,7 @@ class TrainingLogger(tf.keras.callbacks.Callback):
 
 def create_data_generators(segment_files, mlb):
     """
-    Create data generators for training, validation, and testing,
-    handling different segment durations.
+    Creates tf.data.Dataset generators for training, validation, and testing.
 
     Parameters:
     ----------
@@ -339,68 +338,52 @@ def create_data_generators(segment_files, mlb):
     tuple: 
         (train_generator, val_generator, test_generator)
     """
-    train_generator = None
-    val_generator = None
-    test_generator = None
+    train_dataset = None
+    val_dataset = None
+    test_dataset = None
 
-    # Process training and validation files with a fixed window duration
-    # Since these are for training, we expect them to be the standard window size.
     for split, file_path in segment_files.items():
-        if file_path is None or split == 'test':
+        if file_path is None:
             continue
+            
+        # Create a dataset from the segment file paths
+        dataset = tf.data.TextLineDataset(str(file_path))
         
-        # Use the standard window duration from AudioConfig
-        fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-        
-        generator_params = {
-            'file_path': file_path,
-            'mlb': mlb,
-            'n_mels': AudioConfig.N_MELS,
-            'hop_length': AudioConfig.HOP_LENGTH,
-            'sr': AudioConfig.SR,
-            'window_duration': AudioConfig.WINDOW_DURATION,
-            'fixed_time_steps': fixed_time_steps,
-            'batch_size': 32,
-            'shuffle': True if split == 'train' else False,
-            'augment': True if split == 'train' else False,
-        }
-        
+        # Shuffle the dataset for training
         if split == 'train':
-            train_generator = AudioSegmentDataGenerator(**generator_params)
-        elif split == 'val':
-            val_generator = AudioSegmentDataGenerator(**generator_params)
-
-    # Process the test file dynamically
-    if segment_files.get('test') is not None:
-        test_file_path = segment_files['test']
-        try:
-            # Inspect the first segment to determine the window duration or if it's per-second data
-            with open(test_file_path, 'r') as f:
-                first_line = f.readline()
-                if first_line:
-                    first_segment = json.loads(first_line)
-                    # Check for 'duration' key. If it's not there, assume 1.0s duration.
-                    test_window_duration = first_segment.get('duration', 1.0)
-                else:
-                    raise ValueError("Test segment file is empty.")
-                    
-            print(f"Detected test segment duration: {test_window_duration}s")
-            
-            # Calculate time steps based on the detected test segment duration
-            fixed_time_steps_test = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-            
-            # Initialize the test generator with the correct parameters
-            test_generator = AudioSegmentDataGenerator(
-                test_file_path, mlb,
-                AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-                AudioConfig.WINDOW_DURATION, fixed_time_steps_test,
-                batch_size=32, shuffle=False, augment=False
+            dataset = dataset.shuffle(
+                buffer_size=1024,
+                reshuffle_each_iteration=True
             )
-        except (json.JSONDecodeError, FileNotFoundError, ValueError) as e:
-            print(f"❌ Error initializing test generator: {e}")
-            test_generator = None
+
+        # Use tf.data.experimental.AUTOTUNE for dynamic parallelization
+        # `num_parallel_calls` determines how many segments are processed at once
+        dataset = dataset.map(
+            lambda x: tf.py_function(
+                func=lambda s: load_and_preprocess_segment(s, mlb),
+                inp=[x],
+                Tout=[tf.float32, tf.float32]
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE
+        )
+        
+        # Ensure the output shapes are fixed for the model
+        dataset = dataset.map(lambda x, y: (tf.ensure_shape(x, (141, 32, 1)), y))
+        
+        # Batch the dataset
+        dataset = dataset.batch(32)
+        
+        # Prefetch data to ensure the GPU is never idle
+        dataset = dataset.prefetch(tf.data.AUTOTUNE)
+
+        if split == 'train':
+            train_dataset = dataset
+        elif split == 'val':
+            val_dataset = dataset
+        elif split == 'test':
+            test_dataset = dataset
     
-    return train_generator, val_generator, test_generator
+    return train_dataset, val_dataset, test_dataset
 
 def create_training_callbacks(run_dir, val_generator, mlb_classes):
     """
@@ -597,6 +580,50 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
         print(f"Error processing segment from {audio_path} [{start_time}s, duration {duration}s]: {e}")
         effective_n_mels = min(n_mels, 128)  # Cap at 128 for 16kHz to avoid empty filters
         return np.zeros((effective_n_mels + 13, fixed_time_steps), dtype=np.float32)
+
+# This function will be used inside the tf.data pipeline
+def load_and_preprocess_segment(segment_data_string, mlb):
+    """
+    Loads, preprocesses, and augments a single audio segment.
+    
+    Parameters:
+    ----------
+    segment_data_string (tf.Tensor): 
+        Serialized JSON string containing segment metadata
+    mlb (MultiLabelBinarizer): 
+        Fitted multi-label binarizer for encoding labels
+        
+    Returns:
+    -------
+    tuple: 
+        (mel_features, labels) where:
+        - mel_features (tf.Tensor): Preprocessed mel-spectrogram + MFCC features
+        - labels (tf.Tensor): Multi-hot encoded labels for the segment
+    """
+    # The segment data comes as a string, so we parse it
+    segment = json.loads(segment_data_string.numpy().decode('utf-8'))
+    
+    # Extract features using your existing function
+    # Note: `extract_features` should be defined elsewhere.
+    mel_features = extract_features(
+        segment['audio_path'],
+        segment.get('start', segment.get('second', 0.0)),
+        segment.get('duration', 1.0),
+        sr=AudioConfig.SR,
+        n_mels=AudioConfig.N_MELS,create_data_generators
+        hop_length=AudioConfig.HOP_LENGTH,
+        fixed_time_steps=int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+    )
+    
+    # Convert numpy array to a TensorFlow Tensor
+    mel_features = tf.convert_to_tensor(mel_features, dtype=tf.float32)
+    mel_features = tf.expand_dims(mel_features, axis=-1)
+
+    # Encode labels
+    labels = tf.constant(mlb.transform([segment['labels']])[0], dtype=tf.float32)
+    
+    # Return features and labels
+    return mel_features, labels
 
 # ---- Evaluation Functions ----
 def aggregate_windows_to_seconds(window_predictions, window_true_labels, window_metadata):
