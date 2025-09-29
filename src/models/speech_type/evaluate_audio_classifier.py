@@ -116,6 +116,7 @@ def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output
 def compute_metrics_from_predictions(predictions_file, mlb, output_dir):
     """
     Loads per-second predictions from a JSONL file and computes precision, recall, and F1 for each speech class independently.
+    Also saves the metrics summary to a text file in the output directory.
 
     Parameters
     ----------
@@ -146,8 +147,14 @@ def compute_metrics_from_predictions(predictions_file, mlb, output_dir):
     true_bin = mlb_speech.transform(true_labels_list)
     pred_bin = mlb_speech.transform(pred_labels_list)
 
-    print("📊 Speech Class Metrics:")
-    print("=" * 50)
+    # Collect metrics for each class
+    metrics_lines = []
+    metrics_lines.append("Speech Class Metrics:")
+    metrics_lines.append("=" * 50)
+    precisions = []
+    recalls = []
+    f1s = []
+    supports = []
     for i, class_name in enumerate(speech_classes):
         y_true = true_bin[:, i]
         y_pred = pred_bin[:, i]
@@ -155,9 +162,29 @@ def compute_metrics_from_predictions(predictions_file, mlb, output_dir):
         recall = recall_score(y_true, y_pred, zero_division=0)
         f1 = f1_score(y_true, y_pred, zero_division=0)
         support = y_true.sum()
-        print(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, Support={support}")
-    print("=" * 50)
-    print(f"✅ Evaluation completed. Metrics saved to {output_dir}")
+        precisions.append(precision)
+        recalls.append(recall)
+        f1s.append(f1)
+        supports.append(support)
+        metrics_lines.append(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, Support={support}")
+    metrics_lines.append("=" * 50)
+    # Macro F1
+    macro_f1 = np.mean(f1s)
+    metrics_lines.append(f"Macro F1: {macro_f1:.3f}")
+    metrics_lines.append(f"Total Support: {sum(supports)}")
+    metrics_lines.append(f"✅ Evaluation completed. Metrics saved to {output_dir}")
+
+    # Print to console
+    for line in metrics_lines:
+        print(line)
+    
+    # Save to text file
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_file = output_dir / "metrics_summary.txt"
+    with open(metrics_file, 'w') as f:
+        for line in metrics_lines:
+            f.write(line + '\n')
+    print(f"📄 Metrics summary saved to: {metrics_file}")
 
 def main():
     """
