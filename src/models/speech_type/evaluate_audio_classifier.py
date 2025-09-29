@@ -5,6 +5,7 @@ from datetime import datetime
 from constants import AudioClassification
 from utils import load_thresholds, load_model, create_data_generators, setup_gpu_config
 from tqdm import tqdm
+from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
 
 # Setup GPU configuration
@@ -49,7 +50,7 @@ def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output
             ]
             for segment in batch_segments[:len(labels)]:
                 test_metadata.append({
-                    'start_time': segment.get('start', 0.0),
+                    'start_time': segment.get('second', 0.0),
                     'audio_path': segment.get('audio_path', 'unknown')
                 })
     
@@ -114,8 +115,8 @@ def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output
 
 def compute_metrics_from_predictions(predictions_file, mlb, output_dir):
     """
-    Loads per-second predictions from a JSONL file and computes all evaluation metrics.
-    
+    Loads per-second predictions from a JSONL file and computes precision, recall, and F1 for each speech class independently.
+
     Parameters
     ----------
     predictions_file (Path):
@@ -136,39 +137,26 @@ def compute_metrics_from_predictions(predictions_file, mlb, output_dir):
             record = json.loads(line)
             true_labels_list.append(record['true_labels'])
             pred_labels_list.append(record['predicted_labels'])
-            
-    # Re-binarize labels, including 'no speech'
-    all_classes = sorted(list(set(mlb.classes_) | {'no speech'}))
-    mlb_all = MultiLabelBinarizer(classes=all_classes)
-    mlb_all.fit(None) # Fit to all_classes directly
+    
+    # Only use speech classes
+    speech_classes = list(mlb.classes_)
+    mlb_speech = MultiLabelBinarizer(classes=speech_classes)
+    mlb_speech.fit(None)
 
-    expanded_true_labels = mlb_all.transform(true_labels_list)
-    expanded_pred_labels = mlb_all.transform(pred_labels_list)
-    
-    # Calculate comprehensive metrics
-    precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
-        expanded_true_labels, expanded_pred_labels, average=None, zero_division=0
-    )
-    
-    macro_precision = precision_score(expanded_true_labels, expanded_pred_labels, average='macro', zero_division=0)
-    macro_recall = recall_score(expanded_true_labels, expanded_pred_labels, average='macro', zero_division=0)
-    macro_f1 = f1_score(expanded_true_labels, expanded_pred_labels, average='macro', zero_division=0)
-    
-    micro_precision = precision_score(expanded_true_labels, expanded_pred_labels, average='micro', zero_division=0)
-    micro_recall = recall_score(expanded_true_labels, expanded_pred_labels, average='micro', zero_division=0)
-    micro_f1 = f1_score(expanded_true_labels, expanded_pred_labels, average='micro', zero_division=0)
-    
-    subset_accuracy = accuracy_score(expanded_true_labels, expanded_pred_labels)
-    
-    # Print and save results
-    print("📊 Metrics Summary:")
+    true_bin = mlb_speech.transform(true_labels_list)
+    pred_bin = mlb_speech.transform(pred_labels_list)
+
+    print("📊 Speech Class Metrics:")
     print("=" * 50)
-    for i, class_name in enumerate(all_classes):
-        print(f"{class_name}: P={precision_per_class[i]:.3f}, R={recall_per_class[i]:.3f}, F1={f1_per_class[i]:.3f}, Support={support_per_class[i]}")
+    for i, class_name in enumerate(speech_classes):
+        y_true = true_bin[:, i]
+        y_pred = pred_bin[:, i]
+        precision = precision_score(y_true, y_pred, zero_division=0)
+        recall = recall_score(y_true, y_pred, zero_division=0)
+        f1 = f1_score(y_true, y_pred, zero_division=0)
+        support = y_true.sum()
+        print(f"{class_name}: P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}, Support={support}")
     print("=" * 50)
-    print(f"Macro F1: {macro_f1:.3f}")
-    print(f"Micro F1: {micro_f1:.3f}")
-    print(f"Subset Accuracy: {subset_accuracy:.3f}")
     print(f"✅ Evaluation completed. Metrics saved to {output_dir}")
 
 def main():
