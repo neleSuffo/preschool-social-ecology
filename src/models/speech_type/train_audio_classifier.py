@@ -1,10 +1,13 @@
 import sys
 import os
+# --- Mixed Precision Setup ---
+from tensorflow.keras.mixed_precision import policy
+policy.set_global_policy(policy.Policy('mixed_float16'))
 import tensorflow as tf
 
 num_threads = 24
 
-os.environ["OMP_NUM_THREADS"] = str(num_threads)
+os.environ["OMP_NUM_THREADS"] = str(nuAudioSegmentDataGeneratorm_threads)
 os.environ["MKL_NUM_THREADS"] = str(num_threads)
 os.environ["NUMEXPR_NUM_THREADS"] = str(num_threads)
 os.environ["OPENBLAS_NUM_THREADS"] = str(num_threads)
