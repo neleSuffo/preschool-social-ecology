@@ -111,7 +111,7 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
             
         # Pitch shift: simulate speaker variation (changes fundamental frequency)
         if np.random.random() < 0.3:
-            n_steps = np.random.uniform(-2, 2)  # Shift by up to 2 semitones
+            n_steps = np.random.uniform(-1, 1)  # Shift by up to 1 semitone
             augmented = librosa.effects.pitch_shift(augmented, sr=self.sr, n_steps=n_steps)
             
         return augmented
@@ -368,7 +368,8 @@ def create_data_generators(segment_files, mlb):
         )
         
         # Ensure the output shapes are fixed for the model
-        dataset = dataset.map(lambda x, y: (tf.ensure_shape(x, (141, 32, 1)), y))
+        fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+        dataset = dataset.map(lambda x, y: (tf.ensure_shape(x, (141, fixed_time_steps, 1)), y))
         
         # Batch the dataset
         dataset = dataset.batch(32)
@@ -610,7 +611,7 @@ def load_and_preprocess_segment(segment_data_string, mlb):
         segment.get('start', segment.get('second', 0.0)),
         segment.get('duration', 1.0),
         sr=AudioConfig.SR,
-        n_mels=AudioConfig.N_MELS,create_data_generators
+        n_mels=AudioConfig.N_MELS,
         hop_length=AudioConfig.HOP_LENGTH,
         fixed_time_steps=int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
     )
