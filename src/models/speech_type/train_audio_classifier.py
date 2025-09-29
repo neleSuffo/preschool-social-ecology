@@ -1,13 +1,13 @@
 import sys
 import os
 # --- Mixed Precision Setup ---
-from tensorflow.keras.mixed_precision import policy
-policy.set_global_policy(policy.Policy('mixed_float16'))
+from tensorflow.keras import mixed_precision
+mixed_precision.set_global_policy('mixed_float16')
 import tensorflow as tf
 
 num_threads = 24
 
-os.environ["OMP_NUM_THREADS"] = str(nuAudioSegmentDataGeneratorm_threads)
+os.environ["OMP_NUM_THREADS"] = str(num_threads)
 os.environ["MKL_NUM_THREADS"] = str(num_threads)
 os.environ["NUMEXPR_NUM_THREADS"] = str(num_threads)
 os.environ["OPENBLAS_NUM_THREADS"] = str(num_threads)
@@ -33,11 +33,16 @@ if lib_path not in current_ld_path:
     
 import datetime
 import shutil
+import tensorflow as tf
+import numpy as np
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.metrics import Precision, Recall
+from tensorflow.keras.layers import *
 from pathlib import Path
 from constants import AudioClassification
 from config import AudioConfig
 from utils import create_data_generators, create_training_callbacks, setup_gpu_config, load_model
-
+from audio_classifier import build_model_multi_label, FocalLoss, MacroF1Score, ThresholdOptimizer
 # Setup GPU configuration
 gpu_available = setup_gpu_config()
 
@@ -68,9 +73,9 @@ def setup_training_environment():
     
     return run_dir
 
-def train_model_with_callbacks(model, train_generator, val_generator, callbacks, epochs):
+def train_model_with_callbacks(model, train_generator, val_generator, callbacks, epochs, phase):
     """
-    Train the audio classification model using data generators and callbacks.
+    Train the model with given data generators and callbacks.
     
     This function orchestrates the training process with:
     - Validation data monitoring for overfitting detection
@@ -90,6 +95,8 @@ def train_model_with_callbacks(model, train_generator, val_generator, callbacks,
         Keras callbacks (EarlyStopping, ModelCheckpoint, LRScheduler)
     epochs (int): 
         Maximum number of training epochs
+    phase (int):
+        Training phase identifier (1 or 2)
 
     Returns:
     -------
@@ -101,27 +108,18 @@ def train_model_with_callbacks(model, train_generator, val_generator, callbacks,
     ValueError:
         If generators contain no data batches
     """
-    print(f"\nStarting training for {epochs} epochs...")
-    
-    # Validate data availability before training
-    if len(train_generator) == 0 or len(val_generator) == 0:
-        raise ValueError("No batches available for training/validation. Check your segment files and data paths.")
-    
-    # Use uniform class weights for balanced ID-split data
-    # Note: For time-split data, consider computing class weights from training data
-    class_weight = None
-    print("Using uniform class weighting (recommended for ID-split balanced data)")
-    
-    # Execute training with validation monitoring
+    print(f"\nStarting training for {epochs} epochs (Phase {phase})...")
+    if hasattr(train_generator, 'cardinality') and train_generator.cardinality().numpy() == 0:
+        raise ValueError("No batches available for training. Check your segment files and data paths.")
+    if hasattr(val_generator, 'cardinality') and val_generator.cardinality().numpy() == 0:
+        raise ValueError("No batches available for validation. Check your segment files and data paths.")
     history = model.fit(
         train_generator,
         validation_data=val_generator,
         epochs=epochs,
-        callbacks=callbacks,  # Early stopping, checkpointing, LR scheduling
-        class_weight=class_weight,
-        verbose=1  # Show progress bar and metrics per epoch
+        callbacks=callbacks,
+        verbose=1
     )
-    
     return history
 
 def main():
@@ -169,38 +167,57 @@ def main():
         print("=" * 60)
                 
         # 1. Setup training environment
-        print("🏗️ Setting up training environment...")
         run_dir = setup_training_environment()
         
         # 2. Create model and setup encoders
-        print("🧠 Creating model and setting up encoders...")
         model, mlb = load_model()
         model.log_dir = run_dir  # For ThresholdOptimizer callback
 
         # 3. Create data generators
-        print("🔄 Creating data generators...")
         train_generator, val_generator, _ = create_data_generators(segment_files, mlb)
 
-        # 4. Setup training callbacks
-        print("🎯 Setting up training callbacks...")
-        callbacks = create_training_callbacks(run_dir, val_generator, mlb.classes_)
-
-        # 5. Train the model
-        print("🏋️ Starting model training...")
-        history = train_model_with_callbacks(
-            model, train_generator, val_generator, callbacks, AudioConfig.EPOCHS
+        # --- PHASE 1: Train the classifier head with frozen CNN ---
+        print("\n🧠 PHASE 1: Building and training model with frozen CNN layers...")
+        fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+        model_phase1 = build_model_multi_label(
+            n_mels=min(AudioConfig.N_MELS, 128),
+            fixed_time_steps=fixed_time_steps,
+            num_classes=len(mlb.classes_),
+            freeze_cnn=True
+        )
+        model_phase1.log_dir = run_dir
+        
+        callbacks_phase1 = create_training_callbacks(run_dir, val_generator, mlb.classes_)
+        history_phase1 = train_model_with_callbacks(
+            model_phase1, train_generator, val_generator, callbacks_phase1, AudioConfig.EPOCHS_PHASE1, 1
+        )
+        model_phase1.save(run_dir / 'best_model_phase1.keras')
+        
+        # --- PHASE 2: Fine-tune the entire model ---
+        print("\n🧠 PHASE 2: Unfreezing CNN and fine-tuning the model...")
+        model_phase2 = tf.keras.models.load_model(
+            run_dir / 'best_model_phase1.keras',
+            custom_objects={'FocalLoss': FocalLoss, 'MacroF1Score': MacroF1Score, 'ThresholdOptimizer': ThresholdOptimizer}
+        )
+        model_phase2.log_dir = run_dir
+        
+        for layer in model_phase2.layers:
+            if isinstance(layer, (Conv2D, BatchNormalization)):
+                layer.trainable = True
+                
+        model_phase2.compile(
+            optimizer=Adam(learning_rate=AudioConfig.LR_PHASE2),
+            loss=FocalLoss(gamma=2.0, alpha=0.25),
+            metrics=['accuracy', Precision(name='precision'), Recall(name='recall'), MacroF1Score(num_classes=len(mlb.classes_), name='macro_f1')]
         )
         
-        # 6. Evaluate model performance
-        print("📈 Evaluating model on validation set...")
-        val_results = model.evaluate(val_generator, verbose=0)
-        val_metrics_dict = dict(zip(model.metrics_names, val_results))
-        
-        print("\n" + "="*60)
-        print("FINAL VALIDATION RESULTS (from best restored weights)")
-        print("="*60)
-        for name, value in val_metrics_dict.items():
-            print(f"Validation {name}: {value:.4f}")
+        callbacks_phase2 = create_training_callbacks(run_dir, val_generator, mlb.classes_)
+        history_phase2 = train_model_with_callbacks(
+            model_phase2, train_generator, val_generator, callbacks_phase2, AudioConfig.EPOCHS_PHASE2, 2
+        )
+        model_phase2.save(run_dir / 'final_model_phase2.keras')
+        # 4. Setup training callbacks
+        callbacks = create_training_callbacks(run_dir, val_generator, mlb.classes_)
         
         print("✅ Training pipeline completed successfully!")
         print(f"📁 Results saved to: {run_dir}")
