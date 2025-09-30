@@ -324,9 +324,9 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         # Get all predictions and true labels at once to avoid repeated model calls
         predictions = self.model.predict(self.validation_generator, verbose=0)
         true_labels = []
-        for i in range(len(self.validation_generator)):
-            _, labels = self.validation_generator[i]
-            true_labels.extend(labels)
+        for batch in self.validation_generator:
+            _, labels = batch
+            true_labels.extend(labels.numpy() if hasattr(labels, 'numpy') else labels)
         true_labels = np.array(true_labels)
         
         # Handle potential mismatch in sample counts (edge case)
@@ -370,10 +370,9 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         threshold_dict = dict(zip(self.mlb_classes, best_thresholds))
         threshold_dict['macro_f1'] = float(macro_f1)
         
-        # use path instead of os
         if self.model.log_dir is not None and Path(self.model.log_dir).exists():
             with open(Path(self.model.log_dir) / 'thresholds.json', 'w') as f:
-                json.dump(threshold_dict, build_model_multi_label, indent=2)
+                json.dump(threshold_dict, f, indent=2)
 
     def _compute_macro_f1(self, predictions, true_labels, thresholds):
         """Compute macro F1-score with given thresholds.
