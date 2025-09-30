@@ -2,7 +2,7 @@ import sys
 import os
 # --- Mixed Precision Setup ---
 from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy('mixed_float16')
+#mixed_precision.set_global_policy('mixed_float16')
 import tensorflow as tf
 
 num_threads = 24
@@ -39,6 +39,7 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.metrics import Precision, Recall
 from tensorflow.keras.layers import *
 from pathlib import Path
+from sklearn.preprocessing import MultiLabelBinarizer
 from constants import AudioClassification
 from config import AudioConfig
 from utils import create_data_generators, create_training_callbacks, setup_gpu_config, load_model
@@ -170,8 +171,8 @@ def main():
         run_dir = setup_training_environment()
         
         # 2. Create model and setup encoders
-        model, mlb = load_model()
-        model.log_dir = run_dir  # For ThresholdOptimizer callback
+        mlb = MultiLabelBinarizer(classes=AudioConfig.VALID_RTTM_CLASSES)
+        mlb.fit([[]])  # Initialize with empty list to set up classes
 
         # 3. Create data generators
         train_generator, val_generator, _ = create_data_generators(segment_files, mlb)
@@ -191,33 +192,37 @@ def main():
         history_phase1 = train_model_with_callbacks(
             model_phase1, train_generator, val_generator, callbacks_phase1, AudioConfig.EPOCHS_PHASE1, 1
         )
-        model_phase1.save(run_dir / 'best_model_phase1.keras')
-        
+        # Instead of saving the full model, save only the weights
+        model_phase1.save_weights(run_dir / 'best_weights_phase1.h5')
+
         # --- PHASE 2: Fine-tune the entire model ---
-        print("\n🧠 PHASE 2: Unfreezing CNN and fine-tuning the model...")
-        model_phase2 = tf.keras.models.load_model(
-            run_dir / 'best_model_phase1.keras',
-            custom_objects={'FocalLoss': FocalLoss, 'MacroF1Score': MacroF1Score, 'ThresholdOptimizer': ThresholdOptimizer}
+        print("\n🧠 PHASE 2: Building a new model and fine-tuning it...")
+
+        # 1. Build a new, unfrozen model from scratch
+        model_phase2 = build_model_multi_label(
+            n_mels=min(AudioConfig.N_MELS, 128),
+            fixed_time_steps=train_generator.fixed_time_steps,
+            num_classes=len(mlb.classes_),
+            freeze_cnn=False # This model is fully trainable
         )
-        model_phase2.log_dir = run_dir
-        
-        for layer in model_phase2.layers:
-            if isinstance(layer, (Conv2D, BatchNormalization)):
-                layer.trainable = True
-                
+
+        # 2. Load the weights from the saved file
+        model_phase2.load_weights(run_dir / 'best_weights_phase1.h5')
+
+        # 3. Re-compile the new model with the lower learning rate
         model_phase2.compile(
             optimizer=Adam(learning_rate=AudioConfig.LR_PHASE2),
             loss=FocalLoss(gamma=2.0, alpha=0.25),
             metrics=['accuracy', Precision(name='precision'), Recall(name='recall'), MacroF1Score(num_classes=len(mlb.classes_), name='macro_f1')]
         )
-        
+
+        model_phase2.log_dir = run_dir
+
         callbacks_phase2 = create_training_callbacks(run_dir, val_generator, mlb.classes_)
         history_phase2 = train_model_with_callbacks(
             model_phase2, train_generator, val_generator, callbacks_phase2, AudioConfig.EPOCHS_PHASE2, 2
         )
         model_phase2.save(run_dir / 'final_model_phase2.keras')
-        # 4. Setup training callbacks
-        callbacks = create_training_callbacks(run_dir, val_generator, mlb.classes_)
         
         print("✅ Training pipeline completed successfully!")
         print(f"📁 Results saved to: {run_dir}")
