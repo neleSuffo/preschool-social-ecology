@@ -42,8 +42,8 @@ from pathlib import Path
 from sklearn.preprocessing import MultiLabelBinarizer
 from constants import AudioClassification
 from config import AudioConfig
-from utils import create_data_generators, create_training_callbacks, setup_gpu_config, load_model
-from audio_classifier import build_model_multi_label, FocalLoss, MacroF1Score, ThresholdOptimizer
+from utils import create_data_generators, create_training_callbacks, setup_gpu_config
+from audio_classifier import build_model_multi_label, FocalLoss, MacroF1Score
 # Setup GPU configuration
 gpu_available = setup_gpu_config()
 
