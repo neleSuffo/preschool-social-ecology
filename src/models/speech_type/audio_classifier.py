@@ -7,18 +7,15 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import *
 from sklearn.metrics import f1_score
+from tensorflow.keras.mixed_precision import Policy
 
 # --- Deep Learning Model Architecture ---
 def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=False):
     """
     Build a deep learning model for multi-label voice type classification.
     
-    Creates a CNN-RNN hybrid architecture with multi-head attention for 
-    classifying overlapping voice types in audio segments. The model combines:
-    - ResNet-style CNN blocks for feature extraction from spectrograms
-    - Bidirectional GRU layers for temporal modeling
-    - Multi-head attention mechanism for focus on important features
-    - Independent output heads per class for multi-label prediction
+    Includes granular control over mixed precision policy to ensure compatibility
+    with frozen layers (Conv2D and BatchNormalization).
     
     Parameters:
     ----------
@@ -35,55 +32,43 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=Fa
     -------
     Model
         Compiled Keras model ready for training
-        
-    Architecture details
-    -------------------
-    Input: 
-        (effective_n_mels + 13, fixed_time_steps, 1) - mel + MFCC features
-    CNN: 
-        4 ResNet blocks with [32, 64, 128, 256] filters
-    RNN: 
-        2 bidirectional GRU layers with [256, 128] units
-    Attention: 
-        4-head attention mechanism
-    Output: 
-        Sigmoid activation per class for multi-label prediction
-    Loss: 
-        Focal loss for handling class imbalance
-    Metrics: 
-        Accuracy, precision, recall, macro F1-score
     """
-    # Use effective mel count (capped at 128 for 16kHz audio)
     effective_n_mels = min(n_mels, 128)
     input_shape = (effective_n_mels + 13, fixed_time_steps, 1)
     
     input_mel = Input(shape=input_shape, name='mel_spectrogram_input')
     x = input_mel
 
-    # Define a helper function to create a trainable Conv2D block
+    # Define the mixed precision policy for the currently trainable layers
+    # Layers outside the conv_block (RNN/Dense) will inherit the compute_dtype
+    # 'mixed_float16' policy sets compute_dtype=float16 and variable_dtype=float32
+    mixed_precision_policy = Policy('mixed_float16')
+
     def conv_block(x, filters, kernel_size=(3, 3), strides=(1, 1), trainable=True):
-        """ResNet-style convolutional block with a trainable flag."""
+        """ResNet-style convolutional block with a trainable flag and explicit policy."""
         shortcut = x
-        
+        # For frozen layers, force dtype float32; otherwise, use default (inherits global policy)
+        conv_kwargs = {'trainable': trainable}
+        bn_kwargs = {'trainable': trainable}
+        if not trainable:
+            conv_kwargs['dtype'] = 'float32'
+            bn_kwargs['dtype'] = 'float32'
         # First convolution + batch norm + activation
-        x = Conv2D(filters, kernel_size, strides=strides, padding='same', trainable=trainable)(x)
-        x = BatchNormalization(trainable=trainable)(x)
-        x = Activation('relu')(x)
-        
+        x = Conv2D(filters, kernel_size, strides=strides, padding='same', **conv_kwargs)(x)
+        x = BatchNormalization(**bn_kwargs)(x)
+        x = Activation('relu', dtype='float32')(x)
         # Second convolution + batch norm
-        x = Conv2D(filters, kernel_size, padding='same', trainable=trainable)(x)
-        x = BatchNormalization(trainable=trainable)(x)
-        
+        x = Conv2D(filters, kernel_size, padding='same', **conv_kwargs)(x)
+        x = BatchNormalization(**bn_kwargs)(x)
         # Adjust shortcut dimensions if needed
         if shortcut.shape[-1] != filters or strides != (1, 1):
-            shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same', trainable=trainable)(shortcut)
-            shortcut = BatchNormalization(trainable=trainable)(shortcut)
-        
+            shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same', **conv_kwargs)(shortcut)
+            shortcut = BatchNormalization(**bn_kwargs)(shortcut)
         x = Add()([x, shortcut])
-        x = Activation('relu')(x)
+        x = Activation('relu', dtype='float32')(x)
         return x
     
-    # Build CNN backbone with the new trainable flag
+    # Apply the conditional CNN blocks
     x = conv_block(x, 32, trainable=not freeze_cnn)
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.25)(x)
@@ -100,39 +85,38 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=Fa
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.3)(x)
 
+    # --- RNN and Dense Head (Will default to mixed_float16 policy) ---
+    
     # Calculate dimensions after CNN layers for reshaping
-    reduced_n_mels = (effective_n_mels + 13) // 16     # Divided by 2^4 from 4 pooling layers
+    # Assuming standard architecture dimensions
+    reduced_n_mels = (effective_n_mels + 13) // 16
     reduced_time_steps = fixed_time_steps // 16
     channels_after_cnn = 256
 
     # Prepare for RNN: reshape (freq, time, channels) -> (time, freq * channels)
-    x = Permute((2, 1, 3))(x)  # Change from (freq, time, channels) to (time, freq, channels)
+    x = Permute((2, 1, 3))(x) 
     x = Reshape((reduced_time_steps, reduced_n_mels * channels_after_cnn))(x)
     
     # RNN layers for temporal modeling of audio sequences
-    x = Bidirectional(GRU(256, return_sequences=True, dropout=0.3))(x)  # Bidirectional: see past and future context
-    x = Bidirectional(GRU(128, return_sequences=True, dropout=0.3))(x)  # Smaller layer for refinement
+    x = Bidirectional(GRU(256, return_sequences=True, dropout=0.3))(x) 
+    x = Bidirectional(GRU(128, return_sequences=True, dropout=0.3))(x)  
 
     def multi_head_attention(x, num_heads=4):
         """Multi-head attention mechanism to focus on important time steps."""
         head_size = x.shape[-1] // num_heads
         heads = []
         
-        # Create multiple attention heads to focus on different aspects
         for i in range(num_heads):
-            # Compute attention weights: which time steps are most important?
-            attention = Dense(1, activation='tanh')(x)     # Score each time step
-            attention = Flatten()(attention)               # Flatten to 1D
-            attention = Activation('softmax')(attention)   # Convert to probabilities (sum=1)
-            attention = RepeatVector(x.shape[-1])(attention)  # Broadcast to feature dimension
-            attention = Permute((2, 1))(attention)         # Align dimensions for multiplication
+            attention = Dense(1, activation='tanh')(x)     
+            attention = Flatten()(attention)               
+            attention = Activation('softmax')(attention)   
+            attention = RepeatVector(x.shape[-1])(attention)  
+            attention = Permute((2, 1))(attention)         
             
-            # Apply attention: weight the features by importance
-            head = multiply([x, attention])                # Element-wise multiplication
-            head = Lambda(lambda xin: tf.reduce_sum(xin, axis=1), output_shape=(256,))(head)  # Specify the expected output shape
+            head = multiply([x, attention])                
+            head = Lambda(lambda xin: tf.reduce_sum(xin, axis=1), output_shape=(256,))(head) 
             heads.append(head)
         
-        # Combine all attention heads
         return Concatenate()(heads) if len(heads) > 1 else heads[0]
 
     x = multi_head_attention(x)
@@ -151,10 +135,13 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=Fa
     for i in range(num_classes):
         class_branch = Dense(128, activation='relu', name=f'class_{i}_dense')(x)
         class_branch = Dropout(0.3)(class_branch)
+        # Final output layer
         class_output = Dense(1, activation='sigmoid', name=f'class_{i}_output')(class_branch)
         class_outputs.append(class_output)
     
     output = Concatenate(name='combined_output')(class_outputs)
+    # --- FIX: Ensure final output is float32 for stable logits ---
+    output = Activation('sigmoid', dtype='float32')(output) 
 
     model = Model(inputs=input_mel, outputs=output)
     
