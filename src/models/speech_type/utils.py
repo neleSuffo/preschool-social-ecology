@@ -15,7 +15,7 @@ from constants import AudioClassification
 from models.speech_type.audio_classifier import build_model_multi_label, ThresholdOptimizer
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
-from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score, confusion_matrix
+from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
 
 # --- Data Generator ---
 class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
