@@ -134,15 +134,19 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
                 if mel.ndim == 3 and mel.shape[-1] == 1:
                     mel = mel.squeeze(axis=-1)
                 else:
+                    print(f"Skipping segment due to unexpected mel shape: {mel.shape} (segment: {segment})")
                     continue
             X_batch.append(mel)
             multi_hot_labels = self.mlb.transform([segment['labels']])[0]
             y_batch.append(multi_hot_labels)
         if not X_batch:
+            print(f"Empty batch at index {index}. Returning empty arrays.")
             return np.array([]), np.array([])
         X_batch_np = np.array(X_batch)
         X_batch_final = np.expand_dims(X_batch_np, -1)
-        return X_batch_final, np.array(y_batch)
+        y_batch_np = np.array(y_batch)
+        print(f"__getitem__ index {index}: X_batch_final shape: {X_batch_final.shape}, y_batch shape: {y_batch_np.shape}")
+        return X_batch_final, y_batch_np
 
     def on_epoch_end(self):
         self.indexes = np.arange(len(self.segments_data))
@@ -331,7 +335,7 @@ def create_data_generators(segment_files, mlb):
     segment_files (dict): 
         Paths to segment files for each split.
     mlb: 
-        Fitted MultiLabelBinarizer.
+        Fitted MultiLabelBinarizer (used to get num_classes).
         
     Returns:
     -------
@@ -341,40 +345,46 @@ def create_data_generators(segment_files, mlb):
     train_dataset = None
     val_dataset = None
     test_dataset = None
+    
+    # Calculate fixed dimensions once
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+    num_classes = len(mlb.classes_)
+    # The feature dimension is fixed at 141 (128 mels + 13 MFCCs)
+    fixed_feature_dim = min(AudioConfig.N_MELS, 128) + 13 
 
     for split, file_path in segment_files.items():
         if file_path is None:
             continue
             
-        # Create a dataset from the segment file paths
         dataset = tf.data.TextLineDataset(str(file_path))
         
-        # Shuffle the dataset for training
         if split == 'train':
             dataset = dataset.shuffle(
                 buffer_size=1024,
                 reshuffle_each_iteration=True
             )
 
-        # Use tf.data.experimental.AUTOTUNE for dynamic parallelization
-        # `num_parallel_calls` determines how many segments are processed at once
+        # Map to load and preprocess the segment using py_function
         dataset = dataset.map(
             lambda x: tf.py_function(
                 func=lambda s: load_and_preprocess_segment(s, mlb),
                 inp=[x],
-                Tout=[tf.float32, tf.float32]
+                # Tout is correct: [features (float32), labels (float32)]
+                Tout=[tf.float32, tf.float32] 
             ),
             num_parallel_calls=tf.data.AUTOTUNE
         )
         
-        # Ensure the output shapes are fixed for the model
-        fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-        dataset = dataset.map(lambda x, y: (tf.ensure_shape(x, (141, fixed_time_steps, 1)), y))
+        # Explicitly ensure the output shapes are fixed for the Keras metric compilation
+        dataset = dataset.map(lambda x, y: (
+            tf.ensure_shape(x, (fixed_feature_dim, fixed_time_steps, 1)), # Input X shape
+            tf.ensure_shape(y, (num_classes,))                           # Target Y shape
+        ))
         
         # Batch the dataset
         dataset = dataset.batch(32)
         
-        # Prefetch data to ensure the GPU is never idle
+        # Prefetch data
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
         if split == 'train':
@@ -385,6 +395,7 @@ def create_data_generators(segment_files, mlb):
             test_dataset = dataset
     
     return train_dataset, val_dataset, test_dataset
+
 
 def create_training_callbacks(run_dir, val_generator, mlb_classes):
     """
