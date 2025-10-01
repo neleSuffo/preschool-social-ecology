@@ -83,20 +83,18 @@ def main():
     parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
     parser.add_argument('--image_path', type=str, required=True,
                         help='Image filename (e.g., quantex_at_home_id261609_2022_04_01_01_000000)')
+    parser.add_argument('--cut_face', action='store_true', help='Save each detected face as a PNG in the output directory')
     args = parser.parse_args()
     
     output_dir = FaceDetection.OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        logging.info(f"Using image: {args.image_path}")
         label_name = Path(args.image_path).stem + ".txt"
         label_path = FaceDetection.LABELS_INPUT_DIR / label_name
-        print(f"Label path: {label_path}")
         
         # Load model and process image
         model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
-        logging.info(f"Model loaded from {FaceDetection.TRAINED_WEIGHTS_PATH}")
 
         image, results = process_image(model, args.image_path)
         
@@ -124,16 +122,23 @@ def main():
         
         output_filename = Path(args.image_path).stem + "_annotated.jpg"
         output_path = output_dir / output_filename
-        
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
         success = cv2.imwrite(str(output_path), annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
         if not success:
             success = cv2.imwrite(str(output_path), annotated_image)
             if not success:
                 raise RuntimeError(f"Failed to save image to {output_path}")
-            
         logging.info(f"Annotated image saved to: {output_path}")
+
+        # If cut_face flag is set, save each detected face as PNG
+        if args.cut_face:
+            for i, bbox in enumerate(results.xyxy):
+                x1, y1, x2, y2 = map(int, bbox)
+                face_crop = image[y1:y2, x1:x2]
+                face_filename = f"{Path(args.image_path).stem}_face_{i+1}.png"
+                face_path = output_dir / face_filename
+                cv2.imwrite(str(face_path), face_crop)
+                logging.info(f"Saved face crop: {face_path}")
         
     except Exception as e:
         logging.error(f"Processing failed: {e}")
