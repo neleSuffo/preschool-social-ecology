@@ -79,48 +79,46 @@ def load_ground_truth(label_path: str, img_width: int, img_height: int) -> Tuple
     
     return np.array(ground_truth_boxes), np.array(ground_truth_classes)
 
-def main():
-    parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
-    parser.add_argument('--image_path', type=str, required=True,
-                        help='Image filename (e.g., quantex_at_home_id261609_2022_04_01_01_000000)')
-    parser.add_argument('--cut_face', action='store_true', help='Save each detected face as a PNG in the output directory')
-    args = parser.parse_args()
+def process_and_save(image_path, output_dir, cut_face):
+    """
+    Process the image for face detection and save the results.
     
-    output_dir = FaceDetection.OUTPUT_DIR
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        label_name = Path(args.image_path).stem + ".txt"
-        label_path = FaceDetection.LABELS_INPUT_DIR / label_name
-        
-        # Load model and process image
-        model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
-
-        image, results = process_image(model, args.image_path)
-        
-        img_height, img_width = image.shape[:2]
-        ground_truth_boxes = None
-        ground_truth_classes = None
-        
-        # Only if label file exists
-        if label_path.exists():
-            ground_truth_boxes, ground_truth_classes = load_ground_truth(str(label_path), img_width, img_height)
-            logging.info(f"Found {len(ground_truth_boxes)} ground truth boxes")
-
-            # Calculate IoU for each detection
-            for i, (detected_bbox, conf, class_id) in enumerate(zip(results.xyxy, results.confidence, results.class_id)):
-                #class_name = "Child" if int(class_id) == 0 else "Adult"
-                iou_scores = [calculate_iou(detected_bbox, gt_bbox) for gt_bbox in ground_truth_boxes]
-                max_iou = max(iou_scores) if iou_scores else 0
-                #logging.info(f"Detection {i+1} - {class_name} - Max IoU: {max_iou:.4f}")
-                logging.info(f"Detection {i+1} - Max IoU: {max_iou:.4f}")
-        else:
-            logging.warning(f"No label file found for {args.image_path}. Skipping IoU and GT drawing.")
-        
-        # Draw detections (GT only if available)
+    Parameters:
+    -----------
+    image_path : Path
+        Path to the input image file.
+    output_dir : Path
+        Directory to save the output (annotated image or face crops).
+    cut_face : bool
+        If True, save each detected face as a PNG in the output directory.
+    """
+    label_name = image_path.stem + ".txt"
+    label_path = FaceDetection.LABELS_INPUT_DIR / label_name
+    model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
+    image, results = process_image(model, image_path)
+    img_height, img_width = image.shape[:2]
+    ground_truth_boxes = None
+    ground_truth_classes = None
+    if label_path.exists():
+        ground_truth_boxes, ground_truth_classes = load_ground_truth(str(label_path), img_width, img_height)
+        logging.info(f"Found {len(ground_truth_boxes)} ground truth boxes")
+        for i, (detected_bbox, conf, class_id) in enumerate(zip(results.xyxy, results.confidence, results.class_id)):
+            iou_scores = [calculate_iou(detected_bbox, gt_bbox) for gt_bbox in ground_truth_boxes]
+            max_iou = max(iou_scores) if iou_scores else 0
+            logging.info(f"Detection {i+1} - Max IoU: {max_iou:.4f}")
+    else:
+        logging.warning(f"No label file found for {image_path}. Skipping IoU and GT drawing.")
+    if cut_face:
+        for i, bbox in enumerate(results.xyxy):
+            x1, y1, x2, y2 = map(int, bbox)
+            face_crop = image[y1:y2, x1:x2]
+            face_filename = f"{image_path.stem}_face_{i+1}.PNG"
+            face_path = output_dir / face_filename
+            cv2.imwrite(str(face_path), face_crop)
+            logging.info(f"Saved face crop: {face_path}")
+    else:
         annotated_image = draw_detections_and_ground_truth(image, results, ground_truth_boxes, ground_truth_classes)
-        
-        output_filename = Path(args.image_path).stem + "_annotated.jpg"
+        output_filename = image_path.stem + "_annotated.jpg"
         output_path = output_dir / output_filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
         success = cv2.imwrite(str(output_path), annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -129,21 +127,31 @@ def main():
             if not success:
                 raise RuntimeError(f"Failed to save image to {output_path}")
         logging.info(f"Annotated image saved to: {output_path}")
+            
+def main():
+    parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
+    parser.add_argument('--image_path', type=str, required=True,
+                        help='Image filename or folder')
+    parser.add_argument('--cut_face', action='store_true', help='Save each detected face as a PNG in the output directory')
+    args = parser.parse_args()
+    
+    input_path = Path(args.image_path)
+    output_dir = FaceDetection.OUTPUT_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-        # If cut_face flag is set, save each detected face as PNG
-        if args.cut_face:
-            for i, bbox in enumerate(results.xyxy):
-                x1, y1, x2, y2 = map(int, bbox)
-                face_crop = image[y1:y2, x1:x2]
-                face_filename = f"{Path(args.image_path).stem}_face_{i+1}.png"
-                face_path = output_dir / face_filename
-                cv2.imwrite(str(face_path), face_crop)
-                logging.info(f"Saved face crop: {face_path}")
-        
+    try:
+        if input_path.is_dir():
+            folder_name = input_path.name + "_annotated"
+            folder_output_dir = output_dir / folder_name
+            folder_output_dir.mkdir(parents=True, exist_ok=True)
+            image_files = list(input_path.glob("*.jpg")) + list(input_path.glob("*.PNG"))
+            for img_file in image_files:
+                process_and_save(img_file, folder_output_dir, args.cut_face)
+        else:
+            process_and_save(input_path, output_dir, args.cut_face)
     except Exception as e:
         logging.error(f"Processing failed: {e}")
         return 1
-    
     return 0
 
 if __name__ == "__main__":
