@@ -8,6 +8,7 @@ from supervision import Detections
 from pathlib import Path
 from PIL import Image
 from constants import FaceDetection
+from models.proximity.estimate_proximity import calculate_proximity
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -79,7 +80,7 @@ def load_ground_truth(label_path: str, img_width: int, img_height: int) -> Tuple
     
     return np.array(ground_truth_boxes), np.array(ground_truth_classes)
 
-def process_and_save(image_path, output_dir, cut_face):
+def process_and_save(image_path, output_dir, cut_face, filter_proximity):
     """
     Process the image for face detection and save the results.
     
@@ -91,6 +92,8 @@ def process_and_save(image_path, output_dir, cut_face):
         Directory to save the output (annotated image or face crops).
     cut_face : bool
         If True, save each detected face as a PNG in the output directory.
+    filter_proximity : bool
+        If True, only save faces/images with proximity > 0.3.
     """
     label_name = image_path.stem + ".txt"
     label_path = FaceDetection.LABELS_INPUT_DIR / label_name
@@ -108,31 +111,51 @@ def process_and_save(image_path, output_dir, cut_face):
             logging.info(f"Detection {i+1} - Max IoU: {max_iou:.4f}")
     else:
         logging.warning(f"No label file found for {image_path}. Skipping IoU and GT drawing.")
+    saved_any = False
     if cut_face:
-        for i, bbox in enumerate(results.xyxy):
+        for i, (bbox, class_id) in enumerate(zip(results.xyxy, results.class_id)):
             x1, y1, x2, y2 = map(int, bbox)
-            face_crop = image[y1:y2, x1:x2]
-            face_filename = f"{image_path.stem}_face_{i+1}.PNG"
-            face_path = output_dir / face_filename
-            cv2.imwrite(str(face_path), face_crop)
-            logging.info(f"Saved face crop: {face_path}")
+            proximity = calculate_proximity([x1, y1, x2, y2], class_id) if filter_proximity else 1.0
+            if proximity > 0.3:
+                face_crop = image[y1:y2, x1:x2]
+                face_filename = f"{image_path.stem}_face_{i+1}.PNG"
+                face_path = output_dir / face_filename
+                cv2.imwrite(str(face_path), face_crop)
+                logging.info(f"Saved face crop: {face_path} (proximity={proximity:.2f})")
+                saved_any = True
     else:
-        annotated_image = draw_detections_and_ground_truth(image, results, ground_truth_boxes, ground_truth_classes)
-        output_filename = image_path.stem + "_annotated.jpg"
-        output_path = output_dir / output_filename
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        success = cv2.imwrite(str(output_path), annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        if not success:
-            success = cv2.imwrite(str(output_path), annotated_image)
+        # Only save annotated image if at least one face passes proximity filter
+        keep_indices = []
+        for i, (bbox, class_id) in enumerate(zip(results.xyxy, results.class_id)):
+            x1, y1, x2, y2 = map(int, bbox)
+            proximity = calculate_proximity([x1, y1, x2, y2], class_id) if filter_proximity else 1.0
+            if proximity > 0.3:
+                keep_indices.append(i)
+        if keep_indices:
+            filtered_results = Detections(
+                xyxy=[results.xyxy[i] for i in keep_indices],
+                confidence=[results.confidence[i] for i in keep_indices],
+                class_id=[results.class_id[i] for i in keep_indices]
+            )
+            annotated_image = draw_detections_and_ground_truth(image, filtered_results, ground_truth_boxes, ground_truth_classes)
+            output_filename = image_path.stem + "_annotated.jpg"
+            output_path = output_dir / output_filename
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            success = cv2.imwrite(str(output_path), annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
             if not success:
-                raise RuntimeError(f"Failed to save image to {output_path}")
-        logging.info(f"Annotated image saved to: {output_path}")
+                success = cv2.imwrite(str(output_path), annotated_image)
+                if not success:
+                    raise RuntimeError(f"Failed to save image to {output_path}")
+            logging.info(f"Annotated image saved to: {output_path}")
+        else:
+            logging.info(f"No faces with proximity > 0.3 found in {image_path}")
             
 def main():
     parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
     parser.add_argument('--image_path', type=str, required=True,
                         help='Image filename or folder')
     parser.add_argument('--cut_face', action='store_true', help='Save each detected face as a PNG in the output directory')
+    parser.add_argument('--filter_proximity', action='store_true', help='Only save faces/images with proximity > 0.3')
     args = parser.parse_args()
     
     input_path = Path(args.image_path)
@@ -146,9 +169,9 @@ def main():
             folder_output_dir.mkdir(parents=True, exist_ok=True)
             image_files = list(input_path.glob("*.jpg")) + list(input_path.glob("*.PNG"))
             for img_file in image_files:
-                process_and_save(img_file, folder_output_dir, args.cut_face)
+                process_and_save(img_file, folder_output_dir, args.cut_face, args.filter_proximity)
         else:
-            process_and_save(input_path, output_dir, args.cut_face)
+            process_and_save(input_path, output_dir, args.cut_face, args.filter_proximity)
     except Exception as e:
         logging.error(f"Processing failed: {e}")
         return 1
