@@ -335,56 +335,49 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         # Get all predictions and true labels at once to avoid repeated model calls
         predictions = self.model.predict(self.validation_generator, verbose=0)
         true_labels = []
-        for i in range(len(self.validation_generator)):
-            _, labels = self.validation_generator[i]
+        # For tf.data.Dataset, iterate over batches
+        for batch in self.validation_generator:
+            _, labels = batch
+            # Convert to numpy if needed
+            if hasattr(labels, 'numpy'):
+                labels = labels.numpy()
             true_labels.extend(labels)
         true_labels = np.array(true_labels)
-        
         # Handle potential mismatch in sample counts (edge case)
         if len(predictions) != len(true_labels):
             min_samples = min(len(predictions), len(true_labels))
             predictions = predictions[:min_samples]
             true_labels = true_labels[:min_samples]
-        
         best_thresholds = []
-        
         # Find optimal threshold for each class independently
         for class_idx in range(len(self.mlb_classes)):
             y_true_class = true_labels[:, class_idx]
             y_pred_class = predictions[:, class_idx]
-            
             # Skip optimization if no positive samples exist (F1 undefined)
             if np.sum(y_true_class) == 0:
                 best_thresholds.append(0.5)  # Use default threshold
                 continue
-            
             # Test each threshold candidate and compute F1-score
             f1_scores = []
             for threshold in self.threshold_candidates:
                 pred_binary = (y_pred_class > threshold).astype(int)
                 f1 = f1_score(y_true_class, pred_binary, zero_division=0)
                 f1_scores.append(f1)
-            
             # Select threshold that maximizes F1-score
             best_idx = np.argmax(f1_scores)
             best_threshold = self.threshold_candidates[best_idx]
             best_thresholds.append(float(best_threshold))
-        
         self.best_thresholds = best_thresholds
-        
         # Compute overall macro F1 with optimized thresholds
         macro_f1 = self._compute_macro_f1(predictions, true_labels, best_thresholds)
-        
         print(f"Optimized thresholds (Macro F1: {macro_f1:.4f}): {dict(zip(self.mlb_classes, best_thresholds))}")
-        
         # Save thresholds and performance for later use
         threshold_dict = dict(zip(self.mlb_classes, best_thresholds))
         threshold_dict['macro_f1'] = float(macro_f1)
-        
         # use path instead of os
         if self.model.log_dir is not None and Path(self.model.log_dir).exists():
             with open(Path(self.model.log_dir) / 'thresholds.json', 'w') as f:
-                json.dump(threshold_dict, f, indent=2)
+                json.dump(threshold_dict, f, indent=2d)
 
     def _compute_macro_f1(self, predictions, true_labels, thresholds):
         """Compute macro F1-score with given thresholds.
