@@ -21,6 +21,7 @@ from sklearn.metrics import precision_recall_fscore_support, precision_score, re
 class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
     """
     Keras data generator for audio classification with enhanced features and augmentation.
+    Now loads precomputed features from cache_dir if provided.
     
     Generates batches of audio features (mel-spectrogram + MFCC) with corresponding
     multi-label targets for training and evaluation. Supports data augmentation
@@ -61,7 +62,7 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
         Fixed input dimensions across all samples
     """
     def __init__(self, segments_file_path, mlb, n_mels, hop_length, sr, window_duration, fixed_time_steps, 
-                batch_size=32, shuffle=True, augment=False):
+                batch_size=32, shuffle=True, augment=False, cache_dir=None):
         self.segments_file_path = segments_file_path
         self.mlb = mlb
         self.n_mels = n_mels
@@ -72,6 +73,7 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.augment = augment
+        self.cache_dir = cache_dir
         self.segments_data = self._load_segments_metadata()
         self.on_epoch_end()
 
@@ -122,11 +124,26 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
         X_batch = []
         y_batch = []
         for segment in batch_segments:
-            mel = extract_features(
-                segment['audio_path'], segment['start'], segment['duration'],
-                sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
-                fixed_time_steps=self.fixed_time_steps
-            )
+            # Load cached feature if cache_dir is set
+            if self.cache_dir is not None:
+                print("Loading cached feature...")
+                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
+                cache_path = os.path.join(self.cache_dir, f"{segment_id}.npy")
+                if os.path.exists(cache_path):
+                    mel = np.load(cache_path)
+                else:
+                    # Fallback to on-the-fly extraction if cache missing
+                    mel = extract_features(
+                        segment['audio_path'], segment['start'], segment['duration'],
+                        sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
+                        fixed_time_steps=self.fixed_time_steps
+                    )
+            else:
+                mel = extract_features(
+                    segment['audio_path'], segment['start'], segment['duration'],
+                    sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
+                    fixed_time_steps=self.fixed_time_steps
+                )
             mel = self.augment_spectrogram(mel)
             if mel.ndim != 2:
                 if mel.ndim == 3 and mel.shape[-1] == 1:
@@ -345,7 +362,7 @@ def create_data_generators(segment_files, mlb):
             segment_files['train'], mlb, 
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
             AudioConfig.WINDOW_DURATION, fixed_time_steps,
-            batch_size=32, shuffle=True, augment=True  # Enable augmentation for training
+            batch_size=32, shuffle=True, augment=True, cache_dir=(AudioClassification.CACHE_DIR/"train")
         )
     
     val_generator = None
@@ -354,7 +371,7 @@ def create_data_generators(segment_files, mlb):
             segment_files['val'], mlb,
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
             AudioConfig.WINDOW_DURATION, fixed_time_steps,
-            batch_size=32, shuffle=False, augment=False  # No augmentation for validation
+            batch_size=32, shuffle=False, augment=False, cache_dir=(AudioClassification.CACHE_DIR/"val")
         )
     
     test_generator = None
@@ -363,7 +380,7 @@ def create_data_generators(segment_files, mlb):
             segment_files['test'], mlb,
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
             AudioConfig.WINDOW_DURATION, fixed_time_steps,
-            batch_size=32, shuffle=False, augment=False  # No augmentation for testing
+            batch_size=32, shuffle=False, augment=False, cache_dir=(AudioClassification.CACHE_DIR/"test")
         )
     
     return train_generator, val_generator, test_generator
@@ -743,7 +760,7 @@ def evaluate_model(model, test_generator, mlb, thresholds, output_dir, generate_
     ]).T
     
     # Stage 6: Calculate comprehensive evaluation metrics
-    if test_true_labels.sum() > 0 or len(test_true_labels) > 0:  # Include silent frames
+    if test_true_labels.sum() > 0 or len(test_true_labels) > 0: # Include silent frames
         
         # Create expanded labels to include "no speech" class for consistent metrics
         # Add "no speech" as the first column (index 0)
