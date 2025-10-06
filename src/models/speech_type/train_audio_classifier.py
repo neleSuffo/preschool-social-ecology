@@ -121,6 +121,50 @@ def train_model_with_callbacks(model, train_generator, val_generator, callbacks,
     
     return history
 
+def segment_generator(segments_file, mlb, cache_dir):
+    import numpy as np
+    import json
+    from pathlib import Path
+    with open(segments_file, 'r') as f:
+        for line in f:
+            segment = json.loads(line.strip())
+            segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
+            cache_path = Path(cache_dir) / f"{segment_id}.npy"
+            if cache_path.exists():
+                features = np.load(cache_path)
+                features = np.expand_dims(features, -1)
+                labels = mlb.transform([segment['labels']])[0]
+                yield features.astype(np.float32), labels.astype(np.float32)
+
+
+def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, buffer_size=1000):
+    # Determine feature shape from one cached file
+    import numpy as np
+    import json
+    from pathlib import Path
+    with open(segments_file, 'r') as f:
+        for line in f:
+            segment = json.loads(line.strip())
+            segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
+            cache_path = Path(cache_dir) / f"{segment_id}.npy"
+            if cache_path.exists():
+                arr = np.load(cache_path)
+                feature_shape = arr.shape + (1,)
+                break
+    label_shape = (len(mlb.classes_),)
+    dataset = tf.data.Dataset.from_generator(
+        lambda: segment_generator(segments_file, mlb, cache_dir),
+        output_signature=(
+            tf.TensorSpec(shape=feature_shape, dtype=tf.float32),
+            tf.TensorSpec(shape=label_shape, dtype=tf.float32)
+        )
+    )
+    if shuffle:
+        dataset = dataset.shuffle(buffer_size)
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    return dataset
+
 def main():
     """
     Main training pipeline for multi-label audio voice type classification.
@@ -182,23 +226,30 @@ def main():
         else:
             print("ℹ️ No checkpoint found. Training from scratch.")
 
-        # 3. Create data generators
-        print("🔄 Creating data generators...")
-        train_generator, val_generator, _ = create_data_generators(segment_files, mlb)
-
+        # 3. Create tf.data.Dataset objects using cached features
+        print("🔄 Creating tf.data.Dataset objects from cached features...")
+        train_cache_dir = AudioClassification.CACHE_DIR / "train"
+        val_cache_dir = AudioClassification.CACHE_DIR / "val"
+        train_dataset = get_tf_dataset(segment_files['train'], mlb, train_cache_dir, batch_size=32, shuffle=True)
+        val_dataset = get_tf_dataset(segment_files['val'], mlb, val_cache_dir, batch_size=32, shuffle=False)
+        
         # 4. Setup training callbacks
         print("🎯 Setting up training callbacks...")
-        callbacks = create_training_callbacks(run_dir, val_generator, mlb.classes_)
+        callbacks = create_training_callbacks(run_dir, val_dataset, mlb.classes_)
 
         # 5. Train the model
         print("🏋️ Starting model training...")
-        history = train_model_with_callbacks(
-            model, train_generator, val_generator, callbacks, AudioConfig.NUM_EPOCHS
+        history = model.fit(
+            train_dataset,
+            validation_data=val_dataset,
+            epochs=AudioConfig.NUM_EPOCHS,
+            callbacks=callbacks,
+            verbose=1
         )
         
         # 6. Evaluate model performance
         print("📈 Evaluating model on validation set...")
-        val_results = model.evaluate(val_generator, verbose=0)
+        val_results = model.evaluate(val_dataset, verbose=0)
         val_metrics_dict = dict(zip(model.metrics_names, val_results))
         
         print("\n" + "="*60)
