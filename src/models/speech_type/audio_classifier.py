@@ -2,20 +2,23 @@ import json
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
-from tensorflow.keras.metrics import Precision, Recall
+from tensorflow.keras.metrics import Precision, Recall, Metric
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import *
 from sklearn.metrics import f1_score
-from tensorflow.keras.mixed_precision import Policy
 
 # --- Deep Learning Model Architecture ---
-def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=False):
+def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     """
     Build a deep learning model for multi-label voice type classification.
     
-    Includes granular control over mixed precision policy to ensure compatibility
-    with frozen layers (Conv2D and BatchNormalization).
+    Creates a CNN-RNN hybrid architecture with multi-head attention for 
+    classifying overlapping voice types in audio segments. The model combines:
+    - ResNet-style CNN blocks for feature extraction from spectrograms
+    - Bidirectional GRU layers for temporal modeling
+    - Multi-head attention mechanism for focus on important features
+    - Independent output heads per class for multi-label prediction
     
     Parameters:
     ----------
@@ -25,98 +28,109 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=Fa
         Fixed number of time steps in input spectrograms
     num_classes (int): 
         Number of voice type classes to predict
-    freeze_cnn (bool): 
-        If True, freeze CNN layers during training to use as fixed feature extractor
         
     Returns
     -------
     Model
         Compiled Keras model ready for training
+        
+    Architecture details
+    -------------------
+    Input: 
+        (effective_n_mels + 13, fixed_time_steps, 1) - mel + MFCC features
+    CNN: 
+        4 ResNet blocks with [32, 64, 128, 256] filters
+    RNN: 
+        2 bidirectional GRU layers with [256, 128] units
+    Attention: 
+        4-head attention mechanism
+    Output: 
+        Sigmoid activation per class for multi-label prediction
+    Loss: 
+        Focal loss for handling class imbalance
+    Metrics: 
+        Accuracy, precision, recall, macro F1-score
     """
+    # Use effective mel count (capped at 128 for 16kHz audio)
     effective_n_mels = min(n_mels, 128)
     input_shape = (effective_n_mels + 13, fixed_time_steps, 1)
     
     input_mel = Input(shape=input_shape, name='mel_spectrogram_input')
     x = input_mel
 
-    # Define the mixed precision policy for the currently trainable layers
-    # Layers outside the conv_block (RNN/Dense) will inherit the compute_dtype
-    # 'mixed_float16' policy sets compute_dtype=float16 and variable_dtype=float32
-    mixed_precision_policy = Policy('mixed_float16')
-
-    def conv_block(x, filters, kernel_size=(3, 3), strides=(1, 1), trainable=True):
-        """ResNet-style convolutional block with a trainable flag and explicit policy."""
-        shortcut = x
-        # For frozen layers, force dtype float32; otherwise, use default (inherits global policy)
-        conv_kwargs = {'trainable': trainable}
-        bn_kwargs = {'trainable': trainable}
-        if not trainable:
-            conv_kwargs['dtype'] = 'float32'
-            bn_kwargs['dtype'] = 'float32'
+    def conv_block(x, filters, kernel_size=(3, 3), strides=(1, 1)):
+        """ResNet-style convolutional block with skip connections."""
+        shortcut = x  # Store input for skip connection
+        
         # First convolution + batch norm + activation
-        x = Conv2D(filters, kernel_size, strides=strides, padding='same', **conv_kwargs)(x)
-        x = BatchNormalization(**bn_kwargs)(x)
-        x = Activation('relu', dtype='float32')(x)
-        # Second convolution + batch norm
-        x = Conv2D(filters, kernel_size, padding='same', **conv_kwargs)(x)
-        x = BatchNormalization(**bn_kwargs)(x)
-        # Adjust shortcut dimensions if needed
+        x = Conv2D(filters, kernel_size, strides=strides, padding='same')(x)
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+        
+        # Second convolution + batch norm (no activation yet)
+        x = Conv2D(filters, kernel_size, padding='same')(x)
+        x = BatchNormalization()(x)
+        
+        # Adjust shortcut dimensions if needed for skip connection
         if shortcut.shape[-1] != filters or strides != (1, 1):
-            shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same', **conv_kwargs)(shortcut)
-            shortcut = BatchNormalization(**bn_kwargs)(shortcut)
-        x = Add()([x, shortcut])
-        x = Activation('relu', dtype='float32')(x)
+            shortcut = Conv2D(filters, (1, 1), strides=strides, padding='same')(shortcut)
+            shortcut = BatchNormalization()(shortcut)
+        
+        # Add skip connection and final activation
+        x = Add()([x, shortcut])  # Element-wise addition enables gradient flow
+        x = Activation('relu')(x)
         return x
     
-    # Apply the conditional CNN blocks
-    x = conv_block(x, 32, trainable=not freeze_cnn)
+    # Build CNN backbone: 4 ResNet blocks with progressive filter sizes
+    x = conv_block(x, 32)      # First block: learn basic patterns
+    x = MaxPooling2D((2, 2))(x)  # Downsample by 2x
+    x = Dropout(0.25)(x)       # Prevent overfitting
+    
+    x = conv_block(x, 64)      # Second block: more complex features  
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.25)(x)
     
-    x = conv_block(x, 64, trainable=not freeze_cnn)
-    x = MaxPooling2D((2, 2))(x)
-    x = Dropout(0.25)(x)
-    
-    x = conv_block(x, 128, trainable=not freeze_cnn)
+    x = conv_block(x, 128)     # Third block: high-level patterns
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.3)(x)
     
-    x = conv_block(x, 256, trainable=not freeze_cnn)
+    x = conv_block(x, 256)     # Fourth block: abstract representations
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.3)(x)
 
-    # --- RNN and Dense Head (Will default to mixed_float16 policy) ---
-    
     # Calculate dimensions after CNN layers for reshaping
-    # Assuming standard architecture dimensions
-    reduced_n_mels = (effective_n_mels + 13) // 16
+    reduced_n_mels = (effective_n_mels + 13) // 16     # Divided by 2^4 from 4 pooling layers
     reduced_time_steps = fixed_time_steps // 16
     channels_after_cnn = 256
 
     # Prepare for RNN: reshape (freq, time, channels) -> (time, freq * channels)
-    x = Permute((2, 1, 3))(x) 
+    x = Permute((2, 1, 3))(x)  # Change from (freq, time, channels) to (time, freq, channels)
     x = Reshape((reduced_time_steps, reduced_n_mels * channels_after_cnn))(x)
     
     # RNN layers for temporal modeling of audio sequences
-    x = Bidirectional(GRU(256, return_sequences=True, dropout=0.3))(x) 
-    x = Bidirectional(GRU(128, return_sequences=True, dropout=0.3))(x)  
+    x = Bidirectional(GRU(256, return_sequences=True, dropout=0.3))(x)  # Bidirectional: see past and future context
+    x = Bidirectional(GRU(128, return_sequences=True, dropout=0.3))(x)  # Smaller layer for refinement
 
     def multi_head_attention(x, num_heads=4):
         """Multi-head attention mechanism to focus on important time steps."""
         head_size = x.shape[-1] // num_heads
         heads = []
         
+        # Create multiple attention heads to focus on different aspects
         for i in range(num_heads):
-            attention = Dense(1, activation='tanh')(x)     
-            attention = Flatten()(attention)               
-            attention = Activation('softmax')(attention)   
-            attention = RepeatVector(x.shape[-1])(attention)  
-            attention = Permute((2, 1))(attention)         
+            # Compute attention weights: which time steps are most important?
+            attention = Dense(1, activation='tanh')(x)     # Score each time step
+            attention = Flatten()(attention)               # Flatten to 1D
+            attention = Activation('softmax')(attention)   # Convert to probabilities (sum=1)
+            attention = RepeatVector(x.shape[-1])(attention)  # Broadcast to feature dimension
+            attention = Permute((2, 1))(attention)         # Align dimensions for multiplication
             
-            head = multiply([x, attention])                
-            head = Lambda(lambda xin: tf.reduce_sum(xin, axis=1), output_shape=(256,))(head) 
+            # Apply attention: weight the features by importance
+            head = multiply([x, attention])                # Element-wise multiplication
+            head = Lambda(lambda xin: tf.reduce_sum(xin, axis=1), output_shape=(256,))(head)  # Specify the expected output shape
             heads.append(head)
         
+        # Combine all attention heads
         return Concatenate()(heads) if len(heads) > 1 else heads[0]
 
     x = multi_head_attention(x)
@@ -135,24 +149,20 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes, freeze_cnn=Fa
     for i in range(num_classes):
         class_branch = Dense(128, activation='relu', name=f'class_{i}_dense')(x)
         class_branch = Dropout(0.3)(class_branch)
-        # Final output layer
         class_output = Dense(1, activation='sigmoid', name=f'class_{i}_output')(class_branch)
         class_outputs.append(class_output)
     
     output = Concatenate(name='combined_output')(class_outputs)
-    # --- FIX: Ensure final output is float32 for stable logits ---
-    output = Activation('sigmoid', dtype='float32')(output) 
 
     model = Model(inputs=input_mel, outputs=output)
     
-    # Recompile the model to apply the new trainable settings
     macro_f1 = MacroF1Score(num_classes=num_classes, name='macro_f1')
     model.compile(
         optimizer=Adam(learning_rate=0.0005),
-        loss=FocalLoss(gamma=4.0, alpha=0.25),
+        loss=FocalLoss(gamma=2.0, alpha=0.25),
         metrics=['accuracy', Precision(name='precision'), Recall(name='recall'), macro_f1]
     )
-    
+    model.log_dir = None  # For ThresholdOptimizer
     return model
 
 class FocalLoss(tf.keras.losses.Loss):
@@ -233,10 +243,11 @@ class MacroF1Score(tf.keras.metrics.Metric):
         super().__init__(name=name, **kwargs)
         self.num_classes = num_classes
         self.threshold = threshold
-        # Ensure metric variables are always float32 for mixed precision compatibility
-        self.true_positives = self.add_weight(name='tp', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
-        self.false_positives = self.add_weight(name='fp', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
-        self.false_negatives = self.add_weight(name='fn', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
+        
+        # Use single confusion matrix variables instead of per-class metrics
+        self.true_positives = self.add_weight(name='tp', shape=(num_classes,), initializer='zeros')
+        self.false_positives = self.add_weight(name='fp', shape=(num_classes,), initializer='zeros')
+        self.false_negatives = self.add_weight(name='fn', shape=(num_classes,), initializer='zeros')
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         # Convert to float and apply threshold for binary predictions
@@ -324,9 +335,9 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         # Get all predictions and true labels at once to avoid repeated model calls
         predictions = self.model.predict(self.validation_generator, verbose=0)
         true_labels = []
-        for batch in self.validation_generator:
-            _, labels = batch
-            true_labels.extend(labels.numpy() if hasattr(labels, 'numpy') else labels)
+        for i in range(len(self.validation_generator)):
+            _, labels = self.validation_generator[i]
+            true_labels.extend(labels)
         true_labels = np.array(true_labels)
         
         # Handle potential mismatch in sample counts (edge case)
@@ -370,6 +381,7 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         threshold_dict = dict(zip(self.mlb_classes, best_thresholds))
         threshold_dict['macro_f1'] = float(macro_f1)
         
+        # use path instead of os
         if self.model.log_dir is not None and Path(self.model.log_dir).exists():
             with open(Path(self.model.log_dir) / 'thresholds.json', 'w') as f:
                 json.dump(threshold_dict, f, indent=2)
@@ -387,17 +399,3 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
             f1 = f1_score(y_true, y_pred, zero_division=0)
             f1_scores.append(f1)
         return np.mean(f1_scores)  # Equal weight to each class
-    
-    def reset_state(self):
-        self.best_thresholds = [0.5] * len(self.mlb_classes)
-        self.best_f1 = 0.0
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({'mlb_classes': self.mlb_classes})
-        return config
-
-    @classmethod
-    def from_config(cls, config):
-        mlb_classes = config.pop('mlb_classes', [])
-        return cls(validation_generator=None, mlb_classes=mlb_classes)
