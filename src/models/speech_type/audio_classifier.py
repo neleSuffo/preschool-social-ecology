@@ -377,8 +377,9 @@ class ThresholdOptimizer(tf.keras.callbacks.Callback):
         # use path instead of os
         if self.model.log_dir is not None and Path(self.model.log_dir).exists():
             with open(Path(self.model.log_dir) / 'thresholds.json', 'w') as f:
-                json.dump(threshold_dict, f, indent=2d)
-
+                json.dump(threshold_dict, f, indent=2)
+                f.close()
+                
     def _compute_macro_f1(self, predictions, true_labels, thresholds):
         """Compute macro F1-score with given thresholds.
         
