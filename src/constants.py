@@ -38,6 +38,7 @@ class AudioClassification:
     VAL_SEGMENTS_FILE = Path(INPUT_DIR/"val_segments_w3p0_s1p0.jsonl")
     TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments_w3p0_s1p0.jsonl")
     TEST_SECONDS_FILE = Path(INPUT_DIR/"test_segments_per_second.jsonl")
+    CACHE_DIR = Path(INPUT_DIR/"feature_cache")
 
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
