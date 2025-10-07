@@ -16,7 +16,7 @@ from models.speech_type.audio_classifier import build_model_multi_label, Thresho
 from sklearn.preprocessing import MultiLabelBinarizer
 from tensorflow.keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
 from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
-    
+
 # --- Data Generator ---
 class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
     """
@@ -349,15 +349,72 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         plt.savefig(os.path.join(self.log_dir, 'macro_f1_plot.png'))
         plt.close()
 
-def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, buffer_size=1000):
-    # Determine feature shape from one cached file
-    import numpy as np
-    import json
-    from pathlib import Path
+def segment_generator(segments_file, mlb, cache_dir, seconds_step=False):
     with open(segments_file, 'r') as f:
         for line in f:
             segment = json.loads(line.strip())
-            segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
+            if seconds_step:
+                segment_duration = 1
+                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['second']}_{segment_duration}"
+                cache_path = Path(cache_dir) / f"{segment_id}.npy"
+                if cache_path.exists():
+                    mel = np.load(cache_path)
+                else:
+                    mel = extract_features(
+                        segment['audio_path'], segment['second'], segment_duration,
+                        sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH,
+                        fixed_time_steps=int(np.ceil(segment_duration * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+                    )
+            else:
+                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
+                cache_path = Path(cache_dir) / f"{segment_id}.npy"
+                if cache_path.exists():
+                    mel = np.load(cache_path)
+                else:
+                    mel = extract_features(
+                        segment['audio_path'], segment['start'], segment['duration'],
+                        sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH,
+                        fixed_time_steps=int(np.ceil(segment['duration'] * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+                    )
+            mel = np.expand_dims(mel, -1)
+            labels = mlb.transform([segment['labels']])[0]
+            yield mel.astype(np.float32), labels.astype(np.float32)
+            
+def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, buffer_size=1000, seconds_step=False):
+    """
+    Create a TensorFlow dataset from audio segments.
+
+    Parameters:
+    ----------
+    segments_file : str
+        Path to the JSONL file containing audio segments.
+    mlb : MultiLabelBinarizer
+        Fitted MultiLabelBinarizer for label encoding.
+    cache_dir : str
+        Directory for caching preprocessed audio features.
+    batch_size : int
+        Number of samples per batch.
+    shuffle : bool
+        Whether to shuffle the dataset.
+    buffer_size : int
+        Buffer size for shuffling.
+    seconds_step : bool
+        Whether to use a sliding window approach with step size in seconds.
+
+    Returns:
+    -------
+    tf.data.Dataset
+        A TensorFlow dataset ready for training or evaluation.
+    """
+    # Determine feature shape from one cached file
+    with open(segments_file, 'r') as f:
+        for line in f:
+            segment = json.loads(line.strip())
+            if seconds_step:
+                segment_duration = 1 # 1 second segments
+                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['second']}_{segment_duration}"
+            else:
+                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
             cache_path = Path(cache_dir) / f"{segment_id}.npy"
             if cache_path.exists():
                 arr = np.load(cache_path)
