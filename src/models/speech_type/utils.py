@@ -49,6 +49,10 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
         Whether to shuffle data at epoch end (default: True)
     augment (bool): 
         Whether to apply data augmentation (default: False)
+    seconds_step (bool):
+        Whether to use seconds as the time unit (default: False)
+    cache_dir (str): 
+        Directory to cache precomputed features
 
     Features
     --------
@@ -62,7 +66,7 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
         Fixed input dimensions across all samples
     """
     def __init__(self, segments_file_path, mlb, n_mels, hop_length, sr, window_duration, fixed_time_steps, 
-                batch_size=32, shuffle=True, augment=False, cache_dir=None):
+                batch_size=32, shuffle=True, augment=False, seconds_step=False, cache_dir=None):
         self.segments_file_path = segments_file_path
         self.mlb = mlb
         self.n_mels = n_mels
@@ -73,6 +77,7 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.augment = augment
+        self.seconds_step = seconds_step
         self.cache_dir = cache_dir
         self.segments_data = self._load_segments_metadata()
         self.on_epoch_end()
@@ -138,6 +143,13 @@ class AudioSegmentDataGenerator(tf.keras.utils.Sequence):
                         sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
                         fixed_time_steps=self.fixed_time_steps
                     )
+            elif self.seconds_step:
+                segment_duration = 1 # 1 second segments
+                mel = extract_features(
+                    segment['audio_path'], segment['second'], segment_duration,
+                    sr=self.sr, n_mels=self.n_mels, hop_length=self.hop_length,
+                    fixed_time_steps=self.fixed_time_steps
+                )
             else:
                 mel = extract_features(
                     segment['audio_path'], segment['start'], segment['duration'],
@@ -337,6 +349,34 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         plt.savefig(os.path.join(self.log_dir, 'macro_f1_plot.png'))
         plt.close()
 
+def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, buffer_size=1000):
+    # Determine feature shape from one cached file
+    import numpy as np
+    import json
+    from pathlib import Path
+    with open(segments_file, 'r') as f:
+        for line in f:
+            segment = json.loads(line.strip())
+            segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
+            cache_path = Path(cache_dir) / f"{segment_id}.npy"
+            if cache_path.exists():
+                arr = np.load(cache_path)
+                feature_shape = arr.shape + (1,)
+                break
+    label_shape = (len(mlb.classes_),)
+    dataset = tf.data.Dataset.from_generator(
+        lambda: segment_generator(segments_file, mlb, cache_dir),
+        output_signature=(
+            tf.TensorSpec(shape=feature_shape, dtype=tf.float32),
+            tf.TensorSpec(shape=label_shape, dtype=tf.float32)
+        )
+    )
+    if shuffle:
+        dataset = dataset.shuffle(buffer_size)
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    return dataset
+
 def create_data_generators(segment_files, mlb):
     """
     Create data generators for training, validation, and testing.
@@ -362,7 +402,7 @@ def create_data_generators(segment_files, mlb):
             segment_files['train'], mlb, 
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
             AudioConfig.WINDOW_DURATION, fixed_time_steps,
-            batch_size=32, shuffle=True, augment=True, cache_dir=(AudioClassification.CACHE_DIR/"train")
+            batch_size=32, shuffle=True, augment=True, seconds_step = False, cache_dir=(AudioClassification.CACHE_DIR/"train")
         )
     
     val_generator = None
@@ -371,7 +411,7 @@ def create_data_generators(segment_files, mlb):
             segment_files['val'], mlb,
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
             AudioConfig.WINDOW_DURATION, fixed_time_steps,
-            batch_size=32, shuffle=False, augment=False, cache_dir=(AudioClassification.CACHE_DIR/"val")
+            batch_size=32, shuffle=False, augment=False, seconds_step = False, cache_dir=(AudioClassification.CACHE_DIR/"val")
         )
     
     test_generator = None
@@ -380,7 +420,7 @@ def create_data_generators(segment_files, mlb):
             segment_files['test'], mlb,
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
             AudioConfig.WINDOW_DURATION, fixed_time_steps,
-            batch_size=32, shuffle=False, augment=False, cache_dir=(AudioClassification.CACHE_DIR/"test")
+            batch_size=32, shuffle=False, augment=False, seconds_step=True
         )
     
     return train_generator, val_generator, test_generator
