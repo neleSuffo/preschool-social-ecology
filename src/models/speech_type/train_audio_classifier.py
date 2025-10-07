@@ -33,7 +33,7 @@ import shutil
 from pathlib import Path
 from constants import AudioClassification
 from config import AudioConfig
-from utils import create_data_generators, create_training_callbacks, setup_gpu_config, load_model
+from utils import create_training_callbacks, setup_gpu_config, get_tf_dataset, load_model
 
 # Setup GPU configuration
 gpu_available = setup_gpu_config()
@@ -136,35 +136,6 @@ def segment_generator(segments_file, mlb, cache_dir):
                 labels = mlb.transform([segment['labels']])[0]
                 yield features.astype(np.float32), labels.astype(np.float32)
 
-
-def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, buffer_size=1000):
-    # Determine feature shape from one cached file
-    import numpy as np
-    import json
-    from pathlib import Path
-    with open(segments_file, 'r') as f:
-        for line in f:
-            segment = json.loads(line.strip())
-            segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
-            cache_path = Path(cache_dir) / f"{segment_id}.npy"
-            if cache_path.exists():
-                arr = np.load(cache_path)
-                feature_shape = arr.shape + (1,)
-                break
-    label_shape = (len(mlb.classes_),)
-    dataset = tf.data.Dataset.from_generator(
-        lambda: segment_generator(segments_file, mlb, cache_dir),
-        output_signature=(
-            tf.TensorSpec(shape=feature_shape, dtype=tf.float32),
-            tf.TensorSpec(shape=label_shape, dtype=tf.float32)
-        )
-    )
-    if shuffle:
-        dataset = dataset.shuffle(buffer_size)
-    dataset = dataset.batch(batch_size)
-    dataset = dataset.prefetch(tf.data.AUTOTUNE)
-    return dataset
-
 def main():
     """
     Main training pipeline for multi-label audio voice type classification.
@@ -219,7 +190,7 @@ def main():
         model.log_dir = run_dir  # For ThresholdOptimizer callback
 
         # Resume from last checkpoint if available
-        checkpoint_path = Path("/home/nele_pauline_suffo/outputs/audio_classification/20250922-205547/best_model.keras")
+        checkpoint_path = Path("/home/nele_pauline_suffo/outputs/audio_classification/20251006-215811/best_model.keras")
         if checkpoint_path.exists():
             print(f"🔄 Found checkpoint: {checkpoint_path}. Loading weights...")
             model.load_weights(str(checkpoint_path))
