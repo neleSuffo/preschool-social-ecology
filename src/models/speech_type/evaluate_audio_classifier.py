@@ -3,10 +3,9 @@ import numpy as np
 from collections import defaultdict
 from datetime import datetime
 from constants import AudioClassification
-from utils import load_thresholds, load_model, create_data_generators, setup_gpu_config
+from utils import load_thresholds, load_model, get_tf_dataset, setup_gpu_config
 from tqdm import tqdm
 from config import AudioConfig
-
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -18,10 +17,11 @@ else:
     print("⚠️ GPU configuration failed, will use CPU")
 
 
-def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output_dir):
+def evaluate_and_save_predictions(model, test_dataset, mlb, thresholds, output_dir):
     """
     Generate model predictions for all test samples, apply thresholds,
     and save the results to a JSONL file for per-second analysis.
+    Works with tf.data.Dataset.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     predictions_file = output_dir / "second_level_predictions.jsonl"
@@ -29,25 +29,22 @@ def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output
 
     test_true_labels = []
     test_metadata = []
+    # Collect all features and labels for metadata
+    for batch in test_dataset:
+        features, labels = batch
+        # If features is a tuple (features, metadata), adjust accordingly
+        if isinstance(labels, tuple):
+            labels, batch_metadata = labels
+        else:
+            batch_metadata = [{}] * len(labels)
+        test_true_labels.extend(labels.numpy() if hasattr(labels, 'numpy') else labels)
+        test_metadata.extend(batch_metadata)
 
-    for i in tqdm(range(len(test_generator)), desc="Processing batches"):
-        _, labels = test_generator[i]
-        if len(labels) > 0:
-            test_true_labels.extend(labels)
-            batch_segments = test_generator.segments_data[
-                i * test_generator.batch_size:(i + 1) * test_generator.batch_size
-            ]
-            for segment in batch_segments[:len(labels)]:
-                test_metadata.append({
-                    'start_time': segment.get('second', 0.0),
-                    'audio_path': segment.get('audio_path', 'unknown')
-                })
-
-    test_predictions = model.predict(test_generator, verbose=1)
-
+    test_true_labels = np.array(test_true_labels)
+    test_predictions = model.predict(test_dataset, verbose=1)
     min_samples = min(test_predictions.shape[0], len(test_true_labels))
     test_predictions = test_predictions[:min_samples]
-    test_true_labels = np.array(test_true_labels[:min_samples])
+    test_true_labels = test_true_labels[:min_samples]
     test_metadata = test_metadata[:min_samples]
 
     test_pred_binary = np.array([
@@ -58,9 +55,10 @@ def evaluate_and_save_predictions(model, test_generator, mlb, thresholds, output
     per_second_data = defaultdict(lambda: {'true': set(), 'pred': set(), 'audio_path': None})
 
     for i in range(min_samples):
-        metadata = test_metadata[i]
-        start_time = metadata['start_time']
-        audio_path = metadata['audio_path']
+        # If you have metadata, use it; else, set dummy values
+        metadata = test_metadata[i] if i < len(test_metadata) else {}
+        start_time = metadata.get('second', i)  # fallback to index if missing
+        audio_path = metadata.get('audio_path', 'unknown')
         second = round(start_time)
 
         true_labels_indices = np.where(test_true_labels[i] == 1)[0]
@@ -237,7 +235,6 @@ def main():
         print("🚀 Starting Comprehensive Audio Classification Model Evaluation")
         print("=" * 70)
 
-        test_segments_file = AudioClassification.TEST_SECONDS_FILE
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = AudioClassification.TRAINED_WEIGHTS_PATH.parent
         folder_name = output_dir / f'evaluation_{timestamp}'
@@ -245,15 +242,15 @@ def main():
         model, mlb = load_model()
         thresholds = load_thresholds(mlb.classes_)
 
-        segment_files = {'train': None, 'val': None, 'test': test_segments_file}
-        _, _, test_generator = create_data_generators(segment_files, mlb)
+        test_seconds_cache_dir = AudioClassification.CACHE_DIR / "test_seconds"
+        test_dataset = get_tf_dataset(AudioClassification.TEST_SECONDS_FILE, mlb, test_seconds_cache_dir, batch_size=32, shuffle=True)
 
-        if test_generator is None or len(test_generator) == 0:
-            raise ValueError("Test generator is empty. Check test data file and paths.")
+        if test_dataset is None or not any(True for _ in test_dataset):
+            raise ValueError("Test dataset is empty. Check test data file and paths.")
 
         predictions_file = evaluate_and_save_predictions(
             model=model,
-            test_generator=test_generator,
+            test_dataset=test_dataset,
             mlb=mlb,
             thresholds=thresholds,
             output_dir=folder_name
