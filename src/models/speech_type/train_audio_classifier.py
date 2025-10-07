@@ -121,21 +121,6 @@ def train_model_with_callbacks(model, train_generator, val_generator, callbacks,
     
     return history
 
-def segment_generator(segments_file, mlb, cache_dir):
-    import numpy as np
-    import json
-    from pathlib import Path
-    with open(segments_file, 'r') as f:
-        for line in f:
-            segment = json.loads(line.strip())
-            segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
-            cache_path = Path(cache_dir) / f"{segment_id}.npy"
-            if cache_path.exists():
-                features = np.load(cache_path)
-                features = np.expand_dims(features, -1)
-                labels = mlb.transform([segment['labels']])[0]
-                yield features.astype(np.float32), labels.astype(np.float32)
-
 def main():
     """
     Main training pipeline for multi-label audio voice type classification.
