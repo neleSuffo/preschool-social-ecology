@@ -14,7 +14,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import ResearchQuestions
+from constants import Inference
 from config import DataConfig
 
 # Constants
@@ -37,8 +37,8 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
     print("=" * 60)
     
     # Set paths to existing CSV files
-    segments_csv_path = ResearchQuestions.INTERACTION_SEGMENTS_CSV
-    frame_csv_path = ResearchQuestions.FRAME_LEVEL_INTERACTIONS_CSV
+    segments_csv_path = Inference.INTERACTION_SEGMENTS_CSV
+    frame_csv_path = Inference.FRAME_LEVEL_INTERACTIONS_CSV
     
     # Define temporary and final output directories
     temp_frames_dir = Path("temp_annotated_frames")
@@ -315,7 +315,7 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
 
-def main(input_path, final_output_dir: Path = ResearchQuestions.OUTPUT_BASE_DIR):
+def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR):
     """
     Create annotated video(s) from existing segments and frame-level data.
     
