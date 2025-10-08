@@ -243,7 +243,7 @@ def main():
         thresholds = load_thresholds(mlb.classes_)
 
         test_seconds_cache_dir = AudioClassification.CACHE_DIR / "test_seconds"
-        test_dataset = get_tf_dataset(AudioClassification.TEST_SECONDS_FILE, mlb, test_seconds_cache_dir, batch_size=32, shuffle=True)
+        test_dataset = get_tf_dataset(AudioClassification.TEST_SECONDS_FILE, mlb, test_seconds_cache_dir, batch_size=32, shuffle=False, seconds_step=True)
 
         if test_dataset is None or not any(True for _ in test_dataset):
             raise ValueError("Test dataset is empty. Check test data file and paths.")
