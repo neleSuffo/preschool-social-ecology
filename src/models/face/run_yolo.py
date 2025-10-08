@@ -115,7 +115,7 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
     if cut_face:
         for i, (bbox, class_id) in enumerate(zip(results.xyxy, results.class_id)):
             x1, y1, x2, y2 = map(int, bbox)
-            proximity = calculate_proximity([x1, y1, x2, y2], class_id) if filter_proximity else 1.0
+            proximity = calculate_proximity([x1, y1, x2, y2], class_id)
             if proximity > 0.3:
                 face_crop = image[y1:y2, x1:x2]
                 face_filename = f"{image_path.stem}_face_{i+1}.PNG"
