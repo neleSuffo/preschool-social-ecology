@@ -422,7 +422,7 @@ def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, b
                 break
     label_shape = (len(mlb.classes_),)
     dataset = tf.data.Dataset.from_generator(
-        lambda: segment_generator(segments_file, mlb, cache_dir),
+        lambda: segment_generator(segments_file, mlb, cache_dir, seconds_step=seconds_step),
         output_signature=(
             tf.TensorSpec(shape=feature_shape, dtype=tf.float32),
             tf.TensorSpec(shape=label_shape, dtype=tf.float32)
