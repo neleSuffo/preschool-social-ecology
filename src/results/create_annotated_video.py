@@ -20,7 +20,7 @@ from config import DataConfig
 # Constants
 FPS = DataConfig.FPS # frames per second
 
-def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
+def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, frame_csv_path: str = None):
     """
     Annotate a video and create a final video file by combining
     annotated frames with the original audio using FFMPEG.
@@ -31,6 +31,8 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         Path to the input video file or directory containing video files.
     output_dir (str/Path): 
         Path to the output directory where the annotated video will be saved.
+    frame_csv_path (str, optional):
+        Path to the frame-level interactions CSV. If not provided, uses default.
     """
     print("=" * 60)
     print("CREATING ANNOTATED VIDEO WITH FFMPEG")
@@ -38,8 +40,9 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
     
     # Set paths to existing CSV files
     segments_csv_path = Inference.INTERACTION_SEGMENTS_CSV
-    frame_csv_path = Inference.FRAME_LEVEL_INTERACTIONS_CSV
-    
+    if frame_csv_path is None:
+        frame_csv_path = Inference.FRAME_LEVEL_INTERACTIONS_CSV
+        
     # Define temporary and final output directories
     temp_frames_dir = Path("temp_annotated_frames")
     
@@ -109,7 +112,7 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         end_frame = int(segment['segment_end'])
         for frame in range(start_frame, end_frame + 1):
             segment_lookup[frame] = {
-                'category': segment['category'],
+                'interaction_type': segment['interaction_type'],
                 'duration': segment['duration_sec'],
                 'start_time': segment['start_time_sec'],
                 'end_time': segment['end_time_sec']
@@ -178,11 +181,11 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         
         # Segment information
         if current_segment:
-            segment_text = f"Segment: {current_segment['category']} ({current_segment['duration']:.1f}s)"
+            segment_text = f"Segment: {current_segment['interaction_type']} ({current_segment['duration']:.1f}s)"
             # Color code segments
-            if current_segment['category'] == 'Interacting':
+            if current_segment['interaction_type'] == 'Interacting':
                 segment_color = (0, 255, 0)  # Green
-            elif current_segment['category'] == 'Co-present Silent':
+            elif current_segment['interaction_type'] == 'Available':
                 segment_color = (0, 255, 255)  # Yellow
             else:  # Alone
                 segment_color = (0, 0, 255)  # Red
@@ -315,7 +318,7 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path):
         shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
 
-def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR):
+def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR, frame_csv_path: str = None):
     """
     Create annotated video(s) from existing segments and frame-level data.
     
@@ -323,16 +326,7 @@ def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR):
         input_path (str): Path to either:
             - A single video file to annotate
             - A folder containing multiple video files to process
-    
-    Example:
-        # Single video file
-        python create_annotated_video.py "/path/to/video.mp4"
-        
-        # Folder with multiple videos
-        python create_annotated_video.py "/path/to/videos_folder/"
-        
-        # Specific example
-        python create_annotated_video.py "/Users/nelesuffo/Promotion/ProcessedData/videos_example/"
+        frame_csv_path (str, optional): Path to frame-level interactions CSV. If not provided, uses default.
     """
     if not final_output_dir:
         print("❌ Error: Please provide a final output directory")
@@ -342,7 +336,7 @@ def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR):
     
     if not input_path:
         print("❌ Error: Please provide an input path")
-        print("Usage: python create_annotated_video.py <video_path_or_folder>")
+        print("Usage: python create_annotated_video.py <video_path_or_folder> [--frame_csv_path <csv_path>]")
         return
     
     input_path = Path(input_path)
@@ -357,7 +351,7 @@ def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR):
             print(f"❌ Error: Unsupported video file extension: {input_path.suffix}")
             return
         
-        result = create_annotated_video_from_csv(input_path, final_output_dir)
+        result = create_annotated_video_from_csv(input_path, final_output_dir, frame_csv_path)
 
         if result is None:
             print(f"❌ Failed to process: {input_path.name}")
@@ -385,7 +379,7 @@ def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR):
             print(f"{'='*60}")
             
             try:
-                result = create_annotated_video_from_csv(video_file, final_output_dir)
+                result = create_annotated_video_from_csv(video_file, final_output_dir, frame_csv_path)
                 if result is not None:
                     successful += 1
                     print(f"✅ Successfully processed: {video_file.name}")
