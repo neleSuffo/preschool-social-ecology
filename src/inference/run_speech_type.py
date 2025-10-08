@@ -6,7 +6,7 @@ import logging
 from typing import List
 from sklearn.preprocessing import MultiLabelBinarizer
 from constants import AudioClassification, DataPaths, Inference
-from config import AudioConfig
+from config import AudioConfig, DataConfig
 from models.speech_type.audio_classifier import build_model_multi_label
 from models.speech_type.utils import load_thresholds, extract_features
 from utils import get_video_id, load_processed_videos, save_processed_video
@@ -147,26 +147,28 @@ def aggregate_and_save_results(predictions, class_names, db_cursor, video_id, th
         has_kchi = 1 if avg_probs[class_to_idx['KCHI']] > thresholds['KCHI'] else 0
         kchi_confidence = float(avg_probs[class_to_idx['KCHI']])
         
-        # Insert into database
-        # Note: Using second as frame_number since we're working with 1-second intervals
-        db_cursor.execute("""
-            INSERT INTO AudioClassifications (
-                video_id, frame_number, model_id,
-                has_kchi, kchi_confidence_score,
-                has_cds, cds_confidence_score,
-                has_ohs, ohs_confidence_score) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            video_id, 
-            second, 
-            int(AudioConfig.MODEL_ID),
-            has_kchi, 
-            kchi_confidence,
-            has_cds, 
-            cds_confidence,
-            has_ohs, 
-            ohs_confidence
-        ))
+        # Calculate frame numbers for this second
+        start_frame = second * DataConfig.FPS
+        end_frame = (second + 1) * DataConfig.FPS
+        for frame_number in range(start_frame, end_frame, DataConfig.FRAME_STEP_INTERVAL):
+            db_cursor.execute("""
+                INSERT INTO AudioClassifications (
+                    video_id, frame_number, model_id,
+                    has_kchi, kchi_confidence_score,
+                    has_cds, cds_confidence_score,
+                    has_ohs, ohs_confidence_score) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                video_id, 
+                frame_number, 
+                int(AudioConfig.MODEL_ID),
+                has_kchi, 
+                kchi_confidence,
+                has_cds, 
+                cds_confidence,
+                has_ohs, 
+                ohs_confidence
+            ))
 
 def process_audio_file(video_name: str, model, mlb, cursor: sqlite3.Cursor):
     """
