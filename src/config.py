@@ -99,15 +99,15 @@ class PersonConfig:
     NUM_EPOCHS = 100
     # number of videos per batch
     BATCH_SIZE = 32
-    LR = 1e-4
+    LR = 1e-3
     FREEZE_CNN = True
     PATIENCE = 15
     SEQUENCE_LENGTH = 60
     DROPOUT = 0.5
     WEIGHT_DECAY = 1e-5
     FEAT_DIM = 512
-    RNN_HIDDEN = 256
-    RNN_LAYERS = 2
+    RNN_HIDDEN = 512
+    RNN_LAYERS = 3
     BIDIRECTIONAL = True
     NUM_OUTPUTS = 2
     BACKBONE = 'efficientnet_b0'
@@ -141,6 +141,13 @@ class FaceConfig:
     IMG_SIZE = 832
     LR = 1e-4
     MODEL_ID = 1
+    
+    CLUSTER_CONSECUTIVE_FRAMES = 1
+    REPRESENTATIVE_BLUR_THRESHOLD = 60
+    MIN_BLUR_THRESHOLD = 20
+    DEEPFACE_BACKEND = "retinaface"
+    FINAL_CONFIRMATION_DISTANCE_THRESHOLD = 0.6
+    VERIFIED_DISTANCE_THRESHOLD = 0.68
 
 class AudioConfig:
     """Configuration for audio classification."""
@@ -148,10 +155,10 @@ class AudioConfig:
     VALID_EVENT_IDS = {"child_talking", "other_person_talking", "overheard_speech", "singing/humming"}
     SR = 16000
     N_MELS = 256
-    HOP_LENGTH = 512
+    HOP_LENGTH = 256
     WINDOW_DURATION = 3.0
     WINDOW_STEP = 1.0
-    EPOCHS = 100
+    NUM_EPOCHS = 200
     MODEL_ID = 3
 
 class KchiVoc_Config:
