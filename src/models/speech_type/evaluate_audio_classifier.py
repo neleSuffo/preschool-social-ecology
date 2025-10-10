@@ -241,6 +241,12 @@ def main():
 
         model, mlb = load_model()
         thresholds = load_thresholds(mlb.classes_)
+        # Save thresholds to evaluation folder
+        thresholds_file = folder_name / "used_thresholds.json"
+        folder_name.mkdir(parents=True, exist_ok=True)
+        with open(thresholds_file, "w") as tf:
+            json.dump(thresholds, tf, indent=2)
+        print(f"✅ Thresholds saved to: {thresholds_file}")
 
         test_seconds_cache_dir = AudioClassification.CACHE_DIR / "test_seconds"
         test_dataset = get_tf_dataset(AudioClassification.TEST_SECONDS_FILE, mlb, test_seconds_cache_dir, batch_size=32, shuffle=False, seconds_step=True)
