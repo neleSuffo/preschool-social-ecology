@@ -1,6 +1,6 @@
 """
 End-to-end pipeline (refactored):
-  BiLSTM -> per-frame classifier
+  ResNet-BiLSTM -> per-frame classifier (E2E fine-tuning)
 
 This file contains the high-level training loop and model orchestration.
 """
@@ -35,17 +35,19 @@ torch.set_num_threads(4)
 # Training/Evaluation Functions
 # ---------------------------
 
-def handle_checkpointing_and_early_stopping(out_dir, epoch, rnn_model, opt_rnn,
+def handle_checkpointing_and_early_stopping(out_dir, epoch, model, optimizer,
                                            train_metrics, val_metrics, best_val_f1, patience_counter):
     """Saves checkpoints, manages early stopping, and updates patience counter."""
+    
+    # 💥 CRITICAL FIX: Save the combined model and unified optimizer states
     ckpt = {
         'epoch': epoch,
-        'rnn_state': rnn_model.state_dict(),
-        'opt_rnn': opt_rnn.state_dict() if opt_rnn else None,
+        'model_state': model.state_dict(),
+        'opt_state': optimizer.state_dict() if optimizer else None, # Use unified optimizer
         'val_metrics': val_metrics,
         'train_metrics': train_metrics,
     }
-
+    
     if epoch == PersonConfig.NUM_EPOCHS:
         last_path = Path(out_dir) / 'last.pth'
         torch.save(ckpt, last_path)
@@ -67,9 +69,11 @@ def handle_checkpointing_and_early_stopping(out_dir, epoch, rnn_model, opt_rnn,
 
     return best_val_f1, patience_counter, should_stop
 
-def eval_on_loader(rnn_model, criterion, dataloader, device):
+def eval_on_loader(model, criterion, dataloader, device):
     """Evaluate models on dataloader and return loss + metrics."""
-    rnn_model.eval()
+    
+    # 💥 CRITICAL FIX: Use 'model' for eval
+    model.eval()
 
     total_loss = 0.0
     total_samples = 0
@@ -79,13 +83,15 @@ def eval_on_loader(rnn_model, criterion, dataloader, device):
     progress_bar = tqdm(dataloader, desc="Validation", leave=False)
 
     with torch.no_grad():
-        for features_padded, labels_padded, lengths, _ in progress_bar:
-            features_padded = features_padded.to(device)
+        # Input is now 'images_padded'
+        for images_padded, labels_padded, lengths, _ in progress_bar:
+            images_padded = images_padded.to(device)
             labels_padded = labels_padded.to(device)
             lengths = lengths.to(device)
             mask = (labels_padded != -100)
 
-            logits = rnn_model(features_padded, lengths)
+            # Pass images directly to the combined model
+            logits = model(images_padded, lengths)
             
             mask_flat = mask.view(-1, 2)[:, 0]
             logits_flat = logits.view(-1, 2)[mask_flat]
@@ -93,7 +99,7 @@ def eval_on_loader(rnn_model, criterion, dataloader, device):
 
             loss = criterion(logits_flat, labels_flat)
 
-            batch_size = features_padded.size(0)
+            batch_size = images_padded.size(0)
             total_loss += loss.item() * batch_size
             total_samples += batch_size
 
@@ -116,12 +122,13 @@ def eval_on_loader(rnn_model, criterion, dataloader, device):
 
     return avg_loss, metrics
 
-def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=None, accumulation_steps=4):
+def train_one_epoch(model, optimizer, criterion, dataloader, device, scaler=None, accumulation_steps=4):
     """
     Train models for one epoch with gradient accumulation and optional AMP.
-    Adds diagnostic prints for feature and label statistics.
     """
-    rnn_model.train()
+    
+    # 💥 CRITICAL FIX: Use 'model' for train
+    model.train()
 
     total_loss = 0.0
     total_samples = 0
@@ -130,15 +137,16 @@ def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=No
 
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
 
-    for batch_idx, (features_padded, labels_padded, lengths, _) in enumerate(progress_bar):
-        features_padded = features_padded.to(device, non_blocking=True)
+    # Input is now 'images_padded'
+    for batch_idx, (images_padded, labels_padded, lengths, _) in enumerate(progress_bar):
+        images_padded = images_padded.to(device, non_blocking=True)
         labels_padded = labels_padded.to(device, non_blocking=True)
         mask = (labels_padded != -100)
 
         # Diagnostic print for first batch of each epoch
         if batch_idx == 0:
-            print("\n[DIAGNOSTIC] Feature stats:")
-            print(f"  mean: {features_padded.mean().item():.4f}, std: {features_padded.std().item():.4f}, min: {features_padded.min().item():.4f}, max: {features_padded.max().item():.4f}")
+            print("\n[DIAGNOSTIC] Image stats:")
+            print(f"  mean: {images_padded.mean().item():.4f}, std: {images_padded.std().item():.4f}, min: {images_padded.min().item():.4f}, max: {images_padded.max().item():.4f}")
             print("[DIAGNOSTIC] Label distribution:")
             mask_flat = mask.view(-1, 2)[:, 0]
             valid_labels = labels_padded.view(-1, 2)[mask_flat].cpu().numpy()
@@ -152,7 +160,8 @@ def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=No
                 print(f"  Unexpected label shape: {valid_labels.shape}")
 
         with torch.autocast(device_type='cuda', enabled=(scaler is not None)):
-            logits = rnn_model(features_padded, lengths)
+            # Pass images directly to the combined model
+            logits = model(images_padded, lengths)
             mask_flat = mask.view(-1, 2)[:, 0]
             logits_flat = logits.view(-1, 2)[mask_flat]
             labels_flat = labels_padded.view(-1, 2)[mask_flat]
@@ -169,14 +178,16 @@ def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=No
 
         if (batch_idx + 1) % accumulation_steps == 0:
             if scaler:
-                scaler.unscale_(opt_rnn)
-                torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), 5.0)
-                scaler.step(opt_rnn)
+                # 💥 CRITICAL FIX: Use 'optimizer' and 'model'
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                scaler.step(optimizer)
                 scaler.update()
             else:
-                torch.nn.utils.clip_grad_norm_(rnn_model.parameters(), 5.0)
-                opt_rnn.step()
-            opt_rnn.zero_grad()
+                # 💥 CRITICAL FIX: Use 'optimizer' and 'model'
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                optimizer.step()
+            optimizer.zero_grad()
                 
         with torch.no_grad():
             probs = torch.sigmoid(logits)
@@ -187,7 +198,7 @@ def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=No
             all_preds.append(valid_preds)
             all_labels.append(valid_labels)
 
-        batch_size = features_padded.size(0)
+        batch_size = images_padded.size(0)
         total_loss += loss.item() * batch_size * accumulation_steps
         total_samples += batch_size
         avg_loss_so_far = total_loss / total_samples if total_samples else 0.0
@@ -204,7 +215,7 @@ def train_one_epoch(rnn_model, opt_rnn, criterion, dataloader, device, scaler=No
 
     return avg_loss, metrics
 
-def run_training_loop(out_dir, device, scaler, train_loader, val_loader, rnn_model, opt_rnn, criterion, csv_log_path):
+def run_training_loop(out_dir, device, scaler, train_loader, val_loader, model, optimizer, criterion, csv_log_path):
     """
     Orchestrates the full training process across multiple epochs.
     """
@@ -217,16 +228,17 @@ def run_training_loop(out_dir, device, scaler, train_loader, val_loader, rnn_mod
 
     for epoch in range(1, PersonConfig.NUM_EPOCHS + 1):
         train_loss, train_metrics = train_one_epoch(
-            rnn_model, opt_rnn, criterion, train_loader, device, scaler=scaler,
+            model, optimizer, criterion, train_loader, device, scaler=scaler,
         )
 
-        val_loss, val_metrics = eval_on_loader(rnn_model, criterion, val_loader, device)
+        val_loss, val_metrics = eval_on_loader(model, criterion, val_loader, device)
 
         print_epoch_results(epoch, train_loss, val_loss, train_metrics, val_metrics)
         log_epoch_metrics(csv_log_path, epoch, train_loss, val_loss, train_metrics, val_metrics)
 
+        # 💥 CRITICAL FIX: Pass the combined model and optimizer
         best_val_f1, patience_counter, should_stop = handle_checkpointing_and_early_stopping(
-            out_dir, epoch, rnn_model, opt_rnn, train_metrics, val_metrics, best_val_f1, patience_counter
+            out_dir, epoch, model, optimizer, train_metrics, val_metrics, best_val_f1, patience_counter
         )
 
         if should_stop:
@@ -247,21 +259,24 @@ def main():
 
     out_dir, device, scaler = setup_environment(is_training=True)
 
-    # feature extraction is done once seperately with extract_features.py
+    # 💥 NOTE: is_feature_extraction=True ensures the DataLoader loads raw images
     train_loader, train_ds = setup_data_loaders(
-        PersonClassification.TRAIN_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=True, log_dir=out_dir, is_feature_extraction=False, split_name='train'
+        PersonClassification.TRAIN_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=True, log_dir=out_dir, 
+        is_feature_extraction=True, split_name='train'
     )
     val_loader, val_ds = setup_data_loaders(
-        PersonClassification.VAL_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=False, log_dir=out_dir, is_feature_extraction=False, split_name='val'
+        PersonClassification.VAL_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=False, log_dir=out_dir, 
+        is_feature_extraction=True, split_name='val'
     )
 
-    rnn_model, opt_rnn, criterion = setup_models_and_optimizers(device)
+    # Load combined model and optimizer
+    model, optimizer, criterion = setup_models_and_optimizers(device) 
 
     csv_log_path = initialize_training_logging(out_dir)
 
     run_training_loop(
         out_dir, device, scaler, train_loader, val_loader,
-        rnn_model, opt_rnn, criterion, csv_log_path,
+        model, optimizer, criterion, csv_log_path, # Pass the correct variables
     )
 
     try:
