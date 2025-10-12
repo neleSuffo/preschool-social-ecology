@@ -146,6 +146,43 @@ class CNNEncoder(nn.Module):
             x = self.project(x)
         return x
 
+class ResNetBiLSTMClassifier(nn.Module):
+    """
+    End-to-end CNN (ResNet) + BiLSTM classifier for sequential frame classification.
+    The CNN is trained alongside the BiLSTM.
+    """
+    def __init__(self, cnn_backbone=PersonConfig.BACKBONE, 
+                 rnn_feat_dim=PersonConfig.FEAT_DIM, 
+                 pretrained_cnn=True):
+        super().__init__()
+        
+        # 1. CNN Encoder (allows fine-tuning)
+        self.cnn = CNNEncoder(
+            backbone=cnn_backbone, 
+            pretrained=pretrained_cnn, 
+            feat_dim=rnn_feat_dim
+        )
+        # 2. RNN Classifier (takes CNN output features)
+        self.rnn = FrameRNNClassifier(feat_dim=self.cnn.feat_dim)
+
+    def forward(self, images_padded, lengths):
+        # images_padded shape: (batch_size, max_seq, C, H, W)
+        bs, max_seq, C, H, W = images_padded.shape
+        
+        # 1. Prepare for CNN: Flatten batch and sequence dimensions
+        images_flat = images_padded.view(bs * max_seq, C, H, W)
+        
+        # 2. Extract Features
+        feats_flat = self.cnn(images_flat)
+        
+        # 3. Reshape back to sequence
+        feat_dim = feats_flat.shape[-1]
+        feats = feats_flat.view(bs, max_seq, feat_dim)
+        
+        # 4. Pass features through RNN
+        logits = self.rnn(feats, lengths)  # (batch, max_seq, 2)
+        return logits
+    
 class VideoFrameDataset(Dataset):
     """
     Dataset for loading sequences of video frames.
