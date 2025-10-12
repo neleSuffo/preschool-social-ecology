@@ -349,38 +349,26 @@ class TrainingLogger(tf.keras.callbacks.Callback):
         plt.savefig(os.path.join(self.log_dir, 'macro_f1_plot.png'))
         plt.close()
 
-def segment_generator(segments_file, mlb, cache_dir, seconds_step=False):
+def segment_generator(segments_file, mlb, cache_dir):
     with open(segments_file, 'r') as f:
         for line in f:
             segment = json.loads(line.strip())
-            if seconds_step:
-                segment_duration = 1
-                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['second']}_{segment_duration}"
-                cache_path = Path(cache_dir) / f"{segment_id}.npy"
-                if cache_path.exists():
-                    mel = np.load(cache_path)
-                else:
-                    mel = extract_features(
-                        segment['audio_path'], segment['second'], segment_duration,
-                        sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH,
-                        fixed_time_steps=int(np.ceil(segment_duration * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-                    )
+            segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
+            cache_path = Path(cache_dir) / f"{segment_id}.npy"
+            if cache_path.exists():
+                mel = np.load(cache_path)
             else:
-                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
-                cache_path = Path(cache_dir) / f"{segment_id}.npy"
-                if cache_path.exists():
-                    mel = np.load(cache_path)
-                else:
-                    mel = extract_features(
-                        segment['audio_path'], segment['start'], segment['duration'],
-                        sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH,
-                        fixed_time_steps=int(np.ceil(segment['duration'] * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-                    )
+                mel = extract_features(
+                    segment['audio_path'], segment['start'], segment['duration'],
+                    sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH,
+                    # Pass the fixed size provided by get_tf_dataset
+                    fixed_time_steps=fixed_time_steps
+                )
             mel = np.expand_dims(mel, -1)
             labels = mlb.transform([segment['labels']])[0]
             yield mel.astype(np.float32), labels.astype(np.float32)
             
-def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, buffer_size=1000, seconds_step=False):
+def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, buffer_size=1000):
     """
     Create a TensorFlow dataset from audio segments.
 
@@ -398,31 +386,26 @@ def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, b
         Whether to shuffle the dataset.
     buffer_size : int
         Buffer size for shuffling.
-    seconds_step : bool
-        Whether to use a sliding window approach with step size in seconds.
 
     Returns:
     -------
     tf.data.Dataset
         A TensorFlow dataset ready for training or evaluation.
     """
-    # Determine feature shape from one cached file
-    with open(segments_file, 'r') as f:
-        for line in f:
-            segment = json.loads(line.strip())
-            if seconds_step:
-                segment_duration = 1 # 1 second segments
-                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['second']}_{segment_duration}"
-            else:
-                segment_id = segment.get('id') or f"{Path(segment['audio_path']).stem}_{segment['start']}_{segment['duration']}"
-            cache_path = Path(cache_dir) / f"{segment_id}.npy"
-            if cache_path.exists():
-                arr = np.load(cache_path)
-                feature_shape = arr.shape + (1,)
-                break
+    # Calculate the FIXED time steps from T_max (AudioConfig.WINDOW_DURATION)
+    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
+
+    # The feature dimension is fixed: effective_n_mels (capped at 128) + 13 MFCC coefficients
+    effective_n_mels = min(AudioConfig.N_MELS, 128) + 13 
+    
+    # Define the FIXED shape for the entire dataset pipeline
+    feature_shape = (effective_n_mels, fixed_time_steps, 1)
+
     label_shape = (len(mlb.classes_),)
+    
+    # Pass the fixed_time_steps to the generator function
     dataset = tf.data.Dataset.from_generator(
-        lambda: segment_generator(segments_file, mlb, cache_dir, seconds_step=seconds_step),
+        lambda: segment_generator(segments_file, mlb, cache_dir, fixed_time_steps=fixed_time_steps),
         output_signature=(
             tf.TensorSpec(shape=feature_shape, dtype=tf.float32),
             tf.TensorSpec(shape=label_shape, dtype=tf.float32)
