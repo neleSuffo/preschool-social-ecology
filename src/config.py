@@ -115,6 +115,8 @@ class PersonConfig:
     BATCH_SIZE_INFERENCE = 64
     WINDOW_SIZE = 6 # frames (6 extracted frames = 60 original frames = 2 seconds)
     STRIDE = 1 # frames (every 1st extracted frame = every 10 original frames)
+    CHILD_POS_WEIGHT = 3.08  
+    ADULT_POS_WEIGHT = 2.60
     MODEL_ID = 2
 
 class FaceConfig:
