@@ -292,14 +292,14 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     BasePaths.LOGGING_DIR.mkdir(parents=True, exist_ok=True)
     summary_path = BasePaths.LOGGING_DIR / f"split_distribution_audio_{timestamp}.txt"
-    
+
     # Collect input file information for reproducibility tracking
     input_files = {
         'audio_files_dir': str(AudioClassification.CHILDLENS_AUDIO_DIR),
         'participant_info_csv': str(AudioClassification.CHILDLENS_PARTICIPANT_INFO),
         'annotations_dir': str(Path(AudioClassification.CHILDLENS_PARTICIPANT_INFO).parent)
     }
-    
+
     # Calculate label distribution percentages for balance analysis
     # This helps identify potential class imbalance issues early
     label_percentages_dict = {}
@@ -309,42 +309,58 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
             label: (count / total_labels_in_split * 100) if total_labels_in_split > 0 else 0
             for label, count in counts.items()
         }
-    
+
+    # Calculate the duration of the longest GT segment across all splits
+    longest_gt_duration = 0.0
+    for split_file in segment_files.values():
+        try:
+            with open(split_file, 'r') as f:
+                for line in f:
+                    seg = json.loads(line)
+                    duration = seg.get('duration', 0.0)
+                    if duration > longest_gt_duration:
+                        longest_gt_duration = duration
+        except Exception as e:
+            print(f"Warning: Could not read {split_file} for longest GT segment calculation: {e}")
+
     # Create text summary
     lines = []
     lines.append("=== Data Preparation Summary ===")
     lines.append(f"Timestamp: {datetime.now().isoformat()}")
     lines.append("")
-    
+
     lines.append("Configuration:")
     lines.append(f"  Sample rate: {AudioConfig.SR}")
     lines.append(f"  N mels: {AudioConfig.N_MELS}")
     lines.append(f"  Hop length: {AudioConfig.HOP_LENGTH}")
     lines.append("")
-    
+
+    lines.append(f"Longest GT segment duration: {longest_gt_duration:.2f} seconds")
+    lines.append("")
+
     lines.append("Input Files:")
     for key, path in input_files.items():
         lines.append(f"  {key}: {path}")
-    
+
     lines.append("")
     lines.append("Output Files:")
     for key, path in segment_files.items():
         lines.append(f"  {key}: {path}")
-    
+
     lines.append("")
     lines.append("Segment Counts:")
     for split, count in segment_counts.items():
         lines.append(f"  {split}: {count}")
     lines.append(f"  Total: {sum(segment_counts.values())}")
-    
+
     lines.append("")
     lines.append(f"Unique Labels ({len(unique_labels)}): {', '.join(unique_labels)}")
     lines.append("")
-    
+
     # Extract unique participant IDs for each split
     split_participant_ids = {}
     split_mapping = {'dev': 'val', 'train': 'train', 'test': 'test'}
-    
+
     for original_split_name, files_in_split in splits.items():
         split_name = split_mapping.get(original_split_name, original_split_name)
         participant_ids = set()
@@ -352,7 +368,7 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
             if file_info.get('participant_id'):
                 participant_ids.add(file_info['participant_id'])
         split_participant_ids[split_name] = sorted(list(participant_ids))
-    
+
     # ID Distribution
     lines.append("ID Distribution:")
     for split_name in ['train', 'val', 'test']:
@@ -360,17 +376,17 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
             ids = split_participant_ids[split_name]
             lines.append(f"  {split_name.title()} IDs: {len(ids)}, {ids}")
     lines.append("")
-    
+
     # ID Overlap Check
     lines.append("ID Overlap Check:")
     train_ids = set(split_participant_ids.get('train', []))
     val_ids = set(split_participant_ids.get('val', []))
     test_ids = set(split_participant_ids.get('test', []))
-    
+
     train_val_overlap = train_ids.intersection(val_ids)
     train_test_overlap = train_ids.intersection(test_ids)
     val_test_overlap = val_ids.intersection(test_ids)
-    
+
     if train_val_overlap or train_test_overlap or val_test_overlap:
         if train_val_overlap:
             lines.append(f"  Train-Val overlap: {sorted(list(train_val_overlap))}")
@@ -381,7 +397,7 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
     else:
         lines.append("  Overlap found: No")
     lines.append("")
-    
+
     # Label counts and percentages per split
     lines.append("Label Counts and Percentages per Split:")
     for split_name in ['train', 'val', 'test']:
@@ -391,11 +407,11 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
                 count = label_counts_per_split[split_name].get(label, 0)
                 percentage = round(label_percentages_dict[split_name].get(label, 0.0), 2)
                 lines.append(f"    {label}: {count} ({percentage}%)")
-    
+
     # Write to text file
     with open(summary_path, 'w') as f:
         f.write("\n".join(lines))
-    
+
     print("\n📊 Data Preparation Summary:")
     print(f"\n✅ Summary saved to: {summary_path}")
     
