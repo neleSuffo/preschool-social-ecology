@@ -39,21 +39,6 @@ from collections import Counter, defaultdict
 from constants import AudioClassification, BasePaths
 from config import AudioConfig
 
-def create_filename_suffix():
-    """
-    Create standardized filename suffix from audio configuration parameters.
-    
-    Converts floating point values to filesystem-safe strings by replacing
-    decimal points with 'p' (e.g., 1.5 → 1p5, 0.25 → 0p25).
-    
-    Returns:
-    -------
-    str: Formatted suffix string (e.g., 'w1p5_s0p25')
-    """
-    window_duration_str = str(AudioConfig.WINDOW_DURATION).replace('.', 'p')
-    window_step_str = str(AudioConfig.WINDOW_STEP).replace('.', 'p')
-    return f"w{window_duration_str}_s{window_step_str}"
-
 def map_event_to_speaker_ids(event_id):
     """
     Map ChildLens annotation event IDs to standardized speaker classifications.
@@ -103,111 +88,17 @@ def extract_file_name_from_video_name(video_name):
     """
     return video_name.replace('.MP4', '').replace('.mp4', '')
 
-def create_per_second_jsonl_segments(splits, valid_rttm_classes, output_dir):
+def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, output_dir):
     """
-    Creates JSONL segments of 1-second duration for per-second evaluation.
-    This function is a streamlined version of the sliding window function,
-    focused on generating a non-overlapping ground truth for the test set.
+    Create JSONL training segments directly from JSON annotations using Ground Truth (GT) events as segments.
+    Each segment corresponds to the temporal boundaries of an original KCHI, CDS, or OHS event. 
+    This approach preserves the natural event durations and supports multi-label assignments
+    when events overlap.
     
-    Parameters:
-    ----------
-    splits (dict): 
-        Dictionary containing train/validation/test splits
-    valid_rttm_classes (list): 
-        List of valid RTTM speaker classes
-    output_dir (Path): 
-        Directory to save the output JSONL files
-        
-    Returns:
-    -------
-    Path: 
-        Path to the created JSONL file
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    per_second_test_file = output_dir / f'test_segments_per_second.jsonl'
-    
-    # Use the test split from your existing splits dictionary
-    test_files = splits['test']
-    
-    print(f"\n--- Processing Test Data for Per-Second Evaluation ({len(test_files)} files) ---")
-    
-    per_second_segments = []
-    
-    # The logic here is similar to your original function's annotation processing,
-    # but with a fixed 1-second window and step.
-    for f_info in tqdm(test_files, desc="Generating per-second segments"):
-        try:
-            with open(f_info["path"], "r") as file_handle:
-                data = json.load(file_handle)
-                
-            audio_path = Path(AudioClassification.AUDIO_FILES_DIR) / f"{data['video_name']}.wav"
-            if not audio_path.exists():
-                print(f"Warning: Audio file not found: {audio_path}. Skipping.")
-                continue
-
-            audio_duration = librosa.get_duration(path=audio_path)
-            
-            # Map annotations to 1-second bins
-            annotation_bins = defaultdict(list)
-            for annotation in data.get('annotations', []):
-                event_id = annotation.get('eventId', '')
-                if event_id not in AudioConfig.VALID_EVENT_IDS:
-                    continue
-                
-                start_sec = annotation.get('startTime', 0)
-                end_sec = annotation.get('endTime', 0)
-                
-                speaker_ids = map_event_to_speaker_ids(event_id)
-                
-                # Assign labels to each 1-second bin
-                for current_second in range(int(start_sec), int(end_sec)):
-                    if current_second < audio_duration:
-                        for speaker_id in speaker_ids:
-                            if speaker_id in valid_rttm_classes:
-                                annotation_bins[current_second].append(speaker_id)
-
-            # Create segment for each second
-            for current_second in range(int(audio_duration)):
-                labels = list(set(annotation_bins[current_second]))
-                segment_data = {
-                    'audio_path': str(audio_path),
-                    'second': float(current_second),
-                    'labels': sorted(labels)
-                }
-                per_second_segments.append(segment_data)
-                
-        except Exception as e:
-            print(f"Error processing file {f_info['path']}: {e}")
-
-    # Write all segments to the JSONL file
-    with open(per_second_test_file, 'w') as f_out:
-        for segment in per_second_segments:
-            f_out.write(json.dumps(segment) + '\n')
-            
-    print(f"✓ Generated {len(per_second_segments):,} per-second segments for testing.")
-    return per_second_test_file
-
-def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_duration, window_step, output_dir):
-    """
-    Create JSONL training segments directly from JSON annotations using sliding windows.
-    
-    This function implements the core data preparation pipeline, converting 
-    participant-level annotation files into machine learning ready segments.
-    The sliding window approach ensures comprehensive coverage of all annotated
-    speech events while maintaining temporal relationships.
-    
-    Processing Pipeline:
-    1. Load and validate audio files for duration extraction
-    2. Parse JSON annotations and map event IDs to speaker classifications  
-    3. Create sliding windows across annotated time regions
-    4. Generate multi-label segments with overlapping voice type annotations
-    5. Export segments in JSONL format for efficient batch loading
-    
-    Window Strategy:
-    - Fixed duration windows with configurable step size
-    - Only windows containing valid annotations are retained
-    - Multi-label support for overlapping speech events
-    - Time boundaries respect original audio file durations
+    Segment Strategy:
+    - Segment boundaries (start/end) are defined by the start/end time of a GT event.
+    - Segment duration is the actual duration of the event (variable length).
+    - Multi-label support is retained by checking for overlapping GT events.
     
     Parameters:
     ----------
@@ -215,12 +106,8 @@ def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_du
         Participant-based data splits {'train': files, 'dev': files, 'test': files}
     valid_rttm_classes (list): 
         Valid speaker classifications for filtering (KCHI, CDS, OHS)
-    window_duration (float): 
-        Duration of each training segment in seconds
-    window_step (float): 
-        Step size between consecutive windows in seconds
     output_dir (Path): 
-        Output directory for JSONL segment files
+        Directory to save the output JSONL files
 
     Returns:
     -------
@@ -232,23 +119,22 @@ def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_du
         - label_counts_per_split: Label frequency statistics per split
     """
     # Validate audio files directory exists
-    audio_files_dir = Path(AudioClassification.AUDIO_FILES_DIR)
+    audio_files_dir = Path(AudioClassification.CHILDLENS_AUDIO_DIR)
     if not audio_files_dir.exists():
         raise FileNotFoundError(f"Audio files directory not found: {audio_files_dir}")
     
-    # Generate standardized segment file paths using helper function
-    filename_suffix = create_filename_suffix()
+    # Generate simplified segment file paths, reflecting the new segment type
     segment_files = {
-        'train': output_dir / f'train_segments_{filename_suffix}.jsonl',
-        'val': output_dir / f'val_segments_{filename_suffix}.jsonl',
-        'test': output_dir / f'test_segments_{filename_suffix}.jsonl'
+        'train': output_dir / f'train_segments.jsonl',
+        'val': output_dir / f'val_segments.jsonl',
+        'test': output_dir / f'test_segments.jsonl'
     }
     
     # Initialize tracking variables for data distribution analysis
     split_mapping = {'dev': 'val', 'train': 'train', 'test': 'test'}
     segment_counts = {}
     all_unique_labels = set()
-    label_counts_per_split = {}  # Track label frequency per data split
+    label_counts_per_split = {}
     
     # Process each data split (train/validation/test) separately
     for original_split_name, files_in_split in splits.items():
@@ -258,11 +144,12 @@ def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_du
         # Initialize label frequency tracking for distribution analysis
         label_counts_per_split[split_name] = Counter()
         
-        # Collect all annotations from files in this split
-        split_annotations = []
+        # Group annotations by audio file for efficient processing
+        file_annotations_by_audio_path = defaultdict(list)
+        file_durations = {}
         
-        # Process each annotation file in the current split
-        for f_info in tqdm(files_in_split, desc=f"Collecting {split_name} annotations"):
+        # Process each annotation file in the current split to collect all GT events
+        for f_info in tqdm(files_in_split, desc=f"Collecting {split_name} GT events"):
             try:
                 # Load JSON annotation data
                 with open(f_info["path"], "r") as file_handle:
@@ -272,127 +159,106 @@ def create_jsonl_segments_from_annotations(splits, valid_rttm_classes, window_du
                 uri = data.get('video_name', '')
                 audio_path = audio_files_dir / f"{uri}.wav"
                 
-                # Verify audio file exists before processing annotations
                 if not audio_path.exists():
                     print(f"Warning: Audio file not found: {audio_path}. Skipping.")
                     continue
                 
-                # Extract audio duration using librosa for accurate timing validation
                 try:
                     audio_duration = librosa.get_duration(path=audio_path)
+                    file_durations[str(audio_path)] = audio_duration
                 except Exception as e:
                     print(f"Warning: Could not get duration for {audio_path}: {e}. Skipping.")
                     continue
                 
                 # Parse annotations and convert to standardized speaker classifications
-                file_annotations = []
                 for annotation in data.get('annotations', []):
                     event_id = annotation.get('eventId', '')
-                    
                     # Filter to only valid event types defined in configuration
                     if event_id not in AudioConfig.VALID_EVENT_IDS:
                         continue
                     
-                    # Extract temporal boundaries and validate duration
                     start_sec = annotation.get('startTime', 0)
                     end_sec = annotation.get('endTime', 0)
                     duration_sec = end_sec - start_sec
                     
-                    # Skip invalid or zero-duration annotations
                     if duration_sec <= 0:
                         continue
                     
-                    # Map event IDs to speaker classifications using helper function
                     speaker_ids = map_event_to_speaker_ids(event_id)
                     
-                    # Create annotation records for each mapped speaker class
                     for speaker_id in speaker_ids:
                         if speaker_id in valid_rttm_classes:
-                            file_annotations.append({
+                            # Store the raw GT event for later processing
+                            file_annotations_by_audio_path[str(audio_path)].append({
                                 'start': start_sec,
                                 'end': end_sec,
-                                'speaker_id': speaker_id,
-                                'audio_path': str(audio_path),
-                                'audio_duration': audio_duration
+                                'speaker_id': speaker_id
                             })
-                
-                # Add all annotations from this file to the split collection
-                split_annotations.extend(file_annotations)
-                
+                            
             except Exception as e:
                 print(f"Error processing file {f_info['path']}: {e}")
         
-        # Create sliding windows from collected annotations
-        print(f"Creating sliding windows for {len(split_annotations)} annotations...")
-        
-        # Group annotations by audio file for efficient processing
-        # This organization allows vectorized window generation per file
-        file_annotations = defaultdict(list)
-        file_durations = {}
-        
-        for ann in split_annotations:
-            audio_path = ann['audio_path']
-            file_annotations[audio_path].append(ann)
-            file_durations[audio_path] = ann['audio_duration']
-        
-        # Generate segments using sliding window approach
+        # Generate segments using the GT event boundaries
+        print(f"Creating segments based on {len(file_annotations_by_audio_path)} files with GT events...")
         segment_counter = 0
         
         # Write segments directly to JSONL file for memory efficiency
         with open(segment_files[split_name], 'w') as f_out:
-            for audio_path, annotations in tqdm(file_annotations.items(), desc=f"Generating {split_name} segments"):
-                audio_duration = file_durations[audio_path]
+            # Iterate over each audio file that has annotations
+            for audio_path, annotations in tqdm(file_annotations_by_audio_path.items(), desc=f"Generating {split_name} segments"):
+                # Use a set to track unique segments generated (start/end/labels) 
+                # to prevent duplicating the same multi-label segment if events perfectly overlap.
+                unique_segments = set() 
                 
-                # Define analysis window boundaries based on annotation coverage
-                # This prevents generating empty segments in un-annotated regions
-                max_annotation_time = max(ann['end'] for ann in annotations) if annotations else 0
-                analysis_end_time = min(audio_duration, max_annotation_time)
-                
-                # Sliding window generation with configurable step size
-                current_time = 0.0
-                while current_time < analysis_end_time:
-                    window_start = current_time
-                    window_end = min(current_time + window_duration, audio_duration, analysis_end_time)
+                for primary_ann in annotations:
+                    window_start = primary_ann['start']
+                    window_end = primary_ann['end']
+                    segment_duration = window_end - window_start
                     
-                    # Find annotations that overlap with current window
-                    # Uses temporal intersection: max(start_times) < min(end_times)
-                    active_labels = set()
-                    for ann in annotations:
-                        # Check temporal overlap between annotation and window
-                        if max(window_start, ann['start']) < min(window_end, ann['end']):
-                            active_labels.add(ann['speaker_id'])
-                    
-                    # Create segments for all windows (including silent ones)
-                    # This ensures realistic audio classification with both speech and silence
-                    if (window_end - window_start) > 0:
-                        # Update global label tracking for dataset statistics (only if labels exist)
-                        if active_labels:
-                            all_unique_labels.update(active_labels)
-                            
-                            # Update per-split label frequency counts for distribution analysis
-                            for label in active_labels:
-                                label_counts_per_split[split_name][label] += 1
+                    if segment_duration <= 0.01:
+                        continue
                         
-                        # Create segment data structure for JSONL output
-                        segment_data = {
-                            'audio_path': audio_path,
-                            'start': window_start,
-                            'duration': window_duration,  # Fixed duration for consistent model input
-                            'labels': sorted(list(active_labels))  # Sorted for reproducible output
-                        }
-                        f_out.write(json.dumps(segment_data) + '\n')
-                        segment_counter += 1
+                    active_labels = set()
                     
-                    # Advance window by step size (may be smaller than duration for overlap)
-                    current_time += window_step
-        
+                    # Check for ALL overlapping annotations (including the primary one)
+                    # This ensures multi-label assignment if events overlap
+                    for secondary_ann in annotations:
+                        # Check temporal overlap between secondary annotation and primary segment
+                        # Uses: max(start_times) < min(end_times)
+                        if max(window_start, secondary_ann['start']) < min(window_end, secondary_ann['end']):
+                            active_labels.add(secondary_ann['speaker_id'])
+
+                    sorted_labels = tuple(sorted(list(active_labels)))
+                    segment_key = (window_start, window_end, sorted_labels)
+                    
+                    # Only process this unique segment once
+                    if segment_key in unique_segments:
+                        continue
+                    unique_segments.add(segment_key)
+                    
+                    # Update global label tracking for dataset statistics
+                    all_unique_labels.update(active_labels)
+                    
+                    # Update per-split label frequency counts for distribution analysis
+                    for label in active_labels:
+                        label_counts_per_split[split_name][label] += 1
+                    
+                    # Create segment data structure for JSONL output
+                    segment_data = {
+                        'audio_path': audio_path,
+                        'start': window_start,
+                        'duration': segment_duration,  # The actual, variable duration of the event
+                        'labels': sorted(list(active_labels))
+                    }
+                    f_out.write(json.dumps(segment_data) + '\n')
+                    segment_counter += 1
+
         # Record segment count for this split and display progress
         segment_counts[split_name] = segment_counter
-        print(f"✓ Generated {segment_counter:,} segments for {split_name} split")
+        print(f"✓ Generated {segment_counter:,} GT-based segments for {split_name} split")
     
     # Return all generated data and statistics for downstream processing
     return segment_files, segment_counts, sorted(list(all_unique_labels)), label_counts_per_split
-
 
 def save_data_preparation_summary(segment_files, segment_counts, unique_labels, label_counts_per_split, splits):
     """
@@ -429,7 +295,7 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
     
     # Collect input file information for reproducibility tracking
     input_files = {
-        'audio_files_dir': str(AudioClassification.AUDIO_FILES_DIR),
+        'audio_files_dir': str(AudioClassification.CHILDLENS_AUDIO_DIR),
         'participant_info_csv': str(AudioClassification.CHILDLENS_PARTICIPANT_INFO),
         'annotations_dir': str(Path(AudioClassification.CHILDLENS_PARTICIPANT_INFO).parent)
     }
@@ -451,8 +317,6 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
     lines.append("")
     
     lines.append("Configuration:")
-    lines.append(f"  Window duration: {AudioConfig.WINDOW_DURATION}")
-    lines.append(f"  Window step: {AudioConfig.WINDOW_STEP}")
     lines.append(f"  Sample rate: {AudioConfig.SR}")
     lines.append(f"  N mels: {AudioConfig.N_MELS}")
     lines.append(f"  Hop length: {AudioConfig.HOP_LENGTH}")
@@ -534,7 +398,8 @@ def save_data_preparation_summary(segment_files, segment_counts, unique_labels, 
     
     print("\n📊 Data Preparation Summary:")
     print(f"\n✅ Summary saved to: {summary_path}")
-
+    
+    
 def create_participant_splits():
     """
     Create participant ID-based data splits to prevent data leakage in longitudinal studies.
@@ -739,25 +604,13 @@ def main():
         print("👥 Creating participant-based train/dev/test splits...")
         splits = create_participant_splits()
 
-        # Stage 2: Generate JSONL training segments from annotation files
+        # Stage 2: Generate JSONL training segments from annotation files (MODIFIED CALL)
         print("\n📊 Creating JSONL segments from annotations...")
         segment_files, segment_counts, unique_labels, label_counts_per_split = create_jsonl_segments_from_annotations(
             splits,
             AudioConfig.VALID_RTTM_CLASSES,
-            AudioConfig.WINDOW_DURATION,
-            AudioConfig.WINDOW_STEP,
             output_dir
         )
-        
-        print("\n📊 Creating a separate 1-second test file for evaluation...")
-        per_second_test_file = create_per_second_jsonl_segments(
-            splits,
-            AudioConfig.VALID_RTTM_CLASSES,
-            output_dir
-        )
-        
-        # Add the new file to the segment_files dictionary for reporting
-        segment_files['test_per_second'] = per_second_test_file
 
         # Validate that segments were successfully created
         total_segments = sum(segment_counts.values())
