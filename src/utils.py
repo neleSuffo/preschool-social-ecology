@@ -393,7 +393,7 @@ def extract_every_nth_frame_from_videos_in_folder(
     logging.info(f"Already processed: {len(processed_videos)} videos")
     logging.info(f"Remaining to process: {len(videos_to_process)} videos")
     
-    for video_path in video_files:
+    for video_path in videos_to_process:
         # Create output folder for this video
         video_output_folder = output_root_folder / video_path.stem
         video_output_folder.mkdir(parents=True, exist_ok=True)
