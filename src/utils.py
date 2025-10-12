@@ -345,3 +345,136 @@ def extract_audio_from_videos_in_folder(videos_input_dir: Path, output_dir: Path
             logging.info(f"Finished processing: {video_file}")  # Debugging step
         else:
             logging.info(f"Audio already exists for: {video_file}")  # Debugging step
+ 
+def get_processed_videos(processed_videos_file: Path) -> set:
+    """Read the list of already processed videos."""
+    if not processed_videos_file.exists():
+        return set()
+    
+    with processed_videos_file.open('r') as f:
+        return set(line.strip() for line in f)
+       
+def mark_video_as_processed(video_path: Path, processed_videos_file: Path):
+    """Mark a video as processed by adding it to the tracking file."""
+    with processed_videos_file.open('a') as f:
+        f.write(f"{video_path.name}\n")
+                
+def extract_every_nth_frame_from_videos_in_folder(
+    input_folder: Path,
+    output_root_folder: Path,
+    frame_step: int,
+    error_log_file: Path,
+    processed_videos_file: Path,
+):
+    """
+    Extract frames from videos, skipping existing frames.
+
+    Args:
+        input_folder (Path): Path to the folder containing video files.
+        output_root_folder (Path): Path to the root folder where frames are saved.
+        frame_step (int): Interval of frames to extract (e.g., every 10th frame).
+        error_log_file (Path): Path to the text file where errors will be logged.
+        processed_videos_file (Path): Path to file tracking processed videos.
+    """
+    # Ensure output root folder exists
+    output_root_folder.mkdir(parents=True, exist_ok=True)
+
+    # Get all MP4 files in the input folder
+    video_files = list(input_folder.glob("*.MP4"))
+    if not video_files:
+        logging.info(f"No .MP4 files found in the folder: {input_folder}")
+        return
+    
+    # Get list of already processed videos
+    processed_videos = get_processed_videos(processed_videos_file)
+    videos_to_process = [v for v in video_files if v.name not in processed_videos]
+    
+    logging.info(f"Found {len(video_files)} total videos")
+    logging.info(f"Already processed: {len(processed_videos)} videos")
+    logging.info(f"Remaining to process: {len(videos_to_process)} videos")
+    
+    for video_path in video_files:
+        # Create output folder for this video
+        video_output_folder = output_root_folder / video_path.stem
+        video_output_folder.mkdir(parents=True, exist_ok=True)
+
+        # Extract frames
+        logging.info(f"Processing video: {video_path}")
+        extract_every_nth_frame(
+            video_path=video_path,
+            output_folder=video_output_folder,
+            frame_interval=frame_step,
+            error_log_file=error_log_file
+        )
+
+        mark_video_as_processed(video_path, processed_videos_file)
+
+    logging.info(f"All videos processed. Frames saved to {output_root_folder}")
+    
+def extract_every_nth_frame(video_path: Path, output_folder: Path, frame_interval: int, error_log_file: Path):
+    """
+    Extract every nth frame from a video, ensuring exact frame positioning.
+
+    Args:
+        video_path (Path): Path to the input video file.
+        output_folder (Path): Path to the folder where frames will be saved.
+        frame_interval (int): Interval of frames to extract (e.g., every 10th frame).
+        error_log_file (Path): Path to the text file where errors will be logged.
+    """
+    # Ensure the output folder exists
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    # Open the video file
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        logging.error(f"Error: Unable to open video file {video_path}")
+        with Path(error_log_file).open('a') as error_log:
+            error_log.write(f"Failed to open video: {video_path}\n")
+        return
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    failed_frames = []
+
+    def generate_image_name(video_path: Path, frame_idx: int) -> str:
+        return f"{video_path.stem}_{frame_idx:06d}.jpg"
+
+    saved_frames = 0
+    with tqdm(total=total_frames // frame_interval, desc="Extracting frames") as pbar:
+        frame_idx = 0
+        while frame_idx < total_frames:
+            frame_name = generate_image_name(video_path, frame_idx)
+            output_path = output_folder / frame_name
+
+            # Set frame position explicitly before reading
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+
+            if not ret:
+                logging.error(f"Error: Unable to read frame {frame_idx} in {video_path}")
+                failed_frames.append((video_path.name, frame_idx))
+                frame_idx += frame_interval
+                pbar.update(1)
+                continue
+
+            try:
+                # Try to save the extracted frame
+                cv2.imwrite(str(output_path), frame)
+                saved_frames += 1
+            except Exception as e:
+                logging.error(f"Error saving frame {frame_idx} from {video_path}: {str(e)}")
+                failed_frames.append((video_path.name, frame_idx))
+
+            frame_idx += frame_interval
+            pbar.update(1)
+
+    cap.release()
+
+    # Write all failed frames to error log at once
+    if failed_frames:
+        with Path(error_log_file).open('a') as error_log:
+            for video_name, frame_idx in failed_frames:
+                error_log.write(f"{video_name}, frame {frame_idx}\n")
+
+    logging.info(f"Extraction complete for {video_path}:")
+    logging.info(f"Saved {saved_frames} frames")
+    logging.info(f"Failed to extract {len(failed_frames)} frames")
