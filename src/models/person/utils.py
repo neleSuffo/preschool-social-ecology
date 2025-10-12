@@ -16,7 +16,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader
 from config import PersonConfig
 from constants import PersonClassification
-from models.person.person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier
+from models.person.person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier, ResNetBiLSTMClassifier
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -74,7 +74,7 @@ def save_script_and_hparams(out_dir):
     with open(hparams_path, "w") as f:
         json.dump(hparams, f, indent=4)
 
-def setup_data_loaders(csv_path, batch_size, is_training, log_dir, is_feature_extraction=False, split_name=None):
+def setup_data_loaders(csv_path, batch_size, is_training, log_dir, is_feature_extraction=True, split_name=None):
     """Setup a single data loader based on parameters."""
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -96,10 +96,18 @@ def setup_data_loaders(csv_path, batch_size, is_training, log_dir, is_feature_ex
     return loader, dataset
 
 def setup_models_and_optimizers(device: torch.device):
-    """Create models, initialize non-pretrained weights, compile and return optimizers."""
-    rnn_model = FrameRNNClassifier().to(device)
+    """Create the combined model and one optimizer for all weights."""
+    
+    # 1. Initialize the combined E2E model (pre-trained weights used for ResNet)
+    model = ResNetBiLSTMClassifier(
+        cnn_backbone=PersonConfig.BACKBONE, 
+        rnn_feat_dim=PersonConfig.FEAT_DIM, 
+        pretrained_cnn=True 
+    ).to(device)
 
+    # Apply custom weight initialization only to RNN (to avoid touching ResNet pre-trained weights)
     def init_weights(m):
+        """Initializes weights only for the classification/RNN layers."""
         if isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
@@ -111,23 +119,37 @@ def setup_models_and_optimizers(device: torch.device):
                 elif 'bias' in name:
                     nn.init.constant_(param.data, 0.0)
 
-    rnn_model.apply(init_weights)
-
+   # Apply custom initialization only to the RNN component of the E2E model
+    model.rnn.apply(init_weights)
+    
     try:
-        rnn_model = torch.compile(rnn_model)
+        model = torch.compile(model)
     except Exception as e:
         print(f"Model compilation skipped: {e}")
 
-    opt_rnn = torch.optim.AdamW(
-        rnn_model.parameters(),
+    # 2. Create a single optimizer for ALL parameters (CNN + RNN)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
         lr=PersonConfig.LR,
         weight_decay=PersonConfig.WEIGHT_DECAY,
         betas=(0.9, 0.999),
     )
-
-    criterion = nn.BCEWithLogitsLoss()
-
-    return rnn_model, opt_rnn, criterion
+    
+    # 3. Implement Weighted Loss (Assumes weights are in PersonConfig)
+    try:
+        pos_weight = torch.tensor(
+            [PersonConfig.CHILD_POS_WEIGHT, PersonConfig.ADULT_POS_WEIGHT], 
+            device=device,
+            dtype=torch.float32
+        )
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        print(f"Using weighted BCE loss. Pos weights: {pos_weight.tolist()}")
+    except AttributeError:
+        # This fallback is what you see now, so ensure weights are defined in config.py
+        print("Warning: Using unweighted BCE loss. Define pos weights for stable training.")
+        criterion = nn.BCEWithLogitsLoss()
+        
+    return model, optimizer, criterion
 
 def load_model(device):
     """Load trained model from checkpoint."""
@@ -145,8 +167,27 @@ def load_model(device):
     return cnn, rnn_model
 
 def collate_fn(batch):
-    """Pads sequences to the max length in the batch. Handles both image and feature tensors."""
-    batch_sizes = [item[2] for item in batch]
+    """Pads sequences to the max length in the batch. Handles both image and feature tensors.
+    
+    Parameters:
+    -----------
+    batch: 
+        List of tuples (images/features, labels, length, video_id)
+        
+    Returns:
+    --------
+    Tuple of (padded_images, padded_labels, lengths, video_ids)
+    padded_images: 
+        Tensor of shape (batch_size, max_seq_len, C, H, W) or (batch_size, max_seq_len, feat_dim)
+    padded_labels:
+        Tensor of shape (batch_size, max_seq_len, num_classes) with -100 for padded positions
+    lengths:
+        Tensor of shape (batch_size,) with original sequence lengths
+    video_ids:
+        List of video IDs corresponding to each sequence in the batch
+    """
+    # The batch size of the first item is the sequence length of the first video
+    batch_sizes = [item[2] for item in batch] 
     max_len = max(batch_sizes)
     bs = len(batch)
     first_shape = batch[0][0].shape
@@ -155,11 +196,12 @@ def collate_fn(batch):
         # Features: (seq_len, feat_dim)
         feat_dim = first_shape[1]
         images_padded = torch.zeros((bs, max_len, feat_dim))
-    elif len(first_shape) == 3:
-        # Images: (seq_len, C, H, W)
+    elif len(first_shape) == 4:
+        # Images (E2E Mode): (seq_len, C, H, W)
         C, H, W = first_shape[1:]
         images_padded = torch.zeros((bs, max_len, C, H, W))
     else:
+        # This will catch single frames (len=3) or any other unexpected format
         raise ValueError(f"Unexpected input shape: {first_shape}")
 
     labels_padded = torch.full((bs, max_len, 2), -100.0, dtype=torch.float32)
