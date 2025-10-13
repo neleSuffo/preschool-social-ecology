@@ -35,9 +35,9 @@ class AudioClassification:
     CHILDLENS_AUDIO_DIR = Path(BasePaths.DATA_DIR/"childlens_audio")
     QUANTEX_AUDIO_DIR = Path(BasePaths.DATA_DIR/"quantex_audio")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"audio_cls_input")
-    TRAIN_SEGMENTS_FILE = Path(INPUT_DIR/"train_segments_w3p0_s1p0.jsonl")
-    VAL_SEGMENTS_FILE = Path(INPUT_DIR/"val_segments_w3p0_s1p0.jsonl")
-    TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments_w3p0_s1p0.jsonl")
+    TRAIN_SEGMENTS_FILE = Path(INPUT_DIR/"train_segments.jsonl")
+    VAL_SEGMENTS_FILE = Path(INPUT_DIR/"val_segments.jsonl")
+    TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments.jsonl")
     TEST_SECONDS_FILE = Path(INPUT_DIR/"test_segments_per_second.jsonl")
     CACHE_DIR = Path(INPUT_DIR/"feature_cache")
 
