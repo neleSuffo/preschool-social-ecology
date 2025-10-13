@@ -470,7 +470,7 @@ def create_training_callbacks(run_dir, val_generator, mlb_classes):
         Configured Keras callbacks for training
     """
     callbacks = [
-        EarlyStopping(monitor='val_macro_f1', patience=30, mode='max', restore_best_weights=True, verbose=1),
+        EarlyStopping(monitor='val_macro_f1', patience=AudioConfig.PATIENCE, mode='max', restore_best_weights=True, verbose=1),
         LearningRateScheduler(compute_cosine_annealing_lr, verbose=1),
         ModelCheckpoint(
             filepath=(run_dir / 'best_model.keras'),
