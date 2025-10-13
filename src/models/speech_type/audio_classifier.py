@@ -7,9 +7,10 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.layers import *
 from sklearn.metrics import f1_score
+from config import AudioConfig
 
 # --- Deep Learning Model Architecture ---
-def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
+def build_model_multi_label(num_classes, n_mels = AudioConfig.N_MELS, fixed_time_steps = AudioConfig.FIXED_TIME_STEPS):
     """
     Build a deep learning model for multi-label voice type classification.
     
@@ -22,12 +23,12 @@ def build_model_multi_label(n_mels, fixed_time_steps, num_classes):
     
     Parameters:
     ----------
+    num_classes (int): 
+        Number of voice type classes to predict
     n_mels (int): 
         Number of mel-frequency bins in input spectrograms (will be capped at 128)
     fixed_time_steps (int): 
         Fixed number of time steps in input spectrograms
-    num_classes (int): 
-        Number of voice type classes to predict
         
     Returns
     -------
