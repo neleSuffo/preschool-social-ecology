@@ -360,9 +360,7 @@ def segment_generator(segments_file, mlb, cache_dir):
             else:
                 mel = extract_features(
                     segment['audio_path'], segment['start'], segment['duration'],
-                    sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH,
-                    # Pass the fixed size provided by get_tf_dataset
-                    fixed_time_steps=fixed_time_steps
+                    sr=AudioConfig.SR, n_mels=AudioConfig.N_MELS, hop_length=AudioConfig.HOP_LENGTH
                 )
             mel = np.expand_dims(mel, -1)
             labels = mlb.transform([segment['labels']])[0]
@@ -392,20 +390,11 @@ def get_tf_dataset(segments_file, mlb, cache_dir, batch_size=32, shuffle=True, b
     tf.data.Dataset
         A TensorFlow dataset ready for training or evaluation.
     """
-    # Calculate the FIXED time steps from T_max (AudioConfig.WINDOW_DURATION)
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-
-    # The feature dimension is fixed: effective_n_mels (capped at 128) + 13 MFCC coefficients
-    effective_n_mels = min(AudioConfig.N_MELS, 128) + 13 
-    
-    # Define the FIXED shape for the entire dataset pipeline
-    feature_shape = (effective_n_mels, fixed_time_steps, 1)
-
+    effective_n_mels = min(AudioConfig.N_MELS, 128) + 13
+    feature_shape = (effective_n_mels, AudioConfig.FIXED_TIME_STEPS, 1)
     label_shape = (len(mlb.classes_),)
-    
-    # Pass the fixed_time_steps to the generator function
     dataset = tf.data.Dataset.from_generator(
-        lambda: segment_generator(segments_file, mlb, cache_dir, fixed_time_steps=fixed_time_steps),
+        lambda: segment_generator(segments_file, mlb, cache_dir),
         output_signature=(
             tf.TensorSpec(shape=feature_shape, dtype=tf.float32),
             tf.TensorSpec(shape=label_shape, dtype=tf.float32)
@@ -432,16 +421,13 @@ def create_data_generators(segment_files, mlb):
     -------
     tuple: 
         (train_generator, val_generator, test_generator)
-    """
-    # Use centralized time steps calculation to ensure consistency
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-    
+    """    
     train_generator = None
     if segment_files.get('train') is not None:
         train_generator = AudioSegmentDataGenerator(
             segment_files['train'], mlb, 
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR, 
-            AudioConfig.WINDOW_DURATION, fixed_time_steps,
+            AudioConfig.WINDOW_DURATION, AudioConfig.FIXED_TIME_STEPS,
             batch_size=32, shuffle=True, augment=True, seconds_step = False, cache_dir=(AudioClassification.CACHE_DIR/"train")
         )
     
@@ -450,7 +436,7 @@ def create_data_generators(segment_files, mlb):
         val_generator = AudioSegmentDataGenerator(
             segment_files['val'], mlb,
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-            AudioConfig.WINDOW_DURATION, fixed_time_steps,
+            AudioConfig.WINDOW_DURATION, AudioConfig.FIXED_TIME_STEPS,
             batch_size=32, shuffle=False, augment=False, seconds_step = False, cache_dir=(AudioClassification.CACHE_DIR/"val")
         )
     
@@ -459,7 +445,7 @@ def create_data_generators(segment_files, mlb):
         test_generator = AudioSegmentDataGenerator(
             segment_files['test'], mlb,
             AudioConfig.N_MELS, AudioConfig.HOP_LENGTH, AudioConfig.SR,
-            AudioConfig.WINDOW_DURATION, fixed_time_steps,
+            AudioConfig.WINDOW_DURATION, AudioConfig.FIXED_TIME_STEPS,
             batch_size=32, shuffle=False, augment=False, seconds_step=True
         )
     
@@ -562,7 +548,7 @@ def load_thresholds(mlb_classes):
     return thresholds
 
 # --- Feature Extraction ---
-def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=None):
+def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop_length=512, fixed_time_steps=AudioConfig.FIXED_TIME_STEPS):
     """
     Extract audio features (mel-spectrogram + MFCC) from audio segment.
 
@@ -602,10 +588,7 @@ def extract_features(audio_path, start_time, duration, sr=16000, n_mels=256, hop
         Normalization, pre-emphasis filtering
     Post-processing: 
         Padding/truncation to fixed dimensions
-    """
-    if fixed_time_steps is None:
-        fixed_time_steps = int(np.ceil(duration * sr / hop_length))
-    
+    """    
     try:
         # Load audio segment with resampling if needed
         y, sr_loaded = librosa.load(audio_path, sr=sr, offset=start_time, duration=duration)
@@ -1404,16 +1387,9 @@ def load_model(model_path: Path = AudioClassification.TRAINED_WEIGHTS_PATH):
     mlb.fit([[]])  # Initialize with empty list to set up classes
     num_classes = len(mlb.classes_)
 
-    # Use centralized calculation for consistent time steps across all components
-    fixed_time_steps = int(np.ceil(AudioConfig.WINDOW_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-
     try:
         # Build the model architecture first
-        model = build_model_multi_label(
-            n_mels=AudioConfig.N_MELS,
-            fixed_time_steps=fixed_time_steps,
-            num_classes=num_classes
-        )
+        model = build_model_multi_label(num_classes=num_classes)
         
         # Load only the weights from the saved .keras file
         model.load_weights(model_path)
