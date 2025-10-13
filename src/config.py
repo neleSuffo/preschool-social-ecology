@@ -1,6 +1,7 @@
 from collections import defaultdict
 from dynaconf import Dynaconf
 from pathlib import Path
+import numpy as np
 
 # Dynaconf settings
 SETTINGS = Dynaconf(
@@ -98,7 +99,7 @@ class PersonConfig:
     
     NUM_EPOCHS = 100
     # number of videos per batch
-    BATCH_SIZE = 32
+    BATCH_SIZE = 4
     LR = 1e-3
     FREEZE_CNN = True
     PATIENCE = 15
@@ -158,8 +159,11 @@ class AudioConfig:
     SR = 16000
     N_MELS = 256
     HOP_LENGTH = 256
-    WINDOW_DURATION = 3.0
-    WINDOW_STEP = 1.0
+    #WINDOW_DURATION = 3.0
+    #WINDOW_STEP = 1.0
+    MAX_SEGMENT_DURATION = 830 #in seconds
+    FIXED_TIME_STEPS = int(np.ceil(MAX_SEGMENT_DURATION * SR / HOP_LENGTH))
+
     NUM_EPOCHS = 200
     MODEL_ID = 3
 
