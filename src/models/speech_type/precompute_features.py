@@ -23,9 +23,6 @@ def process_segments_file(segments_file, output_subfolder):
     cache_dir = Path(parent_dir / "feature_cache" / output_subfolder)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Calculate fixed_time_steps based on max segment duration and hop length
-    fixed_time_steps_for_padding = int(np.ceil(AudioConfig.MAX_SEGMENT_DURATION * AudioConfig.SR / AudioConfig.HOP_LENGTH))
-
     with open(segments_file, 'r') as f:
         for line in f:
             segment = json.loads(line.strip())
@@ -34,13 +31,12 @@ def process_segments_file(segments_file, output_subfolder):
             duration = segment['duration']
             segment_id = segment.get('id') or f"{Path(audio_path).stem}_{start}_{duration}"
 
-            # Use segment duration for librosa loading, but fixed_time_steps_for_padding for the output shape
+            # Use segment duration for librosa loading
             feature = extract_features(
                 audio_path, start, duration,
                 sr=AudioConfig.SR,
                 n_mels=AudioConfig.N_MELS,
                 hop_length=AudioConfig.HOP_LENGTH,
-                fixed_time_steps=fixed_time_steps_for_padding 
             )
 
             cache_path = cache_dir / f"{segment_id}.npy"
