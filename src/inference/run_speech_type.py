@@ -144,7 +144,6 @@ def classify_audio_snippets(audio_path: Path, snippets: List[Tuple[float, float]
         })
     return results
 
-# --- MODIFIED: aggregate_and_save_results ---
 def aggregate_and_save_results(predictions: List[Dict], class_names: List[str], db_cursor: sqlite3.Cursor, video_id: int, thresholds: Dict):
     """
     Saves classification results to the database by applying the single prediction
@@ -184,9 +183,12 @@ def aggregate_and_save_results(predictions: List[Dict], class_names: List[str], 
         # Calculate the frame range covered by this snippet
         start_frame = int(np.floor(start_sec * DataConfig.FPS))
         end_frame = int(np.ceil(end_sec * DataConfig.FPS))
-        
+
+        # Find the first frame that is a multiple of FRAME_STEP_INTERVAL and >= start_frame
+        first_frame = ((start_frame + DataConfig.FRAME_STEP_INTERVAL - 1) // DataConfig.FRAME_STEP_INTERVAL) * DataConfig.FRAME_STEP_INTERVAL
+
         # Insert records for all frames covered by this snippet
-        for frame_number in range(start_frame, end_frame, DataConfig.FRAME_STEP_INTERVAL):
+        for frame_number in range(first_frame, end_frame, DataConfig.FRAME_STEP_INTERVAL):
             db_cursor.execute("""
                 INSERT INTO AudioClassifications (
                     video_id, frame_number, model_id,
