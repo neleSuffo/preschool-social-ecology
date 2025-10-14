@@ -6,7 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from constants import DataPaths
-from config import LabelMapping
+from config import LabelMapping, DataConfig
 
 # Configure logging
 logging.basicConfig(
@@ -131,6 +131,11 @@ def add_annotations_to_db(
         # Get the video id if it was already added
         cursor.execute("SELECT id FROM videos WHERE file_name = ?", (f"{task_name}.mp4",))
         video_id = cursor.fetchone()[0]
+
+    # Special frame number offset for specific video
+    frame_offset = 0
+    if task_name in DataConfig.CUT_VIDEO:
+        frame_offset = DataConfig.CUT_VIDEO_OFFSET
         
     # Iterate over all 'track' elements
     for track in root.iter("track"):
@@ -163,9 +168,12 @@ def add_annotations_to_db(
         for box in track.iter("box"):
             row = box.attrib
             outside = int(row["outside"]) # 0 if the object is inside the frame, 1 if it is outside
-            frame_id_padded = f'{int(row["frame"]):06}'
+            # Adjust frame number if needed
+            original_frame = int(row["frame"])
+            adjusted_frame = original_frame + frame_offset
+            frame_id_padded = f'{adjusted_frame:06}'
             bbox_json = json.dumps([float(row["xtl"]), float(row["ytl"]), float(row["xbr"]), float(row["ybr"])])
-            
+
             # Extract other attributes
             person_visibility = box.find(".//attribute[@name='Visibility']")
             person_visibility_value = int(person_visibility.text) if person_visibility is not None else None
@@ -177,8 +185,8 @@ def add_annotations_to_db(
             person_age_value = person_age.text if person_age is not None else None
 
             person_gender = box.find(".//attribute[@name='Gender']")
-            person_gender_value = person_gender.text if person_gender is not None else None#
-            
+            person_gender_value = person_gender.text if person_gender is not None else None
+
             gaze_directed_at_child = box.find(".//attribute[@name='Gaze Directed at Child']")
             gaze_directed_at_child_value = gaze_directed_at_child.text if gaze_directed_at_child is not None else None
 
@@ -192,7 +200,7 @@ def add_annotations_to_db(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
-                    row["frame"], # image_id
+                    adjusted_frame, # image_id
                     video_id, # video_id
                     track_label_id, # category_id
                     bbox_json, # bbox coordinates
@@ -215,7 +223,7 @@ def add_annotations_to_db(
                 """,
                     (
                     video_id,
-                    row["frame"], # frame_id
+                    adjusted_frame, # frame_id
                     image_name,
                     ),
                 ) 
