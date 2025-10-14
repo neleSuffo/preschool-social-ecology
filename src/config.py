@@ -23,15 +23,11 @@ class DataConfig:
     VIDEO_BATCH_SIZE = 16
     VALID_EXTENSIONS = [".jpg", ".PNG"]
     EXCLUDED_VIDEOS = [
-        'quantex_at_home_id260275_2022_05_27_01.mp4',
-        'quantex_at_home_id260275_2022_04_16_01.mp4', 
-        'quantex_at_home_id260275_2022_04_12_01.mp4',
-        'quantex_at_home_id258704_2022_05_07_03.mp4',
-        'quantex_at_home_id258704_2022_05_07_04.mp4',
-        'quantex_at_home_id258704_2022_05_10_02.mp4',
-        'quantex_at_home_id258704_2022_05_15_01.mp4',
         'quantex_at_home_id262565_2022_05_26_03.mp4',
     ]   
+    CUT_VIDEO = ['quantex_at_home_id255237_2022_05_08_04.mp4']
+    CUT_VIDEO_OFFSET = 7153 #add offset to frame number for this video
+    
 class LabelMapping:
     """Mappings for labels, IDs, and supercategories."""
     LABEL_TO_ID_MAPPING = defaultdict(
