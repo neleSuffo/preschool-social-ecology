@@ -161,10 +161,11 @@ class AudioConfig:
     HOP_LENGTH = 256
     #WINDOW_DURATION = 3.0
     #WINDOW_STEP = 1.0
-    MAX_SEGMENT_DURATION = 830 #in seconds
+    MAX_SEGMENT_DURATION = 20 #in seconds
     FIXED_TIME_STEPS = int(np.ceil(MAX_SEGMENT_DURATION * SR / HOP_LENGTH))
 
     NUM_EPOCHS = 200
+    PATIENCE = 30
     MODEL_ID = 3
 
 class KchiVoc_Config:
