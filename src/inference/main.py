@@ -95,7 +95,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference pipeline with selectable models")
 
-    parser.add_argument("--video_path", type=Path, default=DataPaths.VIDEOS_INPUT_DIR, help="Path to video file or directory containing videos")
+    parser.add_argument("--video_path", type=Path, default=DataPaths.QUANTEX_VIDEOS_INPUT_DIR, help="Path to video file or directory containing videos")
     parser.add_argument("--db_path", type=Path, default=DataPaths.INFERENCE_DB_PATH, help="Path to the database where results will be stored")
     parser.add_argument("--frame_step", type=int, default=InferenceConfig.SAMPLE_RATE, help="Frame step size for processing videos")
     parser.add_argument("--models", nargs='+', choices=['person', 'face_proximity', 'speech_type', 'all'], default=['all'],  help="Select which models to run. Options: person, face_proximity, speech_type, all")
