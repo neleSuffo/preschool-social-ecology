@@ -28,7 +28,7 @@ class DataPaths:
 
 class AudioClassification:
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification")
-    RESULTS_DIR = Path(OUTPUT_DIR/"20251007-134530")
+    RESULTS_DIR = Path(OUTPUT_DIR/"20251013-144252")
     TRAINED_WEIGHTS_PATH = Path(RESULTS_DIR/"best_model.keras")
     ANNOTATIONS_INPUT_DIR = Path(BasePaths.DATA_DIR/"childlens_annotations/keeper/v1")
     CHILDLENS_PARTICIPANT_INFO = Path(ANNOTATIONS_INPUT_DIR/"childlens_participant_info.csv")
@@ -40,6 +40,7 @@ class AudioClassification:
     TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments.jsonl")
     TEST_SECONDS_FILE = Path(INPUT_DIR/"test_segments_per_second.jsonl")
     CACHE_DIR = Path(INPUT_DIR/"feature_cache")
+    VTC_RTTM_FILE = Path(OUTPUT_DIR/"SPEECH.rttm")
 
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
