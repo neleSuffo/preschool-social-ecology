@@ -22,12 +22,12 @@ class DataConfig:
     FRAME_HEIGHT = 1296
     VIDEO_BATCH_SIZE = 16
     VALID_EXTENSIONS = [".jpg", ".PNG"]
-    EXCLUDED_VIDEOS = [
-        'quantex_at_home_id262565_2022_05_26_03.mp4',
-    ]   
-    CUT_VIDEO = ['quantex_at_home_id255237_2022_05_08_04.mp4']
-    CUT_VIDEO_OFFSET = 7153 #add offset to frame number for this video
-    
+    CUT_VIDEO = ['quantex_at_home_id255237_2022_05_08_04']
+    CUT_VIDEO_OFFSET = 7123 #add offset to frame number for this video
+    SHIFTED_VIDEO = ['quantex_at_home_id257578_2021_05_16_01']
+    SHIFTED_VIDEO_OFFSET = -1 #annotations are shifted by one frame from frame 6120 on
+    SHIFTED_VIDEO_THRESHOLD = 6120
+
 class LabelMapping:
     """Mappings for labels, IDs, and supercategories."""
     LABEL_TO_ID_MAPPING = defaultdict(
