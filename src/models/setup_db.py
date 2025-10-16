@@ -137,6 +137,7 @@ def add_annotations_to_db(
     if task_name in DataConfig.CUT_VIDEO:
         frame_offset = DataConfig.CUT_VIDEO_OFFSET
         
+        
     # Iterate over all 'track' elements
     for track in root.iter("track"):
         track_label = track.get("label")
@@ -168,9 +169,12 @@ def add_annotations_to_db(
         for box in track.iter("box"):
             row = box.attrib
             outside = int(row["outside"]) # 0 if the object is inside the frame, 1 if it is outside
-            # Adjust frame number if needed
             original_frame = int(row["frame"])
-            adjusted_frame = original_frame + frame_offset
+            # Only apply offset for DataConfig.SHIFTED_VIDEO if original_frame >= SHIFTED_VIDEO_THRESHOLD
+            if task_name in DataConfig.SHIFTED_VIDEO and original_frame >= DataConfig.SHIFTED_VIDEO_THRESHOLD:
+                adjusted_frame = original_frame + DataConfig.SHIFTED_VIDEO_OFFSET
+            else:
+                adjusted_frame = original_frame
             frame_id_padded = f'{adjusted_frame:06}'
             bbox_json = json.dumps([float(row["xtl"]), float(row["ytl"]), float(row["xbr"]), float(row["ybr"])])
 
