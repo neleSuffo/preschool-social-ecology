@@ -23,7 +23,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Database and Query
 # ==============================
 def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
-    """Fetch annotations for given category IDs from the SQLite database.
+    """Fetch annotations for given category IDs from the SQLite database,
+    excluding any frame that has an annotation with category_id = -1.
     
     Parameters
     ----------
@@ -38,18 +39,14 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
     logging.info(f"Fetching annotations for category IDs: {category_ids}")
     placeholders = ", ".join("?" * len(category_ids))
 
-    # Create a SQL string like: 'video1', 'video2', ...
-    excluded_videos_sql = ", ".join(f"'{v}'" for v in DataConfig.EXCLUDED_VIDEOS)
-
     query = f"""
     SELECT DISTINCT 
         a.category_id, a.bbox, i.file_name, a.person_age
     FROM annotations a
     JOIN images i ON a.image_id = i.frame_id AND a.video_id = i.video_id
     JOIN videos v ON a.video_id = v.id
-    WHERE a.category_id IN ({placeholders}) 
-        AND a.outside = 0 
-        AND v.file_name NOT IN ({excluded_videos_sql})
+    WHERE a.category_id IN ({placeholders})
+      AND a.outside = 0
     ORDER BY a.video_id, a.image_id
     """
 
@@ -57,9 +54,7 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
         cursor = conn.cursor()
         cursor.execute(query, category_ids)
         results = cursor.fetchall()
-        
-    logging.info(f"Excluded {len(DataConfig.EXCLUDED_VIDEOS)} videos from query")
-    
+            
     return results
 
 # ==============================
@@ -210,22 +205,22 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
     negative_images = []
     annotated_frames = set()
     
-    # Step 1: Get all frames that have ANY face annotations (adult, child, or both)
-    for annotation_file in label_path.glob('*.txt'):
-        # Only include files that have actual content (any face annotations)
+    for annotation_file in label_path.glob("*.txt"):
         if annotation_file.stat().st_size > 0:
             try:
-                with open(annotation_file, 'r') as f:
+                with open(annotation_file, "r") as f:
                     content = f.read().strip()
-                    if content:  # File has actual annotations
-                        parts = annotation_file.stem.split('_')
-                        # Example: quantex_at_home_id255237_2022_05_08_04_000240 -> quantex_at_home_id255237_2022_05_08_04
-                        video_name = "_".join(parts[:8]) 
-                        video_names.add(video_name)
-                        annotated_frames.add(annotation_file.stem)
+                    if content:
+                        stem = annotation_file.stem
+                        # Match pattern up to the last underscore + 6 digits (frame number)
+                        match = re.match(r"(.+)_\d{6}$", stem)
+                        if match:
+                            video_name = match.group(1)
+                            video_names.add(video_name)
+                            annotated_frames.add(stem)
             except Exception as e:
                 logging.warning(f"Error reading annotation file {annotation_file}: {e}")
-        
+
     logging.info(f"Found {len(video_names)} unique video names")
 
     # Step 2: Get annotated frames and collect potential negative frames
