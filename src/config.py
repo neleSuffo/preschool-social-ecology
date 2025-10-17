@@ -25,8 +25,8 @@ class DataConfig:
     CUT_VIDEO = ['quantex_at_home_id255237_2022_05_08_04']
     CUT_VIDEO_OFFSET = 7123 #add offset to frame number for this video
     SHIFTED_VIDEO = ['quantex_at_home_id257578_2021_05_16_01']
-    SHIFTED_VIDEO_OFFSET = -1 #annotations are shifted by one frame from frame 6120 on
-    SHIFTED_VIDEO_THRESHOLD = 6120
+    SHIFTED_VIDEO_OFFSET = -2 #annotations are shifted by one frame from frame 6100 on
+    SHIFTED_VIDEO_THRESHOLD = 6100
 
 class LabelMapping:
     """Mappings for labels, IDs, and supercategories."""
