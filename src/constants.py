@@ -41,7 +41,7 @@ class AudioClassification:
     TEST_SECONDS_FILE = Path(INPUT_DIR/"test_segments_per_second.jsonl")
     CACHE_DIR = Path(INPUT_DIR/"feature_cache")
     VTC_RTTM_FILE = Path(OUTPUT_DIR/"SPEECH.rttm")
-
+    
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
     KCHI_OUTPUT_FILE = ALICE_OUTPUT_DIR / "KCHI_output_utterances.txt"
@@ -64,7 +64,7 @@ class FaceDetection:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12l_20250927_223304/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
-    IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_rawframes_cvat")
+    IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
 
