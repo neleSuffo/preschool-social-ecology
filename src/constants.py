@@ -40,7 +40,7 @@ class AudioClassification:
     TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments.jsonl")
     TEST_SECONDS_FILE = Path(INPUT_DIR/"test_segments_per_second.jsonl")
     CACHE_DIR = Path(INPUT_DIR/"feature_cache")
-    VTC_RTTM_FILE = Path(OUTPUT_DIR/"SPEECH.rttm")
+    VTC_RTTM_FILE = Path(OUTPUT_DIR/"all.rttm")
     
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
