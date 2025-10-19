@@ -13,55 +13,51 @@ from utils import get_video_id, load_processed_videos, save_processed_video
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 LOG_FILE_PATH = Inference.SPEECH_LOG_FILE_PATH
 
-def parse_rttm_snippets_with_label(rttm_path: Path, video_name: str) -> List[Dict]:
+def parse_rttm_file_to_snippets(rttm_path: Path) -> Dict[str, List[Dict]]:
     """
-    Parses a single large RTTM file, extracts speech segments (start, duration, label),
-    and filters results for the specified video_name (fileID).
+    Parse the RTTM file and return a mapping from file_id (RTTM fileID) to
+    a list of snippet dicts {start_time, duration, label}.
     
     Parameters
     ----------
     rttm_path : Path
         Path to the RTTM file containing VTC output (KCHI, KCDS, OHS labels).
-    video_name : str
-        Name of the video to filter snippets for (without extension).
     
     Returns
     -------
-    snippets : List[Dict]
-        List of dictionaries containing 'start_time', 'duration', and 'label'.
+    snippets_by_file : Dict[str, List[Dict]]
+        Mapping from file_id to list of snippet dictionaries.
     """
-    snippets = []
-    
-    # Patterns to match the video name exactly in the RTTM's fileID field (parts[1])
-    match_patterns = {video_name, f"{video_name}.wav", f"{video_name}.mp4", f"{video_name}.MP4"}
+    snippets_by_file = {}
 
-    if not rttm_path.exists():
-        logging.warning(f"Single large RTTM file not found: {rttm_path}.")
-        return snippets
-        
+    if not Path(rttm_path).exists():
+        logging.error(f"RTTM file not found: {rttm_path}")
+        return snippets_by_file
+
     with open(rttm_path, 'r') as f:
         for line in f:
             parts = line.strip().split()
-            
-            # Check for SPEAKER tag and minimum parts (9 for the label)
             if len(parts) >= 8 and parts[0] == 'SPEAKER':
-                rttm_file_id = parts[1] # This is the video identifier
-                label = parts[7]        # The classification label (e.g., KCDS)
-                
-                # Filter by video name and check if the label is one of the targets
-                if rttm_file_id in match_patterns and label in AudioConfig.VALID_RTTM_CLASSES:
-                    try:
-                        start = float(parts[3])
-                        duration = float(parts[4])
-                        if duration > 0:
-                            snippets.append({
-                                'start_time': start, 
-                                'duration': duration, 
-                                'label': label
-                            })
-                    except ValueError:
-                        logging.warning(f"Skipping malformed RTTM line: {line.strip()}")
-    return snippets
+                file_id = parts[1]
+                try:
+                    start = float(parts[3])
+                    duration = float(parts[4])
+                except ValueError:
+                    logging.warning(f"Skipping malformed RTTM line: {line.strip()}")
+                    continue
+                label = parts[7]
+                if label not in AudioConfig.VALID_RTTM_CLASSES:
+                    # skip labels we don't care about
+                    continue
+                if duration <= 0:
+                    continue
+                snippets_by_file.setdefault(file_id, []).append({
+                    'start_time': start,
+                    'duration': duration,
+                    'label': label
+                })
+
+    return snippets_by_file
 
 
 def aggregate_and_save_results(snippets: List[Dict], db_cursor: sqlite3.Cursor, video_id: int):
@@ -115,7 +111,7 @@ def aggregate_and_save_results(snippets: List[Dict], db_cursor: sqlite3.Cursor, 
             """, (
                 video_id, 
                 frame_number, 
-                MODEL_ID,  # Using the fixed Model ID
+                AudioConfig.MODEL_ID,  # Using the fixed Model ID
                 int(scores[AudioConfig.VALID_RTTM_CLASSES[2]]),
                 scores[AudioConfig.VALID_RTTM_CLASSES[2]],
                 int(scores[AudioConfig.VALID_RTTM_CLASSES[1]]), 
@@ -124,63 +120,45 @@ def aggregate_and_save_results(snippets: List[Dict], db_cursor: sqlite3.Cursor, 
                 scores[AudioConfig.VALID_RTTM_CLASSES[0]]
             ))
 
-
-def process_audio_file(video_name: str, cursor: sqlite3.Cursor):
-    """
-    Process a single video by parsing the VTC RTTM file and saving results to database.
-    
-    Parameters:
-    ----------
-    video_name : str
-        Name of the video (without extension)
-    cursor : sqlite3.Cursor
-        Database cursor for saving results
-    """
-    logging.info(f"Processing VTC RTTM data for video: {video_name}")
-    
-    video_id = get_video_id(video_name, cursor)
-    
-    if video_id is None:
-        logging.error(f"Video ID not found for {video_name}")
-        return
-    
-    try:
-        # 1. Parse RTTM file to get snippet boundaries and labels
-        snippets_with_labels = parse_rttm_snippets_with_label(AudioClassification.VTC_RTTM_FILE, video_name)
-        
-        if not snippets_with_labels:
-            logging.warning(f"No classified speech snippets found in VTC RTTM for {video_name}. Skipping.")
-            return
-
-        # 2. Save the snippet's RTTM classification across its entire frame range
-        aggregate_and_save_results(snippets_with_labels, cursor, video_id)
-        
-    except Exception as e:
-        logging.error(f"❌ Error processing RTTM for {video_name}: {e}")
-
 def main():
+    """Main: parse RTTM and insert snippets for each file_id into the DB.
+
+    The RTTM file is expected at AudioClassification.VTC_RTTM_FILE. For each
+    distinct fileID (first field after SPEAKER), the script will attempt to
+    map that fileID to a video_id in the DB via get_video_id(), then insert
+    per-frame AudioClassifications for each snippet.
     """
-    Main function to process videos for audio classification
-    """
-    # Load the log file as the list of videos to add to the database
-    videos_to_process = load_processed_videos(LOG_FILE_PATH)
-    if not videos_to_process:
-        logging.info("No videos found in log file to process!")
+    rttm_path = Path(AudioClassification.VTC_RTTM_FILE)
+    snippets_by_file = parse_rttm_file_to_snippets(rttm_path)
+
+    if not snippets_by_file:
+        logging.info("No snippets found in RTTM file. Nothing to process.")
         return
 
     # Connect to database
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     cursor = conn.cursor()
 
-    # Process each video
-    for video_name in videos_to_process:
-        try:
-            process_audio_file(video_name, cursor)
-            conn.commit()  # Commit after each video
-        except Exception as e:
-            logging.error(f"Error processing video {video_name}: {e}")
-            conn.rollback() # Rollback if error occurred before commit
+    for file_id, snippets in snippets_by_file.items():
+        # Try mapping RTTM fileID variants to DB video name (strip extensions if present)
+        candidates = [file_id, file_id.replace('.wav', ''), file_id.replace('.mp4', ''), file_id.replace('.MP4', '')]
+        video_id = None
+        for cand in candidates:
+            video_id = get_video_id(cand, cursor)
+            if video_id is not None:
+                break
+
+        if video_id is None:
+            logging.warning(f"Video ID not found for RTTM fileID '{file_id}'. Skipping {len(snippets)} snippets.")
             continue
+
+        try:
+            aggregate_and_save_results(snippets, cursor, video_id)
+            conn.commit()
+            logging.info(f"Inserted {len(snippets)} snippets for video_id {video_id} (RTTM fileID: {file_id})")
+        except Exception as e:
+            logging.error(f"Error inserting snippets for {file_id}: {e}")
+            conn.rollback()
 
     conn.close()
     logging.info("RTTM-based audio classification processing completed")
