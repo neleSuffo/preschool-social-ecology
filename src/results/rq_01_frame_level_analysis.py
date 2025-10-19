@@ -63,7 +63,9 @@ def get_all_analysis_data(conn):
     SELECT 
         frame_number, 
         video_id, 
+        proximity,
         MAX(CASE WHEN age_class IN (0,1) THEN 1 ELSE 0 END) AS has_face
+        
     FROM FaceDetections
     GROUP BY frame_number, video_id;
     """)
@@ -95,28 +97,31 @@ def get_all_analysis_data(conn):
         v.video_name,
         
         -- PERSON DETECTION MODALITY
-        -- Raw person body detections from YOLO + BiLSTM model for every SAMPLE_RATE-th frame
-        pd.has_child_person,         -- Binary: child body detected
-        pd.has_adult_person,         -- Binary: adult body detected
+        pd.has_child_person,
+        pd.has_adult_person,
         
-        -- AUDIO CLASSIFICATION MODALITY (sampled to match person frames)
-        -- Frame-level audio classifications filtered to every SAMPLE_RATE-th frame
-        COALESCE(af.has_kchi, 0) AS has_kchi,        -- Binary: child speech detected
-        COALESCE(af.has_ohs, 0) AS has_ohs,          -- Binary: other human speech detected  
-        COALESCE(af.has_cds, 0) AS has_kcds          -- Binary: key child-directed speech detected
-
+        -- AUDIO CLASSIFICATION MODALITY
+        COALESCE(af.has_kchi, 0) AS has_kchi,
+        COALESCE(af.has_ohs, 0) AS has_ohs,
+        COALESCE(af.has_cds, 0) AS has_kcds,
+        
         -- FACE DETECTION MODALITY
-        -- Aggregated face detections with social distance measures
-        ,COALESCE(fa.has_face, 0) AS has_face    -- Binary: face present
-
+        COALESCE(fa.has_face, 0) AS has_face,
+        fa.proximity,
+        
         -- MULTIMODAL FUSION FLAGS
-        -- Combined presence indicators using OR logic across modalities
-        ,CASE WHEN COALESCE(fa.has_face,0)=1 OR pd.has_child_person=1 OR pd.has_adult_person=1 THEN 1 ELSE 0 END AS person_present
+        CASE 
+            WHEN COALESCE(fa.has_face,0)=1 OR pd.has_child_person=1 OR pd.has_adult_person=1 THEN 1 
+            ELSE 0 
+        END AS person_present
 
     FROM PersonClassifications pd
-    LEFT JOIN AudioClassifications af ON pd.frame_number = af.frame_number AND pd.video_id = af.video_id
-    LEFT JOIN FaceAgg fa ON pd.frame_number = fa.frame_number AND pd.video_id = fa.video_id
-    LEFT JOIN Videos v ON pd.video_id = v.video_id
+    LEFT JOIN AudioClassifications af 
+        ON pd.frame_number = af.frame_number AND pd.video_id = af.video_id
+    LEFT JOIN FaceAgg fa 
+        ON pd.frame_number = fa.frame_number AND pd.video_id = fa.video_id
+    LEFT JOIN Videos v 
+        ON pd.video_id = v.video_id
     ORDER BY pd.video_id, pd.frame_number
     """
     return pd.read_sql(query, conn)
@@ -452,6 +457,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
     parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4],
                     help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=KCDS-speech, 4=adult-face-recent-speech). Default: [1, 2, 3, 4]')
+    parser.add_argument('--output_dir', type=str, default=str(Inference.BASE_OUTPUT_DIR),
+                    help='Path to the output file (CSV) for saving results.')
 
     args = parser.parse_args()
     
@@ -461,4 +468,4 @@ if __name__ == "__main__":
         print(f"❌ Error: Invalid rule numbers. Valid options are: {valid_rules}")
         sys.exit(1)
 
-    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=Inference.BASE_OUTPUT_DIR, included_rules=args.rules)
+    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=args.output_dir, included_rules=args.rules)
