@@ -150,7 +150,7 @@ class FaceConfig:
 
 class AudioConfig:
     """Configuration for audio classification."""
-    VALID_RTTM_CLASSES = ['OHS', 'CDS', 'KCHI']
+    VALID_RTTM_CLASSES = ['OHS', 'KCDS', 'KCHI']
     VALID_EVENT_IDS = {"child_talking", "other_person_talking", "overheard_speech", "singing/humming"}
     SR = 16000
     N_MELS = 256
@@ -176,10 +176,10 @@ class InferenceConfig:
     MIN_SEGMENT_DURATION_SEC = 5 # minimum duration for a segment to be considered
     MIN_CHANGE_DURATION_SEC = 3 # minimum duration for a change to be considered
     SPEECH_CLASSES = ['KCHI', 'FEM_MAL']
-    TURN_TAKING_BASE_WINDOW_SEC = 10 # base window duration for turn-taking analysis
-    TURN_TAKING_EXT_WINDOW_SEC = 15 # extended window duration for turn-taking analysis
+    TURN_TAKING_BASE_WINDOW_SEC = 5 # base window duration for turn-taking analysis
+    TURN_TAKING_EXT_WINDOW_SEC = 10 # extended window duration for turn-taking analysis
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
-    PERSON_AUDIO_WINDOW_SEC = 10 # window duration for person audio analysis
+    PERSON_AUDIO_WINDOW_SEC = 5 # window duration for person audio analysis
     GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps in interaction segments
     VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
     PERSON_PRESENT_THRESHOLD = 0.05 # threshold for considering a person present in a window segment with only audio turn taking
