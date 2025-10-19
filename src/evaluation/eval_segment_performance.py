@@ -373,9 +373,16 @@ def calculate_detailed_metrics(results):
         }
     return detailed_metrics
 
-def main(predictions_df, ground_truth_df, fps=30):
+def main(predictions_df, ground_truth_df):
     """
     Main function to evaluate performance using frame-by-frame accuracy.
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
+        DataFrame containing predicted interaction segments.
+    ground_truth_df : pd.DataFrame
+        DataFrame containing ground truth interaction segments.
     """
     print("Evaluating performance using frame-by-frame accuracy...")
 
@@ -412,11 +419,9 @@ def main(predictions_df, ground_truth_df, fps=30):
     # Save performance results to text file with detailed metrics
     save_performance_results(results, detailed_metrics, total_seconds, total_hours)
     
-    return results
-
 if __name__ == "__main__":
     # load data
     predictions_df = pd.read_csv(Inference.INTERACTION_SEGMENTS_CSV)
     ground_truth_df = pd.read_csv(Inference.GROUND_TRUTH_SEGMENTS_CSV, delimiter=';')
 
-    results = main(predictions_df, ground_truth_df)
+    main(predictions_df, ground_truth_df)
