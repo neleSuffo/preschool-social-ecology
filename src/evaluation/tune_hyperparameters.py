@@ -13,7 +13,7 @@ The script:
 4. Identifies the best performing configuration
 
 Usage:
-    python hyperparameter_tuning.py
+    python tune_hyperparameters.py [--quick] [--full] [--max-combos N]
 
 Output:
     - Individual result files for each combination
@@ -31,13 +31,15 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime
+import argparse # <-- NEW: Import argparse
 
 # Add the src directory to path for imports
 src_path = Path(__file__).parent.parent
 sys.path.append(str(src_path))
 
 from constants import DataPaths, Inference
-from config import InferenceConfig
+# NOTE: Assuming InferenceConfig is available from an imported config module
+from config import InferenceConfig 
 from eval_segment_performance import evaluate_performance
 
 
@@ -147,19 +149,6 @@ class InferenceConfig:
     PERSON_AUDIO_WINDOW_SEC = {hyperparameters['PERSON_AUDIO_WINDOW_SEC']}
     GAP_MERGE_DURATION_SEC = {hyperparameters['GAP_MERGE_DURATION_SEC']}
     VALIDATION_SEGMENT_DURATION_SEC = {hyperparameters['VALIDATION_SEGMENT_DURATION_SEC']}
-    
-    # Fixed parameters
-    SPEECH_CLASSES = {HyperparameterConfig.FIXED_PARAMS['SPEECH_CLASSES']}
-    
-    # Other parameters from original config (keep defaults)
-    EVALUATION_IOU = 0.5
-    
-class DataConfig:
-    FPS = 30
-
-class DataPaths:
-    INFERENCE_DB_PATH = "{DataPaths.INFERENCE_DB_PATH}"
-    SUBJECTS_CSV_PATH = "{DataPaths.SUBJECTS_CSV_PATH if hasattr(DataPaths, 'SUBJECTS_CSV_PATH') else 'N/A'}"
 """
     
     config_path = temp_dir / "temp_config.py"
@@ -197,13 +186,6 @@ def create_modified_script(original_script_path, temp_dir, hyperparameters):
             replacements.append(f"InferenceConfig.{param} = '{value}'")
         else:
             replacements.append(f"InferenceConfig.{param} = {value}")
-    
-    # Add fixed parameters
-    for param, value in HyperparameterConfig.FIXED_PARAMS.items():
-        if isinstance(value, list):
-            replacements.append(f"InferenceConfig.{param} = {value}")
-        else:
-            replacements.append(f"InferenceConfig.{param} = '{value}'")
     
     # Insert hyperparameter overrides after imports
     import_end = content.find("# Constants")
@@ -252,7 +234,6 @@ def run_analysis_with_config(hyperparameters, combo_id, output_base_dir):
     with open(params_file, 'w') as f:
         json.dump(hyperparameters, f, indent=2)
         
-    frame_output = combo_dir / "frame_level_interactions.csv"
     segment_output = combo_dir / "interaction_segments.csv"
     
     try:
@@ -271,8 +252,7 @@ def run_analysis_with_config(hyperparameters, combo_id, output_base_dir):
             try:
                 result = subprocess.run([
                     sys.executable, str(frame_script_path),
-                    "--output", str(frame_output),
-                    "--db_path", str(DataPaths.INFERENCE_DB_PATH)
+                    "--output_dir", str(combo_dir),
                 ], capture_output=True, text=True, timeout=600, cwd=str(src_path))  # 10 minute timeout
                 
                 if result.returncode != 0:
@@ -281,6 +261,8 @@ def run_analysis_with_config(hyperparameters, combo_id, output_base_dir):
                     
             except subprocess.TimeoutExpired:
                 return False, None, None, "Frame analysis timed out"
+            
+            frame_output = combo_dir / "01_frame_level_social_interactions_1_2_3_4.csv"
             
             # Check if frame output was created
             if not frame_output.exists():
@@ -389,9 +371,14 @@ def evaluate_combination(segment_output_path, ground_truth_path, iou_threshold):
             'error': str(e)
         }
 
-def main():
+def main(max_combinations=None): # <-- MODIFIED: Accepts max_combinations
     """
     Main hyperparameter tuning pipeline.
+
+    Parameters
+    ----------
+    max_combinations : int, optional
+        Maximum number of combinations to test. If None, runs full search.
     """        
     # Setup output directories
     output_base_dir = Inference.HYPERPARAMETER_OUTPUT_DIR
@@ -400,7 +387,7 @@ def main():
     # Generate hyperparameter combinations
     print("\n📊 Generating hyperparameter combinations...")
     combinations = generate_hyperparameter_combinations(
-        max_combinations=InferenceConfig.MAX_COMBINATIONS_TUNING,
+        max_combinations=max_combinations, 
         random_sample=InferenceConfig.RANDOM_SAMPLING
     )
     
@@ -485,6 +472,7 @@ def main():
     
     # Print summary
     print_results_summary(all_results, best_config)
+
 
 def save_intermediate_results(results, output_dir):
     """Save intermediate results to prevent data loss."""
@@ -621,6 +609,62 @@ def print_results_summary(all_results, best_config):
     print("\n" + "=" * 80)
     print("Hyperparameter tuning completed successfully!")
     print("Use the best configuration parameters in your config.py file.")
+    
+def parse_args():
+    """
+    Parse command line arguments to determine the maximum number of combinations.
+    """
+    parser = argparse.ArgumentParser(description='Run hyperparameter tuning for social interaction analysis')
+    parser.add_argument('--quick', action='store_true', 
+                    help='Quick test with 5 combinations (~30 minutes)')
+    parser.add_argument('--full', action='store_true',
+                    help='Full search with all valid combinations (can take hours)')
+    parser.add_argument('--max-combos', type=int, default=None,
+                    help='Maximum number of combinations to test (overrides quick/full)')
+    
+    args = parser.parse_args()
+    
+    # Determine number of combinations based on flags
+    if args.quick:
+        max_combinations = 5
+        print("🚀 Running QUICK hyperparameter tuning (5 combinations)")
+    elif args.full:
+        max_combinations = None  # No limit
+        print("🚀 Running FULL hyperparameter tuning (all valid combinations)")
+    elif args.max_combos is not None:
+        max_combinations = args.max_combos
+        print(f"🚀 Running hyperparameter tuning with {max_combinations} combinations (custom)")
+    else:
+        # Default behavior: uses InferenceConfig.MAX_COMBINATIONS_TUNING
+        try:
+            max_combinations = InferenceConfig.MAX_COMBINATIONS_TUNING 
+        except AttributeError:
+            max_combinations = 20 # Fallback default
+
+        print(f"🚀 Running hyperparameter tuning with {max_combinations} combinations (default)")
+
+    print("\n" + "="*80)
+    print("HYPERPARAMETER TUNING FOR SOCIAL INTERACTION ANALYSIS")
+    print("="*80)
+    
+    return max_combinations
 
 if __name__ == "__main__":
-    main()
+    max_combos = parse_args() # <-- NEW: Parse arguments
+    
+    # Run the hyperparameter tuning
+    try:
+        main(max_combos) # <-- MODIFIED: Pass the argument to main
+        print("\n🎉 Hyperparameter tuning completed successfully!")
+        print("\nCheck the 'hyperparameter_tuning_results' directory for:")
+        print("  - best_configuration.json: Optimal hyperparameters")
+        print("  - results_summary.csv: Performance of all combinations")
+        print("  - Individual combo directories with detailed results")
+        exit(0)
+    except KeyboardInterrupt:
+        print("\n⚠️  Process interrupted by user")
+        print("Partial results may be available in 'hyperparameter_tuning_results' directory")
+        exit(1)
+    except Exception as e:
+        print(f"\n❌ Error during hyperparameter tuning: {e}")
+        exit(1)
