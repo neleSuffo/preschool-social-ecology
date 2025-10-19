@@ -6,6 +6,46 @@ from constants import Inference
 from collections import defaultdict
 from config import DataConfig
 
+def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
+    """
+    Wrapper function for hyperparameter tuning.
+    Runs second-by-second evaluation and calculates detailed metrics, 
+    matching the expected interface of tune_hyperparameters.py.
+    """
+    # Convert GT time columns from min:sec format to seconds if necessary
+    # This step is critical because tune_hyperparameters.py bypasses the script's main function.
+    if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
+        # NOTE: This relies on the time_to_seconds function already defined in this file.
+        ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
+        ground_truth_df['end_time_sec'] = ground_truth_df['end_time_min'].apply(time_to_seconds)
+    
+    # 1. Run the core second-by-second comparison
+    # This provides the base confusion matrix data
+    results_by_seconds = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
+
+    # 2. Calculate detailed metrics (Precision, Recall, F1, TP, FP, FN)
+    detailed_metrics = calculate_detailed_metrics(results_by_seconds)
+
+    # 3. Reformat the output to match tune_hyperparameters.py's expectation
+    output = {}
+    for class_name, metrics in detailed_metrics.items():
+        if class_name != 'macro_avg':
+            output[class_name] = {
+                # Required for overall metric calculation in tune_hyperparameters.py
+                'tp': metrics['true_positives'],
+                'fp': metrics['false_positives'],
+                'fn': metrics['false_negatives'],
+                # Included for completeness
+                'precision': metrics['precision'],
+                'recall': metrics['recall'],
+                'f1_score': metrics['f1_score'],
+            }
+            
+    # The IoU threshold is ignored because this script implements second-by-second evaluation.
+    # The original hyperparameter tuning may have used IoU-based evaluation.
+    
+    return output
+
 def time_to_seconds(time_str):
     try:
         parts = str(time_str).split(':')
