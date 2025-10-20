@@ -249,19 +249,15 @@ def run_analysis_with_config(hyperparameters, combo_id, output_base_dir):
             segment_script_path = create_modified_script(original_segment_script, temp_dir_path, hyperparameters)
             
             # Run frame-level analysis
-            try:
-                result = subprocess.run([
-                    sys.executable, str(frame_script_path),
-                    "--output_dir", str(combo_dir),
-                ], capture_output=True, text=True, timeout=600, cwd=str(src_path))  # 10 minute timeout
-                
-                if result.returncode != 0:
-                    error_msg = f"Frame analysis failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
-                    return False, None, None, error_msg
-                    
-            except subprocess.TimeoutExpired:
-                return False, None, None, "Frame analysis timed out"
-            
+            result = subprocess.run([
+                sys.executable, str(frame_script_path),
+                "--output_dir", str(combo_dir),
+            ], capture_output=True, text=True, cwd=str(src_path))
+
+            if result.returncode != 0:
+                error_msg = f"Frame analysis failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+                return False, None, None, error_msg
+
             frame_output = combo_dir / "01_frame_level_social_interactions_1_2_3_4.csv"
             
             # Check if frame output was created
@@ -269,20 +265,16 @@ def run_analysis_with_config(hyperparameters, combo_id, output_base_dir):
                 return False, None, None, "Frame analysis completed but no output file was created"
             
             # Run segment-level analysis
-            try:
-                result = subprocess.run([
-                    sys.executable, str(segment_script_path),
-                    "--input", str(frame_output),
-                    "--output", str(segment_output)
-                ], capture_output=True, text=True, timeout=300, cwd=str(src_path))  # 5 minute timeout
-                
-                if result.returncode != 0:
-                    error_msg = f"Segment analysis failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
-                    return False, None, None, error_msg
-                    
-            except subprocess.TimeoutExpired:
-                return False, None, None, "Segment analysis timed out"
-            
+            result = subprocess.run([
+                sys.executable, str(segment_script_path),
+                "--input", str(frame_output),
+                "--output", str(segment_output)
+            ], capture_output=True, text=True, cwd=str(src_path))
+
+            if result.returncode != 0:
+                error_msg = f"Segment analysis failed:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+                return False, None, None, error_msg
+
             # Check if segment output was created
             if not segment_output.exists():
                 return False, None, None, "Segment analysis completed but no output file was created"
