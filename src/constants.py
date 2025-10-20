@@ -95,9 +95,12 @@ class Inference:
     CDS_SUMMARY_CSV = BASE_OUTPUT_DIR / "04_cds_summary.csv"
     PRESENCE_CSV = BASE_OUTPUT_DIR / "05_presence.csv"
     INTERACTION_COMPOSITION_CSV = BASE_OUTPUT_DIR / "06_interaction_composition.csv"
+    
+class Evaluation:
+    BASE_OUTPUT_DIR = BasePaths.OUTPUT_DIR / "segment_evaluation"
     HYPERPARAMETER_OUTPUT_DIR = BASE_OUTPUT_DIR / "hyperparameter_tuning"
     CONF_MATRIX_COUNTS = BASE_OUTPUT_DIR / "confusion_matrix_counts.png"
     CONF_MATRIX_PERCENTAGES = BASE_OUTPUT_DIR / "confusion_matrix_percentages.png"
     PERFORMANCE_RESULTS_TXT = BASE_OUTPUT_DIR / "performance_results.txt"
-    RULE_ABLATION_SUMMARY_CSV = BASE_OUTPUT_DIR / "06a_rule_ablation_summary.csv"
-    RULE_ABLATION_PLOT = BASE_OUTPUT_DIR / "06a_rule_ablation_plot.png"
+    RULE_ABLATION_SUMMARY_CSV = BASE_OUTPUT_DIR / "rule_ablation_summary.csv"
+    RULE_ABLATION_PLOT = BASE_OUTPUT_DIR/ "rule_ablation_plot.png"
