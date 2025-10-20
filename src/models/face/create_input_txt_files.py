@@ -183,53 +183,90 @@ def save_annotations(annotations: List[Tuple], output_dir: Path = None) -> None:
 
     logging.info(f"Processed {processed}, skipped {skipped}")
 
+def fetch_noisy_frames() -> List[str]:
+    """
+    Fetch file_names of frames that contain *only* the category_id = -1
+    (i.e., frames that were flagged as 'bad' or 'no face' but have no other faces).
+    
+    Returns
+    -------
+    List[str]
+        List of file_names (stems) to be excluded from the negative sample pool.
+    """
+    logging.info("Fetching frames with only category_id = -1 for exclusion from negative samples.")
+
+    query = """
+    SELECT
+        i.file_name
+    FROM images i
+    JOIN annotations a ON i.frame_id = a.image_id AND i.video_id = a.video_id
+    WHERE a.category_id = -1
+    GROUP BY i.file_name
+    HAVING COUNT(CASE WHEN a.category_id != -1 THEN 1 END) = 0
+    """
+
+    with sqlite3.connect(DataPaths.ANNO_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        # Fetch results and flatten the list of tuples (file_name,) into a list of strings
+        results = [row[0] for row in cursor.fetchall()]
+
+    logging.info(f"Found {len(results)} frames to be explicitly excluded from negative samples.")
+    return results
+
 def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = FaceDetection.IMAGES_INPUT_DIR) -> list:
     """
-    This function returns frames that have any face annotations plus an equal number of random frames without faces.
+    Returns frames (multiples of 30, with exceptions and frame shifts defined in a dictionary) 
+    that have any face annotations plus a proportional number of random clean negative frames.
     
     Parameters
     ----------
     label_path : Path
-        the path to the label files
+        The path to the folder containing label files.
     image_folder : Path
-        the path to the image folder
-        
+        The path to the folder containing image files.
+
     Returns
     -------
     list
-        the annotated frames plus negative samples (formatted as a list of tuples)
-        e.g. [(image_path, image_id), ...]
+        A list of annotated frame identifiers.
     """
-    video_names = set()
-    annotated_images = []
-    negative_images = []
-    annotated_frames = set()
+    DEFAULT_OFFSET = 0 # The default check is frame_number % DataConfig.FPS == 0
+
+    # 1. Fetch frames to be explicitly excluded from negative samples (only -1 annotation)
+    frames_to_exclude = fetch_noisy_frames()
+    excluded_frames_set = set(frames_to_exclude)
     
+    video_names = set()
+    positive_images = []
+    negative_images = []
+    positive_frame_stems = set()
+    
+    # 2. Find all videos that have any valid annotations
     for annotation_file in label_path.glob("*.txt"):
         if annotation_file.stat().st_size > 0:
             try:
-                with open(annotation_file, "r") as f:
-                    content = f.read().strip()
-                    if content:
-                        stem = annotation_file.stem
-                        # Match pattern up to the last underscore + 6 digits (frame number)
-                        match = re.match(r"(.+)_\d{6}$", stem)
-                        if match:
-                            video_name = match.group(1)
-                            video_names.add(video_name)
-                            annotated_frames.add(stem)
+                stem = annotation_file.stem
+                match = re.match(r"(.+)_\d{6}$", stem)
+                if match:
+                    video_name = match.group(1)
+                    video_names.add(video_name)
+                    positive_frame_stems.add(stem)
             except Exception as e:
                 logging.warning(f"Error reading annotation file {annotation_file}: {e}")
 
-    logging.info(f"Found {len(video_names)} unique video names")
+    logging.info(f"Found {len(video_names)} unique video names with annotations.")
 
-    # Step 2: Get annotated frames and collect potential negative frames
-    video_negative_candidates = {}  # Initialize the dictionary here
+    # 3. Get annotated frames and collect valid potential negative frames (sampled frames only)
+    video_negative_candidates = {} 
     
     for video_name in video_names:
         video_path = image_folder / video_name
         if video_path.exists() and video_path.is_dir():
             video_negative_candidates[video_name] = []
+            
+            # Check for custom frame sampling rule
+            exception_data = DataConfig.SHIFTED_VIDEOS_OFFSETS.get(video_name)
             
             # Iterate through all frames in the video folder
             for frame in video_path.iterdir():
@@ -237,46 +274,83 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
                     image_name = frame.name
                     parts = image_name.split("_")
                     
+                    # --- Frame Number Check ---
+                    frame_number = -1
+                    if len(parts) >= 9:
+                        try:
+                            frame_number = int(parts[-1])
+                        except ValueError:
+                            continue # Skip if frame number is not an integer
+                    
+                    is_sampled_frame = False
+                    
+                    if exception_data is not None:
+                        # Logic for exception videos with frame shift
+                        start_frame, shift = exception_data
+                        
+                        if frame_number < start_frame:
+                            # Rule 1: Before the exception start, use standard sampling (frame % 30 == 0)
+                            if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
+                                is_sampled_frame = True
+                        else:
+                            # Rule 2: From the exception start onward, use the shifted modulo rule                            
+                            # Sampling is shifted to start at start_frame and then every 30 frames
+                            if (frame_number - start_frame) % DataConfig.FPS == DEFAULT_OFFSET:
+                                is_sampled_frame = True
+                            
+                    else:
+                        # Default rule for all other videos: multiples of 30
+                        if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
+                            is_sampled_frame = True
+                    
+                    if not is_sampled_frame:
+                        continue 
+                    
                     # Extract image ID
                     if len(parts) > 3 and parts[3].startswith('id'):
                         image_id = parts[3].replace("id", "")
                     else:
                         image_id = frame.stem
                     
-                    if frame.stem in annotated_frames:
-                        # This is an annotated frame (has any faces)
-                        annotated_images.append((str(frame.resolve()), image_id))
+                    # A. Frame has valid annotations (i.e., its .txt file is non-empty)
+                    if frame.stem in positive_frame_stems:
+                        positive_images.append((str(frame.resolve()), image_id))
+                    
+                    # B. Frame is a potential negative frame (empty .txt file)
                     else:
-                        # This is a potential negative frame (no faces)
-                        video_negative_candidates[video_name].append((str(frame.resolve()), image_id))
+                        # Ensure it's not a frame with ONLY the -1 annotation
+                        if frame.stem not in excluded_frames_set:
+                            video_negative_candidates[video_name].append((str(frame.resolve()), image_id))
     
-    # Step 3: Randomly sample negative frames to match annotated frames exactly
-    random.seed(42)  # For reproducible results
-    num_annotated = len(annotated_images)
+    # 4. Randomly sample negative frames
+    random.seed(42)
+    num_annotated = len(positive_images)
     
-    # Collect negative samples from each video proportionally
     total_candidates = sum(len(candidates) for candidates in video_negative_candidates.values())
     
     if total_candidates == 0:
-        logging.warning("No negative frames found. Using only annotated frames.")
-        total_images = annotated_images
+        logging.warning("No valid negative frames found. Using only annotated frames.")
+        total_images = positive_images
     else:
-        # Sample exactly the same number of negative frames as frames with any faces
-        if total_candidates >= num_annotated:
-            # We have enough candidates, sample 75% of the amount of num_annotated
+        # Sample negative frames to be 75% of the number of positive frames
+        target_negative_count = int(num_annotated * 0.75)
+        
+        if total_candidates >= target_negative_count:
             all_candidates = []
             for candidates in video_negative_candidates.values():
                 all_candidates.extend(candidates)
 
-            negative_images = random.sample(all_candidates, int(num_annotated * 0.75))
+            negative_images = random.sample(all_candidates, target_negative_count)
         else:
-            # Use all available candidates if we don't have enough
             negative_images = []
             for candidates in video_negative_candidates.values():
                 negative_images.extend(candidates)
-            logging.warning(f"Only {len(negative_images)} negative frames available, less than {num_annotated} frames with faces")
+            logging.warning(f"Only {len(negative_images)} valid negative frames available, less than the target {target_negative_count}")
         
-        total_images = annotated_images + negative_images
+        total_images = positive_images + negative_images
+    
+    logging.info(f"Total positive (annotated) frames found: {len(positive_images)}")
+    logging.info(f"Total clean negative frames (sampled) added: {len(negative_images)}")
     
     return total_images
 
