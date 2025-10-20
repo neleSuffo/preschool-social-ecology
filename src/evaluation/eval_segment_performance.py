@@ -2,18 +2,27 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from constants import Inference
+from constants import Evaluation, Inference
 from collections import defaultdict
-from config import DataConfig
+from config import InferenceConfig
+from utils import time_to_seconds
 
 def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
     """
     Wrapper function for hyperparameter tuning.
     Runs second-by-second evaluation and calculates detailed metrics, 
     matching the expected interface of tune_hyperparameters.py.
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
+        DataFrame containing predicted interaction segments.
+    ground_truth_df : pd.DataFrame
+        DataFrame containing ground truth interaction segments.
+    iou_threshold : float, optional
+        IoU threshold for evaluation (not used in second-by-second evaluation).
     """
     # Convert GT time columns from min:sec format to seconds if necessary
-    # This step is critical because tune_hyperparameters.py bypasses the script's main function.
     if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
         # NOTE: This relies on the time_to_seconds function already defined in this file.
         ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
@@ -45,17 +54,6 @@ def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
     # The original hyperparameter tuning may have used IoU-based evaluation.
     
     return output
-
-def time_to_seconds(time_str):
-    try:
-        parts = str(time_str).split(':')
-        if len(parts) == 2:
-            minutes, seconds = map(float, parts)
-            return minutes * 60 + seconds
-        else:
-            return float(time_str)
-    except:
-        return None
 
 def create_second_level_labels(segments_df, video_duration_seconds):
     """
@@ -103,9 +101,24 @@ def create_second_level_labels(segments_df, video_duration_seconds):
 
 def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
     """
-    Evaluates model performance by comparing second-by-second classifications.
+    Evaluates model performance by comparing second-by-second classifications,
+    excluding the first and last x seconds, as defined in InferenceConfig.EXCLUSION_SECONDS.
     Also captures the types of misclassifications (e.g., alone → interacting).
-    """
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
+        DataFrame containing predicted interaction segments.
+    ground_truth_df : pd.DataFrame
+        DataFrame containing ground truth interaction segments.
+        
+    Returns
+    -------
+    dict
+        Dictionary containing overall accuracy, category-specific accuracies,
+        video-wise results, confusion matrix, interaction types, and misclassifications.
+    """    
+    # Identify videos present in both predictions and ground truth
     videos_with_gt = set(ground_truth_df['video_name'].unique())
     videos_with_pred = set(predictions_df['video_name'].unique())
     videos_to_evaluate = videos_with_gt.intersection(videos_with_pred)
@@ -120,6 +133,7 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
 
     video_results = []
 
+    # Evaluate each video individually
     for video in videos_to_evaluate:
         pred_video = predictions_df[predictions_df['video_name'] == video].copy()
         gt_video = ground_truth_df[ground_truth_df['video_name'] == video].copy()
@@ -144,6 +158,15 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
 
         max_end_gt = gt_video['end_time_sec'].max()
         video_duration_seconds = int(max_end_gt) + 1
+        
+        # Skip videos that are too short to have a central evaluation segment
+        if video_duration_seconds < InferenceConfig.EXCLUSION_SECONDS * 2:
+            print(f"⚠️ Warning: Video {video} is too short ({video_duration_seconds}s) for {InferenceConfig.EXCLUSION_SECONDS * 2}s exclusion, skipping evaluation.")
+            continue
+
+        # Define the evaluation range: from 30s (inclusive) to end-30s (exclusive)
+        start_sec_to_evaluate = InferenceConfig.EXCLUSION_SECONDS
+        end_sec_to_evaluate = video_duration_seconds - InferenceConfig.EXCLUSION_SECONDS
 
         pred_labels = create_second_level_labels(pred_video, video_duration_seconds)
         gt_labels = create_second_level_labels(gt_video, video_duration_seconds)
@@ -151,7 +174,8 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
         video_total_seconds = 0
         video_correct_seconds = 0
 
-        for sec in range(video_duration_seconds):
+        # Use the adjusted range for evaluation loop
+        for sec in range(start_sec_to_evaluate, end_sec_to_evaluate):
             gt_label = gt_labels[sec]
             pred_label = pred_labels[sec]
 
@@ -197,17 +221,20 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
         'video_results': video_results,
         'confusion_matrix': confusion_matrix,
         'interaction_types': interaction_types,
-        'misclassifications': misclassifications,  # new
+        'misclassifications': misclassifications,
     }
 
     return results
 
 def generate_confusion_matrix_plots(results):
     """
-    Generate and save confusion matrix plots.
+    Generate and save confusion matrix plots (absolute counts and relative percentages).
+    Only includes seconds with ground truth labels in the absolute counts matrix.
     
-    Ensures all ground truth categories appear in both rows and columns,
-    even if some categories were never predicted (showing zero counts).
+    Parameters
+    ----------
+    results : dict
+        Results dictionary containing confusion_matrix and interaction_types
     """
     confusion_matrix = results['confusion_matrix']
     interaction_types = results['interaction_types']
@@ -283,7 +310,8 @@ def generate_confusion_matrix_plots(results):
     plt.xlabel('Predicted Labels', fontsize=12, fontweight='bold')
     plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(Inference.CONF_MATRIX_COUNTS, dpi=300, bbox_inches='tight')
+    Evaluation.CONF_MATRIX_COUNTS.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(Evaluation.CONF_MATRIX_COUNTS, dpi=300, bbox_inches='tight')
     plt.close()
 
     # Relative count heatmap (row-normalized)
@@ -306,11 +334,11 @@ def generate_confusion_matrix_plots(results):
     plt.xlabel('Predicted Labels', fontsize=12, fontweight='bold')
     plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(Inference.CONF_MATRIX_PERCENTAGES, dpi=300, bbox_inches='tight')
+    plt.savefig(Evaluation.CONF_MATRIX_PERCENTAGES, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"✅ Confusion matrix saved: {Inference.CONF_MATRIX_COUNTS} and {Inference.CONF_MATRIX_PERCENTAGES}")
+    print(f"✅ Confusion matrix saved: {Evaluation.CONF_MATRIX_COUNTS} and {Evaluation.CONF_MATRIX_PERCENTAGES}")
 
-def save_performance_results(results, detailed_metrics, total_frames, total_hours, filename=Inference.PERFORMANCE_RESULTS_TXT):
+def save_performance_results(results, detailed_metrics, total_frames, total_hours, filename=Evaluation.PERFORMANCE_RESULTS_TXT):
     """
     Save category-specific performance results with detailed metrics to a text file.
     """
