@@ -168,6 +168,7 @@ class KchiVoc_Config:
     
 class InferenceConfig:
     """Configuration for inference settings."""
+    EXCLUSION_SECONDS = 30 # seconds to exclude at start and end of videos
     INTERACTION_CLASSES = ['Interacting', 'Co-present', 'Alone']
     SAMPLE_RATE = 10 # every n-th frame is processed
     PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
