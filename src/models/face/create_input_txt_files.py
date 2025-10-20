@@ -193,8 +193,6 @@ def fetch_noisy_frames() -> List[str]:
     List[str]
         List of file_names (stems) to be excluded from the negative sample pool.
     """
-    logging.info("Fetching frames with only category_id = -1 for exclusion from negative samples.")
-
     query = """
     SELECT
         i.file_name
@@ -211,7 +209,6 @@ def fetch_noisy_frames() -> List[str]:
         # Fetch results and flatten the list of tuples (file_name,) into a list of strings
         results = [row[0] for row in cursor.fetchall()]
 
-    logging.info(f"Found {len(results)} frames to be explicitly excluded from negative samples.")
     return results
 
 def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = FaceDetection.IMAGES_INPUT_DIR) -> list:
@@ -354,9 +351,9 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
     
     return total_images
 
-def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.DataFrame:
+def get_class_distribution(total_images: list, annotation_folder: Path, detection_mode: str) -> pd.DataFrame:
     """
-    Reads label files and groups images based on their class distribution.
+    Reads label files and groups images based on their class distribution for the given detection mode.
 
     Parameters:
     ----------
@@ -364,6 +361,8 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
         List of tuples containing image paths and IDs.
     annotation_folder: Path
         Path to the directory containing label files.
+    detection_mode: str
+        The mode for class mapping ('face-only' or 'age-binary').
 
     Returns:
     -------
@@ -376,38 +375,57 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
     
     image_class_mapping = []
 
+    # Define the target class names based on the detection mode
+    if detection_mode == "face-only":
+        # Target classes: only 'face' (Class 0)
+        target_class_names = ['face']
+    elif detection_mode == "age-binary":
+        # Target classes: 'child_face' (Class 0) and 'adult_face' (Class 1)
+        target_class_names = list(FaceConfig.MODEL_CLASS_ID_TO_LABEL.values())
+    else:
+        logging.error(f"Unknown detection mode: {detection_mode}")
+        return pd.DataFrame()
+
     # Step 1: Read each image and its corresponding annotation file
     for i, (image_path, image_id) in enumerate(total_images):
         image_file = Path(image_path)
         annotation_file = annotation_folder / image_file.with_suffix('.txt').name
 
-        # Get labels from annotation file
-        labels = []
+        # Get detailed labels from annotation file (e.g., 'child_face', 'adult_face')
+        mode_labels = set()
         if annotation_file.exists() and annotation_file.stat().st_size > 0:
             try:
                 with open(annotation_file, 'r') as f:
                     content = f.read().strip()
-                    if content:  # Only process non-empty files
+                    if content:
                         lines = content.split('\n')
                         class_ids = {int(line.split()[0]) for line in lines if line.strip()}
-                        labels = [FaceConfig.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceConfig.MODEL_CLASS_ID_TO_LABEL]
+                        
+                        # Use FaceConfig mapping to get the *target* labels (e.g., 'child_face')
+                        original_labels = [FaceConfig.MODEL_CLASS_ID_TO_LABEL[cid] for cid in class_ids if cid in FaceConfig.MODEL_CLASS_ID_TO_LABEL]
+                        
+                        if detection_mode == "face-only":
+                            # Aggregation logic: if any face exists, the class is 'face'
+                            if original_labels:
+                                mode_labels.add('face')
+                        
+                        elif detection_mode == "age-binary":
+                            mode_labels.update(original_labels)
+                            
             except Exception as e:
                 logging.warning(f"Error reading annotation file {annotation_file}: {e}")
 
         # Create one-hot encoded dictionary for the image
         try:
-            # Get all possible class names from the configuration
-            all_class_names = list(FaceConfig.MODEL_CLASS_ID_TO_LABEL.values())
-            
             mapping_entry = {
                 "filename": image_file.stem,
                 "id": image_id,
-                "has_annotation": bool(labels),  # True if labels are found, False otherwise
+                "has_annotation": bool(mode_labels),  # True if labels are found, False otherwise
             }
             
-            # Add one-hot encoding for each class
-            for class_name in all_class_names:
-                mapping_entry[class_name] = 1 if class_name in labels else 0
+            # Add one-hot encoding for each target class
+            for class_name in target_class_names:
+                mapping_entry[class_name] = 1 if class_name in mode_labels else 0
                 
             image_class_mapping.append(mapping_entry)
             
@@ -419,7 +437,7 @@ def get_class_distribution(total_images: list, annotation_folder: Path) -> pd.Da
     
     return df
 
-def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes: int = 5) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes: int) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
     """
     Get frames from the first N minutes of recordings for specified child IDs.
     Filters based on actual frame numbers, not just file count.
@@ -432,7 +450,7 @@ def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes
     image_folder : Path
         Path to the image folder
     minutes : int
-        Number of minutes from the beginning to extract (default: 5)
+        Number of minutes from the beginning to extract
         
     Returns
     -------
@@ -955,46 +973,57 @@ def move_images(image_names: list,
     logging.info(f"\nCompleted moving {split_type} images:")    
     return successful, failed
     
-def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, add_first_minutes: bool = False, minutes: int = 5):
+def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, add_first_minutes: bool = False, minutes: int = 5, detection_mode: str = "face-only"):
     """
     Generates a statistics file with dataset split information, including percentages.
+    
+    Parameters:
+    ----------
+    df : pd.DataFrame
+        Original DataFrame with all images and annotations.
+    df_train : pd.DataFrame
+        Training set DataFrame.
+    df_val : pd.DataFrame
+        Validation set DataFrame.
+    df_test : pd.DataFrame
+        Test set DataFrame.
+    train_ids : List
+        List of training child IDs.
+    val_ids : List
+        List of validation child IDs.
+    test_ids : List
+        List of test child IDs.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_path = BasePaths.LOGGING_DIR / f"split_distribution_face_det_{timestamp}.txt"
+    
+    class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
     
     # Calculate totals based on original balanced dataset (before test enhancement)
     original_total = len(df_train) + len(df_val) + len(df_test[df_test['has_annotation'] == True])
     
     with open(file_path, "w") as f:
         f.write(f"Dataset Split Information - {timestamp}\n")
+        f.write(f"*** DETECTION MODE: {detection_mode.upper()} ***\n")
         if add_first_minutes:
-            f.write(f"*** FIRST {minutes} MINUTES MODE ENABLED ***\n")
             f.write(f"First {minutes} minutes of test children added to train/val\n")
         f.write("\n")
         
-        class_0, class_1 = FaceConfig.TARGET_LABELS
-        
-        # Original distribution (before test enhancement)
-        original_0 = df_train[class_0].sum() + df_val[class_0].sum() + df_test[df_test['has_annotation'] == True][class_0].sum()
-        original_1 = df_train[class_1].sum() + df_val[class_1].sum() + df_test[df_test['has_annotation'] == True][class_1].sum()
-        
-        f.write(f"Original Balanced Distribution (before test enhancement):\n")
+        # Original distribution
+        f.write(f"Original Balanced Distribution:\n")
         f.write(f"Total Images: {original_total}\n")
-        f.write(f"Class 0 {FaceConfig.TARGET_LABELS[0]}: {original_0} images ({original_0 / original_total:.2%})\n")
-        f.write(f"Class 1 {FaceConfig.TARGET_LABELS[1]}: {original_1} images ({original_1 / original_total:.2%})\n\n")
+        
+        if class_columns:
+            for col in class_columns:
+                original_count = df_train[col].sum() + df_val[col].sum() + df_test[df_test['has_annotation'] == True][col].sum()
+                f.write(f"Class {col.upper()}: {original_count} images ({original_count / original_total:.2%})\n")
+        f.write("\n")
 
         f.write("Split Distribution (within each split):\n")
         f.write("--------------------------------------------------\n\n")
 
         def write_split_info(split_name, split_df):
             total_split = len(split_df)
-            
-            count_0 = split_df[FaceConfig.TARGET_LABELS[0]].sum()
-            count_1 = split_df[FaceConfig.TARGET_LABELS[1]].sum()
-            
-            # Calculate percentages WITHIN the split
-            ratio_0 = count_0 / total_split if total_split > 0 else 0
-            ratio_1 = count_1 / total_split if total_split > 0 else 0
             
             # Calculate face coverage (frames with any faces)
             frames_with_faces = split_df[split_df['has_annotation'] == True]
@@ -1004,8 +1033,12 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
             f.write(f"Total Images: {total_split}\n")
             f.write(f"Face Coverage: {len(frames_with_faces)} ({face_coverage:.2%}) - frames with any faces\n")
             f.write(f"No Face: {total_split - len(frames_with_faces)} ({1-face_coverage:.2%}) - frames without faces\n")
-            f.write(f"{FaceConfig.TARGET_LABELS[0]}: {count_0} ({ratio_0:.2%}) - within split\n")
-            f.write(f"{FaceConfig.TARGET_LABELS[1]}: {count_1} ({ratio_1:.2%}) - within split\n\n")
+            
+            for col in class_columns:
+                count = split_df[col].sum()
+                ratio = count / total_split if total_split > 0 else 0
+                f.write(f"{col.upper()}: {count} ({ratio:.2%}) - within split\n")
+            f.write("\n")
 
         write_split_info("Train", df_train)
         write_split_info("Validation", df_val)
@@ -1025,7 +1058,7 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
         else:
             f.write("Overlap found: No\n")
 
-def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, minutes: int = 5):
+def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes: int = 5, detection_mode: str = "face-only"):
     """
     This function prepares the dataset for face detection YOLO training by splitting the images into train, val, and test sets.
     
@@ -1037,8 +1070,10 @@ def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, mi
         If True, adds first N minutes of test children to training/validation
     minutes : int
         Number of minutes to add from beginning of test children recordings
+    detection_mode: str
+        The mode for class mapping ('face-only' or 'age-binary').
     """
-    logging.info("Starting dataset preparation for face detection")
+    logging.info(f"Starting dataset preparation for face detection in mode: {detection_mode}")
 
     # Determine output directories based on add_first_minutes flag
     if add_first_minutes:
@@ -1057,8 +1092,8 @@ def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, mi
             logging.error("No annotated images found. Check your annotation folder and image paths.")
             return
         
-        # Multi-class detection case for face detection
-        df = get_class_distribution(total_images, annotation_folder)
+        # Get class distribution based on the selected mode
+        df = get_class_distribution(total_images, annotation_folder, detection_mode)
         
         if df.empty:
             logging.error("DataFrame is empty. Check class distribution function.")
@@ -1069,7 +1104,7 @@ def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, mi
             df, 
             add_first_minutes=add_first_minutes, 
             minutes=minutes,
-            labels_input_dir=labels_input_dir
+            labels_input_dir=labels_input_dir # Note: This will need labels_input_dir to load annotations
         )
 
         # Get the IDs for logging
@@ -1077,9 +1112,9 @@ def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, mi
         val_ids = df_val['child_id'].unique().tolist() if 'child_id' in df_val.columns else []
         test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
         
-        # Use the original balanced DataFrame (df) for statistics, not the enhanced test set
+        # Generate statistics file
         generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids, 
-                                add_first_minutes=add_first_minutes, minutes=minutes)
+                                add_first_minutes=add_first_minutes, minutes=minutes, detection_mode=detection_mode)
         
         # Move images for each split using the dynamic directories
         for split_name, split_set in [("train", train), 
@@ -1101,7 +1136,7 @@ def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, mi
         logging.error(f"Error processing face detection: {str(e)}")
         raise
     
-    logging.info("Completed dataset preparation for face detection")
+    logging.info(f"Completed dataset preparation for face detection in mode: {detection_mode}")
 
 # ==============================
 # Main
@@ -1109,10 +1144,12 @@ def split_yolo_data(annotation_folder: Path, add_first_minutes: bool = False, mi
 
 def main():
     parser = argparse.ArgumentParser(description='Create input files for face detection YOLO training')
+    parser.add_argument('--detection-mode', choices=["face-only", "age-binary"], default="face-only",
+                       help='Select the detection mode')
     parser.add_argument('--add-first-minutes', action='store_true', 
                        help='Add first N minutes of test children recordings to training/validation sets')
-    parser.add_argument('--minutes', type=int, default=5,
-                       help='Number of minutes from the beginning to add to train/val (default: 5)')
+    parser.add_argument('--minutes', type=int,
+                       help='Number of minutes from the beginning to add to train/val')
     parser.add_argument('--fetch-annotations', action='store_true',
                        help='Fetch and save annotations from database (default: False)')
     
@@ -1136,9 +1173,10 @@ def main():
             logging.info(f"Fetched {len(anns)} annotations.")
             save_annotations(anns, output_dir=labels_output_dir)
         
-        split_yolo_data(annotation_folder, 
+        split_data(annotation_folder, 
                        add_first_minutes=args.add_first_minutes, 
-                       minutes=args.minutes)
+                       minutes=args.minutes,
+                       detection_mode=args.detection_mode)
     except Exception as e:
         logging.error(f"Failed: {e}")
         raise
