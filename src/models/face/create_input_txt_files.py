@@ -243,6 +243,9 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
     for annotation_file in label_path.glob("*.txt"):
         if annotation_file.stat().st_size > 0:
             try:
+                # Extract video name from annotation file stem
+                # match example: quantex_at_home_id255237_2022_05_08_04_000240.txt -> positive_frame_stems: quantex_at_home_id255237_2022_05_08_04_000240
+                # video_name: quantex_at_home_id255237_2022_05_08_04_000240
                 stem = annotation_file.stem
                 match = re.match(r"(.+)_\d{6}$", stem)
                 if match:
@@ -262,14 +265,15 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
         if video_path.exists() and video_path.is_dir():
             video_negative_candidates[video_name] = []
             
-            # Check for custom frame sampling rule
-            exception_data = DataConfig.SHIFTED_VIDEOS_OFFSETS.get(video_name)
+            # Check for custom frame sampling rule using explicit membership test
+            exception_map = DataConfig.SHIFTED_VIDEOS_OFFSETS
             
             # Iterate through all frames in the video folder
             for frame in video_path.iterdir():
                 if frame.is_file():
-                    image_name = frame.name
-                    parts = image_name.split("_")
+                    # Use the stem (filename without extension) for parsing
+                    stem = frame.stem
+                    parts = stem.split("_")
                     
                     # --- Frame Number Check ---
                     frame_number = -1
@@ -277,47 +281,54 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
                         try:
                             frame_number = int(parts[-1])
                         except ValueError:
+                            raise ValueError(f"Frame number {stem} is not an integer.")
                             continue # Skip if frame number is not an integer
                     
                     is_sampled_frame = False
                     
-                    if exception_data is not None:
+                    if video_name in exception_map:
                         # Logic for exception videos with frame shift
-                        start_frame, shift = exception_data
+                        start_frame, shift = exception_map[video_name]
                         
                         if frame_number < start_frame:
-                            # Rule 1: Before the exception start, use standard sampling (frame % 30 == 0)
+                            # Rule 1: Before the exception start, use standard sampling
                             if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
                                 is_sampled_frame = True
                         else:
-                            # Rule 2: From the exception start onward, use the shifted modulo rule                            
-                            # Sampling is shifted to start at start_frame and then every 30 frames
+                            # Rule 2: From the exception start onward, use the shifted modulo rule
+                            # Sampling is shifted to start at start_frame and then every DataConfig.FPS frames
                             if (frame_number - start_frame) % DataConfig.FPS == DEFAULT_OFFSET:
                                 is_sampled_frame = True
                             
                     else:
-                        # Default rule for all other videos: multiples of 30
+                        # Default rule for all other videos: multiples of DataConfig.FPS
                         if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
                             is_sampled_frame = True
                     
+                    # If this frame has a valid annotation, include it regardless of sampling
+                    if stem in positive_frame_stems:
+                        # Extract image ID
+                        if len(parts) > 3 and parts[3].startswith('id'):
+                            image_id = parts[3].replace("id", "")
+                        else:
+                            image_id = stem
+
+                        positive_images.append((str(frame.resolve()), image_id))
+                        continue
+
                     if not is_sampled_frame:
-                        continue 
-                    
+                        continue
+
                     # Extract image ID
                     if len(parts) > 3 and parts[3].startswith('id'):
                         image_id = parts[3].replace("id", "")
                     else:
-                        image_id = frame.stem
-                    
-                    # A. Frame has valid annotations (i.e., its .txt file is non-empty)
-                    if frame.stem in positive_frame_stems:
-                        positive_images.append((str(frame.resolve()), image_id))
+                        image_id = stem
                     
                     # B. Frame is a potential negative frame (empty .txt file)
-                    else:
-                        # Ensure it's not a frame with ONLY the -1 annotation
-                        if frame.stem not in excluded_frames_set:
-                            video_negative_candidates[video_name].append((str(frame.resolve()), image_id))
+                    # Ensure it's not a frame with ONLY the -1 annotation
+                    if stem not in excluded_frames_set:
+                        video_negative_candidates[video_name].append((str(frame.resolve()), image_id))
     
     # 4. Randomly sample negative frames
     random.seed(42)
@@ -860,12 +871,6 @@ def split_by_child_id(df: pd.DataFrame, train_ratio: float = FaceConfig.TRAIN_SP
         additional_df = pd.DataFrame(additional_entries)
         test_df = pd.concat([test_df, additional_df], ignore_index=True)
 
-    # Log final split information
-    for split_name, split_df in zip(["Train", "Val", "Test"], [train_df, val_df, test_df]):
-        if len(split_df) > 0:
-            ratio_0 = split_df[class_columns[0]].sum() / len(split_df)
-            ratio_1 = split_df[class_columns[1]].sum() / len(split_df)
-
     return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
             train_df, val_df, test_df)
 
@@ -1009,14 +1014,28 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
             f.write(f"First {minutes} minutes of test children added to train/val\n")
         f.write("\n")
         
-        # Original distribution
-        f.write(f"Original Balanced Distribution:\n")
+        # Original distribution (before test enhancement)
+        f.write(f"Original Balanced Distribution (before test enhancement):\n")
         f.write(f"Total Images: {original_total}\n")
         
         if class_columns:
+            # If age-binary, include class id numbers using FaceConfig mapping if available
+            try:
+                label_to_id = {v: k for k, v in FaceConfig.MODEL_CLASS_ID_TO_LABEL.items()}
+            except Exception:
+                label_to_id = {}
+
             for col in class_columns:
                 original_count = df_train[col].sum() + df_val[col].sum() + df_test[df_test['has_annotation'] == True][col].sum()
-                f.write(f"Class {col.upper()}: {original_count} images ({original_count / original_total:.2%})\n")
+                if original_total > 0:
+                    pct = original_count / original_total
+                else:
+                    pct = 0
+
+                if col in label_to_id:
+                    f.write(f"Class {label_to_id[col]} {col}: {original_count} images ({pct:.2%})\n")
+                else:
+                    f.write(f"Class {col}: {original_count} images ({pct:.2%})\n")
         f.write("\n")
 
         f.write("Split Distribution (within each split):\n")
@@ -1037,7 +1056,8 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
             for col in class_columns:
                 count = split_df[col].sum()
                 ratio = count / total_split if total_split > 0 else 0
-                f.write(f"{col.upper()}: {count} ({ratio:.2%}) - within split\n")
+                # Print label names in lowercase (e.g., 'child', 'adult') for readability
+                f.write(f"{col}: {count} ({ratio:.2%}) - within split\n")
             f.write("\n")
 
         write_split_info("Train", df_train)
