@@ -301,25 +301,25 @@ def classify_frames(row, results_df, included_rules=None):
     return interaction_category, rule1_turn_taking, rule2_close_proximity, rule3_kcds_speaking, rule4_person_recent_speech
 
 def classify_face_category(row):
-    """Categorize face detection patterns for attention analysis."""
-    if row['has_child_face'] and not row['has_adult_face']:
-        return 'only_child'
-    elif row['has_adult_face'] and not row['has_child_face']:
-        return 'only_adult'
-    elif row['has_child_face'] and row['has_adult_face']:
-        return 'both_faces'
-    else:
+    """Categorize face detection presence using simplified `has_face` indicator.
+
+    Returns:
+        'has_face' if any face detected, else 'no_faces'.
+    """
+    try:
+        return 'has_face' if int(row.get('has_face', 0)) == 1 else 'no_faces'
+    except Exception:
         return 'no_faces'
 
 def classify_person_category(row):
-    """Categorize person detection patterns for presence analysis."""
-    if row['has_child_person'] and not row['has_adult_person']:
-        return 'only_child'
-    elif row['has_adult_person'] and not row['has_child_person']:
-        return 'only_adult'
-    elif row['has_child_person'] and row['has_adult_person']:
-        return 'both_persons'
-    else:
+    """Categorize person presence using simplified `person_present` indicator.
+
+    Returns:
+        'person_present' if a person is present, else 'no_persons'.
+    """
+    try:
+        return 'person_present' if int(row.get('person_present', 0)) == 1 else 'no_persons'
+    except Exception:
         return 'no_persons'
 
 def merge_age_information(df):
@@ -468,4 +468,4 @@ if __name__ == "__main__":
         print(f"❌ Error: Invalid rule numbers. Valid options are: {valid_rules}")
         sys.exit(1)
 
-    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=args.output_dir, included_rules=args.rules)
+    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=Path(args.output_dir), included_rules=args.rules)
