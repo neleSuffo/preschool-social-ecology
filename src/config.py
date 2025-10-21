@@ -84,12 +84,14 @@ class PersonConfig:
         'Teen': 1,
         'Adult': 1,
     }
-    MODEL_CLASS_ID_TO_LABEL = {
+    MODEL_CLASS_ID_TO_LABEL_AGE_BINARY = {
         0: "child",
         1: "adult"
     }
+    MODEL_CLASS_ID_TO_LABEL_PERSON_ONLY = {0: "person"}
     DATABASE_CATEGORY_IDS = [1, 2]
-    TARGET_LABELS = ['child', 'adult']
+    TARGET_LABELS_AGE_BINARY = ['child', 'adult']
+    TARGET_LABELS_PERSON_ONLY = ['person']
     
     NUM_EPOCHS = 100
     # number of videos per batch
@@ -104,7 +106,7 @@ class PersonConfig:
     RNN_HIDDEN = 512
     RNN_LAYERS = 3
     BIDIRECTIONAL = True
-    NUM_OUTPUTS = 2
+    NUM_OUTPUTS = 1
     BACKBONE = 'efficientnet_b0'
     CONFIDENCE_THRESHOLD = 0.5
     BATCH_SIZE_INFERENCE = 64
