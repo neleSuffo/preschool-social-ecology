@@ -9,11 +9,13 @@ from config import PersonConfig
 from constants import PersonClassification
 from utils import setup_environment, setup_data_loaders, load_model, calculate_metrics, plot_confusion_matrices, plot_metrics_comparison
 
-def evaluate_model(models, dataloader, device, output_dir):
+def evaluate_model(models, dataloader, device, output_dir, class_names):
     """Evaluate the model on test data and generate comprehensive results."""
     cnn, rnn = models
     cnn.eval()
     rnn.eval()
+    
+    num_outputs = len(class_names)
     
     all_preds = []
     all_labels = []
@@ -36,66 +38,82 @@ def evaluate_model(models, dataloader, device, output_dir):
             probs = torch.sigmoid(logits)
             preds = (probs > 0.5).float()
             
+            # Per-video stats
             for i, video_id in enumerate(video_ids):
                 seq_len = lengths[i].item()
                 video_labels = labels_padded[i, :seq_len].cpu().numpy()
                 
-                video_results.append({
-                    'video_id': video_id,
-                    'num_frames': seq_len,
-                    'adult_frames': int(video_labels[:, 1].sum()),
-                    'child_frames': int(video_labels[:, 0].sum()),
-                    'no_face_frames': seq_len - int(video_labels[:, 0].sum()) - int(video_labels[:, 1].sum())
-                })
+                stats = {'video_id': video_id, 'num_frames': seq_len}
+                
+                if num_outputs == 2:
+                    stats['adult_frames'] = int(video_labels[:, 1].sum())
+                    stats['child_frames'] = int(video_labels[:, 0].sum())
+                    stats['no_person_frames'] = seq_len - stats['adult_frames'] - stats['child_frames']
+                else:
+                    stats['person_frames'] = int(video_labels[:, 0].sum())
+                    stats['no_person_frames'] = seq_len - stats['person_frames']
+                    
+                video_results.append(stats)
             
-            valid_mask = mask.view(-1, 2)[:, 0]
+            # Per-frame stats for metrics
+            valid_mask = mask.view(-1, num_outputs)[:, 0]
             if valid_mask.sum() > 0:
-                valid_preds = preds.view(-1, 2)[valid_mask]
-                valid_labels = labels_padded.view(-1, 2)[valid_mask]
-                valid_probs = probs.view(-1, 2)[valid_mask]
+                valid_preds = preds.view(-1, num_outputs)[valid_mask]
+                valid_labels = labels_padded.view(-1, num_outputs)[valid_mask]
+                valid_probs = probs.view(-1, num_outputs)[valid_mask]
                 
                 all_preds.append(valid_preds.cpu())
                 all_labels.append(valid_labels.cpu())
                 all_probs.append(valid_probs.cpu())
     
+    if not all_preds:
+        print("No valid predictions collected. Evaluation skipped.")
+        return {'macro_f1': 0.0}
+
     all_preds = torch.cat(all_preds, dim=0).numpy()
     all_labels = torch.cat(all_labels, dim=0).numpy()
     all_probs = torch.cat(all_probs, dim=0).numpy()
     
-    metrics = calculate_metrics(all_labels, all_preds)
+    metrics = calculate_metrics(all_labels, all_preds, class_names)
     
     metrics['total_samples'] = len(all_labels)
-    metrics['adult_samples'] = int(all_labels[:, 1].sum())
-    metrics['child_samples'] = int(all_labels[:, 0].sum())
-    metrics['adult_prevalence'] = float(all_labels[:, 1].mean())
-    metrics['child_prevalence'] = float(all_labels[:, 0].mean())
+    if num_outputs == 2:
+        metrics['adult_samples'] = int(all_labels[:, 1].sum())
+        metrics['child_samples'] = int(all_labels[:, 0].sum())
+    elif num_outputs == 1:
+        metrics['person_samples'] = int(all_labels[:, 0].sum())
     
     print(f"\nSaving results to {output_dir}")
     
-    frame_results = pd.DataFrame({
-        'child_true': all_labels[:, 0], 'adult_true': all_labels[:, 1],
-        'child_pred': all_preds[:, 0], 'adult_pred': all_preds[:, 1],
-        'child_prob': all_probs[:, 0], 'adult_prob': all_probs[:, 1]
-    })
+    frame_results_data = {}
+    for i, label in enumerate(class_names):
+        frame_results_data[f'{label}_true'] = all_labels[:, i]
+        frame_results_data[f'{label}_pred'] = all_preds[:, i]
+        frame_results_data[f'{label}_prob'] = all_probs[:, i]
+        
+    frame_results = pd.DataFrame(frame_results_data)
     frame_results.to_csv(output_dir / 'frame_level_results.csv', index=False)
 
-    plot_confusion_matrices(all_labels, all_preds, PersonConfig.TARGET_LABELS, output_dir)
-    plot_metrics_comparison(metrics, output_dir)
+    plot_confusion_matrices(all_labels, all_preds, class_names, output_dir)
+    plot_metrics_comparison(metrics, output_dir, class_names)
     
-    summary_stats = {
-        'performance_metrics': {
-            'child_precision': metrics['child_precision'], 'child_recall': metrics['child_recall'], 'child_f1': metrics['child_f1'],
-            'adult_precision': metrics['adult_precision'], 'adult_recall': metrics['adult_recall'], 'adult_f1': metrics['adult_f1'],
-            'macro_precision': metrics['macro_precision'], 'macro_recall': metrics['macro_recall'], 'macro_f1': metrics['macro_f1']
-        },
-        'dataset_stats': {
-            'total_videos': len(video_results),
-            'total_frames': metrics['total_samples'],
-            'adult_frames': metrics['adult_samples'],
-            'child_frames': metrics['child_samples'],
-            'no_face_frames': metrics['total_samples'] - metrics['adult_samples'] - metrics['child_samples']
-        }
-    }
+    summary_stats = {'performance_metrics': {}, 'dataset_stats': {}}
+    for metric_type in ['precision', 'recall', 'f1']:
+        for class_name in class_names:
+            summary_stats['performance_metrics'][f'{class_name}_{metric_type}'] = metrics[f'{class_name}_{metric_type}']
+        summary_stats['performance_metrics'][f'macro_{metric_type}'] = metrics[f'macro_{metric_type}']
+
+    summary_stats['dataset_stats']['total_videos'] = len(video_results)
+    summary_stats['dataset_stats']['total_frames'] = metrics['total_samples']
+    
+    if num_outputs == 2:
+        summary_stats['dataset_stats']['adult_frames'] = metrics['adult_samples']
+        summary_stats['dataset_stats']['child_frames'] = metrics['child_samples']
+        summary_stats['dataset_stats']['no_person_frames'] = metrics['total_samples'] - metrics['adult_samples'] - metrics['child_samples']
+    else:
+        summary_stats['dataset_stats']['person_frames'] = metrics['person_samples']
+        summary_stats['dataset_stats']['no_person_frames'] = metrics['total_samples'] - metrics['person_samples']
+
 
     with open(output_dir / 'summary_stats.json', 'w') as f:
         json.dump(summary_stats, f, indent=4)
@@ -103,7 +121,21 @@ def evaluate_model(models, dataloader, device, output_dir):
     return metrics
 
 def main():
-    _, device, _ = setup_environment(is_training=False)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=["person-only", "age-binary"], default="age-binary",
+                       help='Select the classification mode to load the correct model and run evaluation.')
+    args = parser.parse_args()
+
+    # Determine runtime parameters
+    if args.mode == "age-binary":
+        class_names = PersonConfig.TARGET_LABELS_AGE_BINARY
+        num_outputs = 2
+    else:
+        class_names = PersonConfig.TARGET_LABELS_PERSON_ONLY
+        num_outputs = 1
+        
+    _, device, _ = setup_environment(is_training=False, num_outputs=num_outputs)
+    
     test_loader, test_ds = setup_data_loaders(
         PersonClassification.TEST_CSV_PATH, 
         PersonConfig.BATCH_SIZE_INFERENCE, 
@@ -111,12 +143,16 @@ def main():
         log_dir=PersonClassification.TRAINED_WEIGHTS_PATH.parent
     )
     
-    cnn, rnn_model = load_model(device)
+    # Check for consistent number of output classes in data
+    if test_ds.num_outputs != num_outputs:
+        raise ValueError(f"Data CSVs generated with {test_ds.num_outputs} outputs, but trying to evaluate in {num_outputs}-output mode. Check TEST_CSV_PATH.")
     
-    eval_dir = PersonClassification.TRAINED_WEIGHTS_PATH.parent / f"{PersonConfig.MODEL_NAME}_evaluation_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    cnn, rnn_model = load_model(device, num_outputs)
+    
+    eval_dir = PersonClassification.TRAINED_WEIGHTS_PATH.parent / f"{PersonConfig.MODEL_NAME}_{args.mode}_evaluation_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     eval_dir.mkdir(parents=True, exist_ok=True)
     
-    evaluate_model((cnn, rnn_model), test_loader, device, eval_dir)
+    evaluate_model((cnn, rnn_model), test_loader, device, eval_dir, class_names)
     
     try:
         test_ds.log_skipped_files()
