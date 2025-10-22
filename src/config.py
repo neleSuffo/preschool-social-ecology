@@ -78,7 +78,13 @@ class PersonConfig:
     TRAIN_SPLIT_RATIO = 0.6
     # Ratio of class-to-class samples in each dataset split
     MAX_CLASS_RATIO_THRESHOLD = 0.9
-    AGE_GROUP_TO_CLASS_ID = {
+    AGE_GROUP_TO_CLASS_ID_PERSON_ONLY = {
+        'Inf': 0,
+        'Child': 0,
+        'Teen': 0,
+        'Adult': 0,
+    }
+    AGE_GROUP_TO_CLASS_ID_AGE_BINARY = {
         'Inf': 0,
         'Child': 0,
         'Teen': 1,
@@ -92,7 +98,8 @@ class PersonConfig:
     DATABASE_CATEGORY_IDS = [1, 2]
     TARGET_LABELS_AGE_BINARY = ['child', 'adult']
     TARGET_LABELS_PERSON_ONLY = ['person']
-    
+    MIN_IDS_PER_SPLIT = 2
+
     NUM_EPOCHS = 100
     # number of videos per batch
     BATCH_SIZE = 4
@@ -103,8 +110,8 @@ class PersonConfig:
     DROPOUT = 0.5
     WEIGHT_DECAY = 1e-5
     FEAT_DIM = 512
-    RNN_HIDDEN = 512
-    RNN_LAYERS = 3
+    RNN_HIDDEN = 256
+    RNN_LAYERS = 2
     BIDIRECTIONAL = True
     NUM_OUTPUTS = 1
     BACKBONE = 'efficientnet_b0'
@@ -136,9 +143,7 @@ class FaceConfig:
         0: "child",
         1: "adult"
     }
-    MODEL_CLASS_ID_TO_LABEL_FACE_ONLY = {
-        0: "face"
-    }
+    MODEL_CLASS_ID_TO_LABEL_FACE_ONLY = {0: "face"}
     DATABASE_CATEGORY_IDS = [10]
     TARGET_LABELS_AGE_BINARY = ['child', 'adult']
     TARGET_LABELS_FACE_ONLY = ['face']
