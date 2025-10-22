@@ -21,7 +21,7 @@ def main():
     print(f"Using device: {device}")
     
     # Initialize the CNN model with pre-trained weights
-    cnn = CNNEncoder(
+    cnn = YOLOFeatureExtractor( # Renamed class
         backbone=PersonConfig.BACKBONE, 
         pretrained=True, 
         feat_dim=PersonConfig.FEAT_DIM
@@ -49,17 +49,16 @@ def main():
             
         print(f"\nProcessing data from {csv_path}...")
         
-        # Load CSV data directly for frame-by-frame processing
         df = pd.read_csv(csv_path)
         print(f"Found {len(df)} frames to process")
         
-        # Process frames in batches
         batch_size = PersonConfig.BATCH_SIZE_INFERENCE
         total_batches = (len(df) + batch_size - 1) // batch_size
         
         # 3. Create output directories
         split_name = Path(csv_path).stem
-        output_dir = PersonClassification.TRAIN_CSV_PATH.parent / "extracted_features" / split_name
+        # Output directory derived from the path of the CSV, ensuring consistency
+        output_dir = Path(csv_path).parent / "extracted_features" / split_name 
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # 4. Extract features batch by batch
@@ -69,25 +68,21 @@ def main():
                 end_idx = min(start_idx + batch_size, len(df))
                 batch_df = df.iloc[start_idx:end_idx]
                 
-                # Load images for this batch
                 images = []
-                valid_indices = []
                 video_names = []
                 frame_ids = []
                 
-                for idx, row in batch_df.iterrows():
+                for _, row in batch_df.iterrows():
                     try:
                         file_path = row['file_path']
                         if not Path(file_path).exists():
                             continue
                             
-                        # Extract video name from file path (parent directory name)
                         video_name = Path(file_path).parent.name
                             
                         img = Image.open(file_path).convert('RGB')
                         img_tensor = transform(img)
                         images.append(img_tensor)
-                        valid_indices.append(idx)
                         video_names.append(video_name)
                         frame_ids.append(row['frame_id'])
                         
@@ -95,10 +90,8 @@ def main():
                         print(f"Error loading {row['file_path']}: {e}")
                         continue
                 
-                if not images:
-                    continue
+                if not images: continue
                     
-                # Stack images and process
                 images_batch = torch.stack(images).to(device)
                 features_batch = cnn(images_batch)
                 
@@ -107,7 +100,6 @@ def main():
                     video_output_dir = output_dir / video_name
                     video_output_dir.mkdir(exist_ok=True)
                     
-                    # Save feature vector
                     feature_path = video_output_dir / f"{frame_id:06d}.pt"
                     torch.save(features.cpu(), feature_path)
 
