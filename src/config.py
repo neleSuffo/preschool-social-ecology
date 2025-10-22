@@ -142,10 +142,9 @@ class FaceConfig:
     DATABASE_CATEGORY_IDS = [10]
     TARGET_LABELS_AGE_BINARY = ['child', 'adult']
     TARGET_LABELS_FACE_ONLY = ['face']
-    MIN_PERCENTAGE_TEST_FACE_IMAGES = 0.1
-    NEGATIVE_SAMPLING_RATIO = 0.75 #75% negative samples compared to positive samples in train and val splits
+    NEGATIVE_SAMPLING_RATIO = 1 #100% negative samples compared to positive samples in train and val splits
 
-    TRAIN_SPLIT_RATIO = 0.8
+    TRAIN_SPLIT_RATIO = 0.6
     MIN_IDS_PER_SPLIT = 2
     NUM_EPOCHS = 300
     BATCH_SIZE = 20
