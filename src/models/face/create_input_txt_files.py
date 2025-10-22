@@ -23,8 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Database and Query
 # ==============================
 def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
-    """Fetch annotations for given category IDs from the SQLite database,
-    excluding any frame that has an annotation with category_id = -1.
+    """Fetch annotations for given category IDs from the SQLite database.
     
     Parameters
     ----------
@@ -54,7 +53,8 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
         cursor = conn.cursor()
         cursor.execute(query, category_ids)
         results = cursor.fetchall()
-            
+     
+    logging.info(f"Found {len(results)} annotations.")   
     return results
 
 # ==============================
