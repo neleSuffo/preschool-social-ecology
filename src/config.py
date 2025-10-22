@@ -120,21 +120,33 @@ class FaceConfig:
     """Configuration for face detection and classification."""
     MODEL_SIZE = 'l'  # Default model size
     MODEL_NAME = f"yolo12{MODEL_SIZE}"
-    AGE_GROUP_TO_CLASS_ID = {
+    AGE_GROUP_TO_CLASS_ID_AGE_BINARY = {
         'infant': 0,
         'child': 0,
         'teen': 1,
         'adult': 1,
     }
-    MODEL_CLASS_ID_TO_LABEL = {
+    AGE_GROUP_TO_CLASS_ID_FACE_ONLY = {
+        'infant': 0,
+        'child': 0,
+        'teen': 0,
+        'adult': 0,
+    }
+    MODEL_CLASS_ID_TO_LABEL_AGE_BINARY = {
         0: "child",
         1: "adult"
     }
+    MODEL_CLASS_ID_TO_LABEL_FACE_ONLY = {
+        0: "face"
+    }
     DATABASE_CATEGORY_IDS = [10]
-    TARGET_LABELS = ['child', 'adult']
+    TARGET_LABELS_AGE_BINARY = ['child', 'adult']
+    TARGET_LABELS_FACE_ONLY = ['face']
+    MIN_PERCENTAGE_TEST_FACE_IMAGES = 0.1
+    NEGATIVE_SAMPLING_RATIO = 0.75 #75% negative samples compared to positive samples in train and val splits
 
-    TRAIN_SPLIT_RATIO = 0.6
-    MAX_CLASS_RATIO_THRESHOLD = 0.60
+    TRAIN_SPLIT_RATIO = 0.8
+    MIN_IDS_PER_SPLIT = 2
     NUM_EPOCHS = 300
     BATCH_SIZE = 20
     IMG_SIZE = 832
