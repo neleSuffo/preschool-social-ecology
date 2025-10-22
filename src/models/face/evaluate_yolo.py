@@ -27,7 +27,6 @@ def main():
     metrics = model.val(
         data=config_file_path,
         save_json=True,
-        iou=0.5,
         plots=True,
         project=output_dir,
         name=folder_name
