@@ -510,10 +510,9 @@ def get_all_frames_for_children(child_ids: List[str], image_folder: Path) -> Lis
     
     return all_frames
 
-def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], positive_images: int, train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, add_first_minutes: bool = False, minutes: int = 5, labels_input_dir: Path = None, detection_mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, add_first_minutes: bool = False, minutes: int = 5, labels_input_dir: Path = None, detection_mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Splits the DataFrame into training, validation, and test sets using child IDs as the unit,
-    while guaranteeing a minimum number of annotated frames (faces) in the test set.
+    Splits the DataFrame into training, validation, and test sets using child IDs as the unit, while balancing class distributions.
 
     For test set: Keeps ALL frames from test children (not just annotated ones) to reflect real-world scenarios.
     
@@ -523,8 +522,6 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         DataFrame with image data and annotations
     negative_candidates : Dict[str, List[Tuple[str, str]]]
         Dictionary of potential negative frame candidates per video
-    positive_images : int
-        Total number of positive annotated images
     train_ratio : float
         Ratio for training split
     add_first_minutes : bool
@@ -537,7 +534,6 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         Detection mode to use for splitting ('face-only' or 'age-binary')
     """
     # Define minimum number of face images required in the test set as fixed percentage of positive images
-    MIN_TEST_FACE_IMAGES = positive_images * FaceConfig.MIN_PERCENTAGE_TEST_FACE_IMAGES 
     if labels_input_dir is None:
         labels_input_dir = FaceDetection.LABELS_INPUT_DIR
         
@@ -545,7 +541,7 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         logging.error(f"'filename' column not found in DataFrame. Available columns: {df.columns.tolist()}")
         return [], [], [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    # --- Infer Detection Mode and Get Correct Mapping (FIX for label lookup) ---
+    # --- Infer Detection Mode and Get Correct Mapping ---
     if detection_mode == "face-only":
         id_to_label_map = FaceConfig.MODEL_CLASS_ID_TO_LABEL_FACE_ONLY
     elif detection_mode == "age-binary":
@@ -580,13 +576,12 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         logging.error(f"Not enough unique children to create splits. Found {n_total}, need at least {3 * FaceConfig.MIN_IDS_PER_SPLIT}.")
         return [], [], [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
+    # --- Prepare Child Face Counts Sorted ---
     child_face_counts_sorted = [(child_id, child_face_coverage.loc[child_id, 'faces_count']) 
                                 for child_id in sorted_child_ids]
-    child_face_counts_sorted.sort(key=lambda x: x[1], reverse=True)
+    child_face_counts_sorted.sort(key=lambda x: x[1], reverse=True) 
     
-    # Global target ratio (for re-use in balancing logic)
     global_counts = child_group_counts[class_columns].sum()
-    # Check if sum is zero before dividing
     target_class_0_ratio = global_counts[class_columns[0]] / global_counts.sum() if global_counts.sum() > 0 else 0
 
     # --- Utility Functions for Balancing ---
@@ -603,118 +598,95 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         new_face_ratio = new_face_count / new_total_count
         return abs(new_face_ratio - 0.5) 
 
-    # --- 1. TEST SET SELECTION (Minimum Face Guarantee) ---
-    test_ids = []
-    current_test_faces = 0
-    remaining_child_ids = []
-    
-    for child_id, faces_count in child_face_counts_sorted:
-        if (current_test_faces < FaceConfig.MIN_IDS_PER_SPLIT) or (len(test_ids) < FaceConfig.MIN_IDS_PER_SPLIT):
-            test_ids.append(child_id)
-            current_test_faces += faces_count
-        else:
-            remaining_child_ids.append(child_id)
-
-    if current_test_faces < MIN_TEST_FACE_IMAGES:
-         logging.warning(f"⚠️ Could only allocate {current_test_faces} face images to test set, target was {MIN_TEST_FACE_IMAGES}. Proceeding.")
-         if len(test_ids) < FaceConfig.MIN_IDS_PER_SPLIT:
-             logging.error("Failed to meet minimum ID requirement for the test set after face allocation.")
-             return [], [], [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    
-    # Reallocate children with few faces back to the remaining pool if minimum face count is met, 
-    # while retaining MIN_IDS_PER_SPLIT.
-    test_ids_to_reallocate = sorted(
-        [(cid, child_face_coverage.loc[cid, 'faces_count']) for cid in test_ids],
-        key=lambda x: x[1], reverse=False
-    )
-    while current_test_faces >= MIN_TEST_FACE_IMAGES and len(test_ids) > FaceConfig.MIN_IDS_PER_SPLIT:
-        child_id_to_move, faces_count = test_ids_to_reallocate.pop(0)
-        
-        test_ids.remove(child_id_to_move)
-        current_test_faces -= faces_count
-        remaining_child_ids.append(child_id_to_move)
-
-    # --- 2. TRAIN/VAL SET SELECTION (Weighted Balancing Logic Restored) ---
-    
-    if len(remaining_child_ids) < 2 * FaceConfig.MIN_IDS_PER_SPLIT:
-        logging.error(f"Not enough children remaining ({len(remaining_child_ids)}) to satisfy minimum train/val ID requirements (4).")
-        return [], [], [], pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-    # Initialize Train/Val splits for the balancing process
+    # --- 1. ID SELECTION (Weighted Balancing for ALL three splits) ---
     train_ids = []
     val_ids = []
-    split_info_tv = {
-        'train': {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns), 'face_count': 0, 'total_count': 0},
-        'val':   {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns), 'face_count': 0, 'total_count': 0},
+    test_ids = []
+    
+    # Calculate target split sizes based on the total children
+    n_train_target = max(int(n_total * train_ratio), FaceConfig.MIN_IDS_PER_SPLIT)
+    remaining_ids = n_total - n_train_target
+    n_test_target = max(int(remaining_ids / 2), FaceConfig.MIN_IDS_PER_SPLIT)
+    n_val_target = max(n_total - n_train_target - n_test_target, FaceConfig.MIN_IDS_PER_SPLIT)
+    
+    # Adjust targets if necessary to ensure sum is n_total
+    n_sum = n_train_target + n_val_target + n_test_target
+    if n_sum > n_total:
+        n_test_target = max(n_total - n_train_target - n_val_target, FaceConfig.MIN_IDS_PER_SPLIT)
+        n_train_target = max(n_total - n_val_target - n_test_target, FaceConfig.MIN_IDS_PER_SPLIT)
+        n_val_target = max(n_total - n_train_target - n_test_target, FaceConfig.MIN_IDS_PER_SPLIT)
+
+    split_targets = {'train': n_train_target, 'val': n_val_target, 'test': n_test_target}
+    
+    split_info_all = {
+        s: {'ids': [], 'current_counts': pd.Series([0] * len(class_columns), index=class_columns), 'face_count': 0, 'total_count': 0, 'target': split_targets[s]}
+        for s in ['train', 'val', 'test']
     }
     
-    n_remaining = len(remaining_child_ids)
-    n_train_target = max(int(n_remaining * train_ratio), FaceConfig.MIN_IDS_PER_SPLIT)
-    n_val_target = max(n_remaining - n_train_target, FaceConfig.MIN_IDS_PER_SPLIT)
-
-    # Sort remaining children by face count to assign largest chunks first
-    remaining_child_data = [(cid, child_face_coverage.loc[cid, 'faces_count']) for cid in remaining_child_ids]
-    remaining_child_data.sort(key=lambda x: x[1], reverse=True)
-    
-    for child_id, child_face_count in remaining_child_data:
+    # Iterate over all children, assigning the highest face-count children first to the split 
+    for child_id, child_face_count in child_face_counts_sorted:
         child_counts = child_group_counts.loc[child_id, class_columns]
         child_total_count = child_face_coverage.loc[child_id, 'total_count']
 
         eligible_splits = []
-        if len(split_info_tv['train']['ids']) < n_train_target:
-            eligible_splits.append('train')
-        if len(split_info_tv['val']['ids']) < n_val_target:
-            eligible_splits.append('val')
+        for s in ['train', 'test', 'val']:
+            if len(split_info_all[s]['ids']) < split_info_all[s]['target']:
+                eligible_splits.append(s)
 
         if not eligible_splits:
-            logging.warning(f"No space left for remaining child {child_id}. Skipping.")
+            logging.warning(f"No space left for child {child_id}. Skipping.")
             continue
 
         # Pick split that minimizes the weighted deviation (0.3 class + 0.7 coverage)
         best_split = min(
             eligible_splits,
             key=lambda s: (
-                deviation_from_target(split_info_tv[s]['current_counts'], child_counts) * 0.3 +
-                face_coverage_deviation(split_info_tv[s]['face_count'], split_info_tv[s]['total_count'], 
+                deviation_from_target(split_info_all[s]['current_counts'], child_counts) * 0.3 +
+                face_coverage_deviation(split_info_all[s]['face_count'], split_info_all[s]['total_count'], 
                                        child_face_count, child_total_count) * 0.7
             )
         )
 
         # Assign child
-        split_info_tv[best_split]['ids'].append(child_id)
-        split_info_tv[best_split]['current_counts'] += child_counts
-        split_info_tv[best_split]['face_count'] += child_face_count
-        split_info_tv[best_split]['total_count'] += child_total_count
+        split_info_all[best_split]['ids'].append(child_id)
+        split_info_all[best_split]['current_counts'] += child_counts
+        split_info_all[best_split]['face_count'] += child_face_count
+        split_info_all[best_split]['total_count'] += child_total_count
 
-    train_ids = split_info_tv['train']['ids']
-    val_ids = split_info_tv['val']['ids']
+    train_ids = split_info_all['train']['ids']
+    test_ids = split_info_all['test']['ids']
+    val_ids = split_info_all['val']['ids']
+    
+    current_test_faces = split_info_all['test']['face_count']
 
     logging.info(f"Test split face coverage: {current_test_faces} faces from {len(test_ids)} children.")
     logging.info(f"Train/Val split: {len(train_ids)} train IDs, {len(val_ids)} val IDs.")
 
-    # --- 3. Build Final DataFrames and Handle 'First N Minutes' (FIXED lookup) ---
-    # 3a. Initial split of POSITIVE/ANNOTATED images based on IDs
+    # --- 2. Build Final DataFrames and Apply Negative Sampling ---
+
+    # 2a. Initial split of POSITIVE/ANNOTATED images based on IDs
     train_df_pos = df[df["child_id"].isin(train_ids) & (df["has_annotation"] == True)].copy()
     val_df_pos = df[df["child_id"].isin(val_ids) & (df["has_annotation"] == True)].copy()
-    test_df = df[df["child_id"].isin(test_ids)].copy()
+    
+    # Test set still gets ALL frames from assigned children for true imbalance representation
+    test_df = df[df["child_id"].isin(test_ids)].copy() 
 
-    # 3b. Compile negative pools for Train and Val
+    # 2b. Compile negative pools for Train and Val (Uses negative_candidates passed to the function)
     train_negative_candidates = []
     val_negative_candidates = []
     
-    # Extract ALL negative candidates belonging to the assigned Train/Val children
-    for child_id in train_ids:
-        # Loop over videos associated with this child (assuming video_name contains child_id)
-        for video_name, candidates in negative_candidates.items():
-            if child_id in video_name:
-                train_negative_candidates.extend(candidates)
+    def get_child_id_from_video_name(video_name):
+        match = re.search(r'id(\d+)', video_name)
+        return 'id' + match.group(1) if match else None
+
+    for video_name, candidates in negative_candidates.items():
+        child_id = get_child_id_from_video_name(video_name)
+        if child_id in train_ids:
+            train_negative_candidates.extend(candidates)
+        elif child_id in val_ids:
+            val_negative_candidates.extend(candidates)
                 
-    for child_id in val_ids:
-        for video_name, candidates in negative_candidates.items():
-            if child_id in video_name:
-                val_negative_candidates.extend(candidates)
-                
-    # 3c. Apply 75% negative sampling to Train and Val sets
+    # 2c. Apply 75% negative sampling to Train and Val sets
     random.seed(DataConfig.RANDOM_SEED)
     
     # TRAIN NEGATIVE SAMPLING
@@ -737,8 +709,7 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         sampled_val_neg = val_negative_candidates
         logging.warning(f"Val: Only {len(sampled_val_neg)} negative frames available, target was {target_val_neg}.")
 
-    # 3d. Convert sampled negative list (image_path, image_id) to DataFrame rows
-    
+    # 2d. Convert sampled negative list to DataFrame rows
     def create_neg_df(sampled_neg_list, child_id_getter, class_cols):
         entries = []
         for image_path, image_id in sampled_neg_list:
@@ -748,18 +719,19 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
                 "id": image_id,
                 "has_annotation": False,
                 "child_id": child_id_getter(filename),
-                **{col: 0 for col in class_cols} # All class counts are 0 for negative samples
+                **{col: 0 for col in class_cols}
             })
         return pd.DataFrame(entries)
 
     train_neg_df = create_neg_df(sampled_train_neg, get_child_id_from_filename, class_columns)
     val_neg_df = create_neg_df(sampled_val_neg, get_child_id_from_filename, class_columns)
     
-    # 3e. Finalize Train and Val DataFrames
+    # 2e. Finalize Train and Val DataFrames
     train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
     val_df = pd.concat([val_df_pos, val_neg_df], ignore_index=True)
     
-    # Handle first N minutes addition if requested
+    # --- 3. Handle First N Minutes and Final Test Set Enhancement (retained) ---
+    
     first_minutes_train_frames = []
     first_minutes_val_frames = []
     
@@ -846,12 +818,9 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
     # For test set: Add ALL frames from videos that have annotations for test children    
     test_videos_with_annotations = set()
     for filename in df[df['child_id'].isin(test_ids) & (df['has_annotation'] == True)]['filename']:
-        # Extract video name from filename (remove frame number)
-        # Example: quantex_at_home_id255237_2022_05_08_04_000240 -> quantex_at_home_id255237_2022_05_08_04
         video_name = "_".join(filename.split("_")[:-1])
         test_videos_with_annotations.add(video_name)
     
-    # Create set of first-minutes frame names to exclude from test set
     first_minutes_frame_names = set()
     if add_first_minutes:
         for image_path, _ in first_minutes_train_frames + first_minutes_val_frames:
@@ -864,18 +833,15 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         if video_path.exists() and video_path.is_dir():
             for frame in video_path.iterdir():
                 if frame.is_file() and frame.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-                    # Extract image ID
                     parts = frame.name.split("_")
                     if len(parts) > 3 and parts[3].startswith('id'):
                         image_id = parts[3].replace("id", "")
                     else:
                         image_id = frame.stem
                     
-                    # Skip if this frame is already in our DataFrame or is part of first minutes
                     if (frame.stem not in test_df['filename'].values and 
                         frame.stem not in first_minutes_frame_names):
                         
-                        # Check if this frame has annotations
                         annotation_file = labels_input_dir / f"{frame.stem}.txt"
                         has_annotation = annotation_file.exists() and annotation_file.stat().st_size > 0
                         
@@ -886,7 +852,6 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
                             "child_id": get_child_id_from_filename(frame.stem)
                         }
                         
-                        # Get annotation labels if they exist
                         labels = []
                         if has_annotation:
                             try:
@@ -899,7 +864,6 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
                             except Exception as e:
                                 logging.warning(f"Error reading annotation file {annotation_file}: {e}")
                         
-                        # Add class labels
                         for class_name in class_columns:
                             entry[class_name] = 1 if class_name in labels else 0
                         
@@ -1161,7 +1125,6 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
         train, val, test, df_train, df_val, df_test = split_by_child_id(
             df, 
             negative_candidates=negative_candidates,
-            positive_images=len(positive_images),
             add_first_minutes=add_first_minutes, 
             minutes=minutes,
             labels_input_dir=labels_input_dir,
@@ -1232,7 +1195,7 @@ def main():
         if args.fetch_annotations:
             anns = fetch_all_annotations(FaceConfig.DATABASE_CATEGORY_IDS)
             logging.info(f"Fetched {len(anns)} annotations.")
-            save_annotations(anns, output_dir=labels_output_dir)
+            save_annotations(anns, output_dir=labels_output_dir, detection_mode=args.detection_mode)
         
         split_data(annotation_folder, 
                        add_first_minutes=args.add_first_minutes, 
