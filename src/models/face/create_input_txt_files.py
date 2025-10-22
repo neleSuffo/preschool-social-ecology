@@ -694,8 +694,8 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
 
     # --- 3. Build Final DataFrames and Handle 'First N Minutes' (FIXED lookup) ---
     # 3a. Initial split of POSITIVE/ANNOTATED images based on IDs
-    train_df_pos = df[df["child_id"].isin(train_ids)].copy()
-    val_df_pos = df[df["child_id"].isin(val_ids)].copy()
+    train_df_pos = df[df["child_id"].isin(train_ids) & (df["has_annotation"] == True)].copy()
+    val_df_pos = df[df["child_id"].isin(val_ids) & (df["has_annotation"] == True)].copy()
     test_df = df[df["child_id"].isin(test_ids)].copy()
 
     # 3b. Compile negative pools for Train and Val
