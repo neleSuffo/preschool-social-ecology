@@ -39,11 +39,10 @@ def handle_checkpointing_and_early_stopping(out_dir, epoch, model, optimizer,
                                            train_metrics, val_metrics, best_val_f1, patience_counter):
     """Saves checkpoints, manages early stopping, and updates patience counter."""
     
-    # 💥 CRITICAL FIX: Save the combined model and unified optimizer states
     ckpt = {
         'epoch': epoch,
         'model_state': model.state_dict(),
-        'opt_state': optimizer.state_dict() if optimizer else None, # Use unified optimizer
+        'opt_state': optimizer.state_dict() if optimizer else None,
         'val_metrics': val_metrics,
         'train_metrics': train_metrics,
     }
@@ -69,11 +68,11 @@ def handle_checkpointing_and_early_stopping(out_dir, epoch, model, optimizer,
 
     return best_val_f1, patience_counter, should_stop
 
-def eval_on_loader(model, criterion, dataloader, device):
+def eval_on_loader(model, criterion, dataloader, device, class_names):
     """Evaluate models on dataloader and return loss + metrics."""
     
-    # 💥 CRITICAL FIX: Use 'model' for eval
     model.eval()
+    num_outputs = len(class_names)
 
     total_loss = 0.0
     total_samples = 0
@@ -83,19 +82,19 @@ def eval_on_loader(model, criterion, dataloader, device):
     progress_bar = tqdm(dataloader, desc="Validation", leave=False)
 
     with torch.no_grad():
-        # Input is now 'images_padded'
         for images_padded, labels_padded, lengths, _ in progress_bar:
             images_padded = images_padded.to(device)
             labels_padded = labels_padded.to(device)
-            lengths = lengths.to(device)
-            mask = (labels_padded != -100)
-
-            # Pass images directly to the combined model
-            logits = model(images_padded, lengths)
             
-            mask_flat = mask.view(-1, 2)[:, 0]
-            logits_flat = logits.view(-1, 2)[mask_flat]
-            labels_flat = labels_padded.view(-1, 2)[mask_flat]
+            # Mask: only include labels that are not padding (-100)
+            mask = (labels_padded != -100) # shape (B, S, NUM_OUTPUTS)
+
+            logits = model(images_padded, lengths) # shape (B, S, NUM_OUTPUTS)
+            
+            # Flatten to (B*S*NUM_OUTPUTS), then select valid entries based on the first label's mask
+            mask_flat = mask.view(-1, num_outputs)[:, 0]
+            logits_flat = logits.view(-1, num_outputs)[mask_flat]
+            labels_flat = labels_padded.view(-1, num_outputs)[mask_flat]
 
             loss = criterion(logits_flat, labels_flat)
 
@@ -104,31 +103,33 @@ def eval_on_loader(model, criterion, dataloader, device):
             total_samples += batch_size
 
             probs = torch.sigmoid(logits)
-            preds = (probs > 0.5).float()
-            valid_preds = preds.view(-1, 2)[mask_flat].cpu()
-            valid_labels = labels_padded.view(-1, 2)[mask_flat].cpu()
+            preds = (probs > PersonConfig.CONFIDENCE_THRESHOLD).float()
+            
+            valid_preds = preds.view(-1, num_outputs)[mask_flat].cpu()
+            valid_labels = labels_padded.view(-1, num_outputs)[mask_flat].cpu()
 
             all_preds.append(valid_preds)
             all_labels.append(valid_labels)
     
     if not all_preds:
-        raise RuntimeError("No valid predictions collected during evaluation")
+        # Fallback for empty dataloaders/splits
+        return 0.0, calculate_metrics(torch.zeros(0, num_outputs), torch.zeros(0, num_outputs), class_names)
         
     all_preds = torch.cat(all_preds, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
 
-    metrics = calculate_metrics(all_labels, all_preds)
+    metrics = calculate_metrics(all_labels, all_preds, class_names)
     avg_loss = total_loss / total_samples
 
     return avg_loss, metrics
 
-def train_one_epoch(model, optimizer, criterion, dataloader, device, scaler=None, accumulation_steps=4):
+def train_one_epoch(model, optimizer, criterion, dataloader, device, class_names, scaler=None, accumulation_steps=4):
     """
     Train models for one epoch with gradient accumulation and optional AMP.
     """
     
-    # 💥 CRITICAL FIX: Use 'model' for train
     model.train()
+    num_outputs = len(class_names)
 
     total_loss = 0.0
     total_samples = 0
@@ -137,37 +138,35 @@ def train_one_epoch(model, optimizer, criterion, dataloader, device, scaler=None
 
     progress_bar = tqdm(dataloader, desc="Training", leave=False)
 
-    # Input is now 'images_padded'
     for batch_idx, (images_padded, labels_padded, lengths, _) in enumerate(progress_bar):
         images_padded = images_padded.to(device, non_blocking=True)
         labels_padded = labels_padded.to(device, non_blocking=True)
-        mask = (labels_padded != -100)
+        mask = (labels_padded != -100) # shape (B, S, NUM_OUTPUTS)
 
-        # Diagnostic print for first batch of each epoch
+        # Diagnostic print for label distribution
         if batch_idx == 0:
-            print("\n[DIAGNOSTIC] Image stats:")
-            print(f"  mean: {images_padded.mean().item():.4f}, std: {images_padded.std().item():.4f}, min: {images_padded.min().item():.4f}, max: {images_padded.max().item():.4f}")
             print("[DIAGNOSTIC] Label distribution:")
-            mask_flat = mask.view(-1, 2)[:, 0]
-            valid_labels = labels_padded.view(-1, 2)[mask_flat].cpu().numpy()
-            if valid_labels.ndim == 1:
-                valid_labels = valid_labels.reshape(-1, 2)
-            if valid_labels.shape[1] == 2:
+            mask_flat = mask.view(-1, num_outputs)[:, 0]
+            valid_labels = labels_padded.view(-1, num_outputs)[mask_flat].cpu().numpy()
+            
+            if num_outputs == 1:
+                pos_count = int((valid_labels[:,0] == 1).sum())
+                print(f"  {class_names[0]} frames: {pos_count}, total valid: {valid_labels.shape[0]}")
+            else: # age-binary
                 child_count = int((valid_labels[:,0] == 1).sum())
                 adult_count = int((valid_labels[:,1] == 1).sum())
                 print(f"  child frames: {child_count}, adult frames: {adult_count}, total valid: {valid_labels.shape[0]}")
-            else:
-                print(f"  Unexpected label shape: {valid_labels.shape}")
 
         with torch.autocast(device_type='cuda', enabled=(scaler is not None)):
-            # Pass images directly to the combined model
-            logits = model(images_padded, lengths)
-            mask_flat = mask.view(-1, 2)[:, 0]
-            logits_flat = logits.view(-1, 2)[mask_flat]
-            labels_flat = labels_padded.view(-1, 2)[mask_flat]
+            logits = model(images_padded, lengths) # shape (B, S, NUM_OUTPUTS)
+            
+            # Masking: select valid entries based on the first label's mask
+            mask_flat = mask.view(-1, num_outputs)[:, 0]
+            logits_flat = logits.view(-1, num_outputs)[mask_flat]
+            labels_flat = labels_padded.view(-1, num_outputs)[mask_flat]
+            
             loss = criterion(logits_flat, labels_flat) / accumulation_steps
 
-        # Diagnostic print for loss value
         if batch_idx == 0:
             print(f"[DIAGNOSTIC] First batch loss: {loss.item():.6f}")
 
@@ -178,23 +177,22 @@ def train_one_epoch(model, optimizer, criterion, dataloader, device, scaler=None
 
         if (batch_idx + 1) % accumulation_steps == 0:
             if scaler:
-                # 💥 CRITICAL FIX: Use 'optimizer' and 'model'
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                # 💥 CRITICAL FIX: Use 'optimizer' and 'model'
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 optimizer.step()
             optimizer.zero_grad()
                 
         with torch.no_grad():
             probs = torch.sigmoid(logits)
-            preds = (probs > 0.5).float()
-            valid_mask = mask.view(-1, 2)[:, 0]
-            valid_preds = preds.view(-1, 2)[valid_mask].cpu()
-            valid_labels = labels_padded.view(-1, 2)[valid_mask].cpu()
+            preds = (probs > PersonConfig.CONFIDENCE_THRESHOLD).float()
+            
+            valid_preds = preds.view(-1, num_outputs)[mask_flat].cpu()
+            valid_labels = labels_padded.view(-1, num_outputs)[mask_flat].cpu()
+            
             all_preds.append(valid_preds)
             all_labels.append(valid_labels)
 
@@ -205,20 +203,18 @@ def train_one_epoch(model, optimizer, criterion, dataloader, device, scaler=None
         progress_bar.set_postfix({'loss': f"{avg_loss_so_far:.4f}"})
 
     if not all_preds:
-        raise RuntimeError("No valid predictions collected during training epoch")
+        return 0.0, calculate_metrics(torch.zeros(0, num_outputs), torch.zeros(0, num_outputs), class_names)
 
     all_preds = torch.cat(all_preds, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
 
-    metrics = calculate_metrics(all_labels, all_preds)
+    metrics = calculate_metrics(all_labels, all_preds, class_names)
     avg_loss = total_loss / total_samples
 
     return avg_loss, metrics
 
-def run_training_loop(out_dir, device, scaler, train_loader, val_loader, model, optimizer, criterion, csv_log_path):
-    """
-    Orchestrates the full training process across multiple epochs.
-    """
+def run_training_loop(out_dir, device, scaler, train_loader, val_loader, model, optimizer, criterion, csv_log_path, class_names):
+    """Orchestrates the full training process across multiple epochs."""
     best_val_f1 = 0.0
     patience_counter = 0
 
@@ -228,15 +224,14 @@ def run_training_loop(out_dir, device, scaler, train_loader, val_loader, model, 
 
     for epoch in range(1, PersonConfig.NUM_EPOCHS + 1):
         train_loss, train_metrics = train_one_epoch(
-            model, optimizer, criterion, train_loader, device, scaler=scaler,
+            model, optimizer, criterion, train_loader, device, class_names, scaler=scaler,
         )
 
-        val_loss, val_metrics = eval_on_loader(model, criterion, val_loader, device)
+        val_loss, val_metrics = eval_on_loader(model, criterion, val_loader, device, class_names)
 
-        print_epoch_results(epoch, train_loss, val_loss, train_metrics, val_metrics)
-        log_epoch_metrics(csv_log_path, epoch, train_loss, val_loss, train_metrics, val_metrics)
+        print_epoch_results(epoch, train_loss, val_loss, train_metrics, val_metrics, class_names)
+        log_epoch_metrics(csv_log_path, epoch, train_loss, val_loss, train_metrics, val_metrics, class_names)
 
-        # 💥 CRITICAL FIX: Pass the combined model and optimizer
         best_val_f1, patience_counter, should_stop = handle_checkpointing_and_early_stopping(
             out_dir, epoch, model, optimizer, train_metrics, val_metrics, best_val_f1, patience_counter
         )
@@ -255,11 +250,22 @@ def run_training_loop(out_dir, device, scaler, train_loader, val_loader, model, 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--mode', choices=["person-only", "age-binary"], default="age-binary",
+                       help='Select the classification mode to load the correct number of outputs.')
     args = parser.parse_args()
 
-    out_dir, device, scaler = setup_environment(is_training=True)
+    # Determine runtime parameters
+    if args.mode == "age-binary":
+        class_names = PersonConfig.TARGET_LABELS_AGE_BINARY
+        num_outputs = 2
+    else:
+        class_names = PersonConfig.TARGET_LABELS_PERSON_ONLY
+        num_outputs = 1
+        
+    # Setup environment (output directory depends on mode)
+    out_dir, device, scaler = setup_environment(is_training=True, num_outputs=num_outputs)
 
-    # 💥 NOTE: is_feature_extraction=True ensures the DataLoader loads raw images
+    # Load data loaders
     train_loader, train_ds = setup_data_loaders(
         PersonClassification.TRAIN_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=True, log_dir=out_dir, 
         is_feature_extraction=True, split_name='train'
@@ -268,15 +274,19 @@ def main():
         PersonClassification.VAL_CSV_PATH, PersonConfig.BATCH_SIZE, is_training=False, log_dir=out_dir, 
         is_feature_extraction=True, split_name='val'
     )
+    
+    # Check for consistent number of output classes in data
+    if train_ds.num_outputs != num_outputs or val_ds.num_outputs != num_outputs:
+        raise ValueError(f"Data CSVs generated with {train_ds.num_outputs} outputs, but trying to train in {num_outputs}-output mode. Re-run create_input_csv_files.py with --classification-mode={args.mode}")
 
     # Load combined model and optimizer
-    model, optimizer, criterion = setup_models_and_optimizers(device) 
+    model, optimizer, criterion = setup_models_and_optimizers(device, num_outputs, class_names) 
 
-    csv_log_path = initialize_training_logging(out_dir)
+    csv_log_path = initialize_training_logging(out_dir, class_names)
 
     run_training_loop(
         out_dir, device, scaler, train_loader, val_loader,
-        model, optimizer, criterion, csv_log_path, # Pass the correct variables
+        model, optimizer, criterion, csv_log_path, class_names
     )
 
     try:
