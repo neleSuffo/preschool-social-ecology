@@ -323,7 +323,7 @@ def split_by_child_id(df_combined: pd.DataFrame, target_labels: List[str], train
     video_map['child_id'] = video_map['file_name'].apply(get_child_id_from_filename)
     
     # Merge child_id into the combined dataframe
-    df = df_combined.merge(video_map[['video_id', 'child_id']], on='video_id', how='left')
+    df = df_combined.merge(video_map[['file_name', 'child_id']], on='file_name', how='left')
     df.dropna(subset=['child_id'], inplace=True)
 
     # KEY: Filter to use ONLY positive frames for balancing calculation
@@ -344,12 +344,12 @@ def split_by_child_id(df_combined: pd.DataFrame, target_labels: List[str], train
     n_total = len(sorted_child_ids)
 
     # Basic split size calculation (retains previous logic)
-    if n_total < 3 * PersonConfig.MIN_CHILDREN_PER_SPLIT: return [], [], []
-    n_train = max(int(n_total * train_ratio), PersonConfig.MIN_CHILDREN_PER_SPLIT)
+    if n_total < 3 * PersonConfig.MIN_IDS_PER_SPLIT: return [], [], []
+    n_train = max(int(n_total * train_ratio), PersonConfig.MIN_IDS_PER_SPLIT)
     remaining_ids = n_total - n_train
-    n_val = max(int(remaining_ids / 2), PersonConfig.MIN_CHILDREN_PER_SPLIT)
+    n_val = max(int(remaining_ids / 2), PersonConfig.MIN_IDS_PER_SPLIT)
     n_test = n_total - n_train - n_val
-    if n_test < PersonConfig.MIN_CHILDREN_PER_SPLIT: n_val -= (PersonConfig.MIN_CHILDREN_PER_SPLIT - n_test); n_test = PersonConfig.MIN_CHILDREN_PER_SPLIT
+    if n_test < PersonConfig.MIN_IDS_PER_SPLIT: n_val -= (PersonConfig.MIN_IDS_PER_SPLIT - n_test); n_test = PersonConfig.MIN_IDS_PER_SPLIT
     
     # Initialize splits
     split_info = {
