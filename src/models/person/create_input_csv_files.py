@@ -167,7 +167,7 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
     with open(positive_frames_info_path, "w") as f:
         json.dump(positive_frames_info, f)
 
-def build_master_frame_df(positive_frames_info: Dict[Tuple, Dict[str, int]], mode: str, positive_frames_info: Dict[Tuple, Dict[str, int]]) -> Tuple[pd.DataFrame, List[str]]:
+def build_master_frame_df(positive_frames_info: Dict[Tuple, Dict[str, int]], mode: str) -> Tuple[pd.DataFrame, List[str]]:
     """
     Build a master DataFrame of all frames (positive and negative) with labels.
     
@@ -418,7 +418,7 @@ def main():
     parser = argparse.ArgumentParser(description='Create input CSV files for person classification (sequential data)')
     parser.add_argument('--mode', choices=["person-only", "age-binary"], default="person-only",
                        help='Select the classification mode: person-only (single binary class) or age-binary (child/adult).')
-    parser.add_argument('--fetch-annotations', action='store_true',
+    parser.add_argument('--fetch_annotations', action='store_true',
                        help='Fetch annotations from DB and generate YOLO .txt files (default: False).')
     
     args = parser.parse_args()
@@ -430,14 +430,13 @@ def main():
     # 1. Fetch annotations from the DB and save YOLO labels
     if args.fetch_annotations:
         anns = fetch_all_annotations(PersonConfig.DATABASE_CATEGORY_IDS)
-        logging.info(f"Fetched {len(anns)} annotations.")
         save_annotations(anns, PersonClassification.LABELS_INPUT_DIR, mode, pos_frames_file_path)
         
     # 2. Build master frame list by scanning file system and annotating frames
     logging.info("Building master frame list by scanning file system and annotating frames.")
     with open(pos_frames_file_path, "r") as f:
         positive_frames_info = json.load(f)
-    df_combined, target_labels = build_master_frame_df(anns, mode, PersonClassification.LABELS_INPUT_DIR, positive_frames_info)
+    df_combined, target_labels = build_master_frame_df(positive_frames_info, mode, PersonClassification.LABELS_INPUT_DIR)
         
     if df_combined.empty:
         logging.error("No valid frames (positive or negative) created. Exiting.")
