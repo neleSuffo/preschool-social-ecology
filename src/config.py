@@ -83,6 +83,7 @@ class PersonConfig:
         'Child': 0,
         'Teen': 0,
         'Adult': 0,
+        'Dk': 0,
     }
     AGE_GROUP_TO_CLASS_ID_AGE_BINARY = {
         'Inf': 0,
