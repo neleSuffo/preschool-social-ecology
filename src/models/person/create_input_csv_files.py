@@ -118,11 +118,11 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
     label_id_to_string = {v: k for k, v in label_map_csv.items()}
     
     files = defaultdict(list)
-    positive_frames_info = defaultdict(lambda: {label: 0 for label in target_labels})
+    positive_frames_info = {}
     
     for video_id, frame_id, file_name, _, age_group, bbox_json in annotations:
         
-        frame_key = (video_id, frame_id, file_name)
+        frame_key_tuple = (video_id, frame_id, file_name)
         frame_folder = "_".join(file_name.split("_")[:-1])
         img_path = None
         for ext in DataConfig.VALID_EXTENSIONS:
@@ -151,7 +151,9 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
 
             target_label = label_id_to_string.get(yolo_class_id)
             if target_label and target_label in target_labels:
-                positive_frames_info[frame_key][target_label] = 1
+                if frame_key_tuple not in positive_frames_info:
+                    positive_frames_info[frame_key_tuple] = {label: 0 for label in target_labels}
+                positive_frames_info[frame_key_tuple][target_label] = 1
 
         except Exception as e:
             logging.error(f"Error processing {file_name}: {e}")
@@ -163,27 +165,32 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
             output_file = output_dir / f"{file_name}.txt"
             executor.submit(write_annotations, output_file, lines)
             
-    # save positive frames info in output_dir
-    with open(positive_frames_info_path, "w") as f:
-        json.dump(positive_frames_info, f)
+    # Save positive frames info to JSON
+    string_keyed_info = {
+        f"{vid}_{fid}_{fname}": labels for (vid, fid, fname), labels in positive_frames_info.items()
+    }
 
-def build_master_frame_df(positive_frames_info: Dict[Tuple, Dict[str, int]], mode: str) -> Tuple[pd.DataFrame, List[str]]:
+    with open(positive_frames_info_path, "w") as f:
+        json.dump(string_keyed_info, f)
+
+def build_master_frame_df(pos_frames_file_path: str, mode: str, labels_input_dir: str) -> Tuple[pd.DataFrame, List[str]]:
     """
     Build a master DataFrame of all frames (positive and negative) with labels.
     
     Parameters:
     -----------
-    positive_frames_info : Dict[Tuple, Dict[str, int]]
-        Dictionary mapping (video_id, frame_id, file_name) to label info for positive frames.
+    pos_frames_file_path : str
+        Path to the positive frames info JSON file.
     mode : str
         Classification mode: 'age-binary' or 'person-only'.
-        
+    labels_input_dir : str
+        Directory containing the label files.
+
     Returns:
     -----------
     Tuple[pd.DataFrame, List[str]]
         A tuple containing the master DataFrame and the list of target labels.
     """
-    
     if mode == 'age-binary':
         target_labels = PersonConfig.TARGET_LABELS_AGE_BINARY
     elif mode == 'person-only':
@@ -191,12 +198,32 @@ def build_master_frame_df(positive_frames_info: Dict[Tuple, Dict[str, int]], mod
     else:
         raise ValueError(f"Invalid classification_mode: {mode}")
 
+    # --- Load and Deserialize Positive Frames Info (Crucial Fix) ---
+    with open(pos_frames_file_path, "r") as f:
+        string_keyed_info = json.load(f)
+        
+    positive_frames_info = {}
+    for key_str, labels in string_keyed_info.items():
+        # Convert the string key "video_id_frame_id_file_name" back into the Python tuple
+        parts = key_str.rsplit('_', 1) # Split from the right once to separate file_name from IDs
+        file_name = parts[-1]
+        id_parts = parts[0].split('_')
+        
+        try:
+             video_id = int(id_parts[0])
+             frame_id = int(id_parts[1])
+             positive_frames_info[(video_id, frame_id, file_name)] = labels
+        except ValueError:
+             # Handle case where key might be malformed
+             continue
+        
+    annotated_frames_set = set(positive_frames_info.keys())
+    # --- Scan File System for All Frames and Annotate --- 
     conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
     video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
     conn.close()
 
     # Build the set of annotated frames
-    annotated_frames_set = set(positive_frames_info.keys())
     final_data_list = []
     
     # Iterate through all videos in the database
@@ -434,9 +461,7 @@ def main():
         
     # 2. Build master frame list by scanning file system and annotating frames
     logging.info("Building master frame list by scanning file system and annotating frames.")
-    with open(pos_frames_file_path, "r") as f:
-        positive_frames_info = json.load(f)
-    df_combined, target_labels = build_master_frame_df(positive_frames_info, mode, PersonClassification.LABELS_INPUT_DIR)
+    df_combined, target_labels = build_master_frame_df(pos_frames_file_path, mode, PersonClassification.LABELS_INPUT_DIR)
         
     if df_combined.empty:
         logging.error("No valid frames (positive or negative) created. Exiting.")
