@@ -114,9 +114,12 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
         label_map_csv = PersonConfig.MODEL_CLASS_ID_TO_LABEL_PERSON_ONLY
     else:
         raise ValueError(f"Invalid mode: {mode}")
-    
-    label_id_to_string = {v: k for k, v in label_map_csv.items()}
-    
+
+    # label_map_csv maps model class id -> label string (e.g., {0: 'person'})
+    # keep a mapping from class id -> label string for lookups below
+    label_id_to_string = {int(k): v for k, v in label_map_csv.items()}
+
+    logging.info(f"Saving annotations: received {len(annotations)} annotation rows")
     files = defaultdict(list)
     positive_frames_info = {}
     
@@ -149,7 +152,7 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
             yolo_line = f"{yolo_class_id} " + " ".join(map(str, yolo_bbox)) + "\n"
             files[file_name].append(yolo_line)
 
-            target_label = label_id_to_string.get(yolo_class_id)
+            target_label = label_id_to_string.get(int(yolo_class_id))
             if target_label and target_label in target_labels:
                 if frame_key_tuple not in positive_frames_info:
                     positive_frames_info[frame_key_tuple] = {label: 0 for label in target_labels}
@@ -158,22 +161,38 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
         except Exception as e:
             logging.error(f"Error processing {file_name}: {e}")
 
-    # Save YOLO annotation files
+    # Save YOLO annotation files (wait for all writes to finish so any file-system errors are surfaced)
     logging.info(f"Writing {len(files)} YOLO label files to {output_dir}...")
+    futures = []
     with ThreadPoolExecutor(max_workers=4) as executor:
         for file_name, lines in files.items():
             output_file = output_dir / f"{file_name}.txt"
-            executor.submit(write_annotations, output_file, lines)
-            
+            futures.append(executor.submit(write_annotations, output_file, lines))
+
+    # ensure all file writes completed (and propagate exceptions if any)
+    for fut in futures:
+        try:
+            fut.result()
+        except Exception as e:
+            logging.error(f"Error writing YOLO file: {e}")
+
     # Save positive frames info to JSON
+    logging.info(f"Collected {len(positive_frames_info)} positive frames to save")
     string_keyed_info = {
         f"{vid}_{fid}_{fname}": labels for (vid, fid, fname), labels in positive_frames_info.items()
     }
 
-    with open(positive_frames_info_path, "w") as f:
-        json.dump(string_keyed_info, f)
+    # Ensure parent directory exists and write safely
+    try:
+        positive_frames_info_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(positive_frames_info_path, "w") as f:
+            json.dump(string_keyed_info, f, indent=2)
+            f.flush()
+        logging.info(f"Saved positive frames info to {positive_frames_info_path} ({positive_frames_info_path.stat().st_size} bytes)")
+    except Exception as e:
+        logging.error(f"Failed to write positive frames info JSON: {e}")
 
-def build_master_frame_df(pos_frames_file_path: str, mode: str, labels_input_dir: str) -> Tuple[pd.DataFrame, List[str]]:
+def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.DataFrame, List[str]]:
     """
     Build a master DataFrame of all frames (positive and negative) with labels.
     
@@ -183,8 +202,6 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str, labels_input_dir
         Path to the positive frames info JSON file.
     mode : str
         Classification mode: 'age-binary' or 'person-only'.
-    labels_input_dir : str
-        Directory containing the label files.
 
     Returns:
     -----------
@@ -201,21 +218,25 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str, labels_input_dir
     # --- Load and Deserialize Positive Frames Info (Crucial Fix) ---
     with open(pos_frames_file_path, "r") as f:
         string_keyed_info = json.load(f)
-        
+
     positive_frames_info = {}
     for key_str, labels in string_keyed_info.items():
-        # Convert the string key "video_id_frame_id_file_name" back into the Python tuple
-        parts = key_str.rsplit('_', 1) # Split from the right once to separate file_name from IDs
-        file_name = parts[-1]
-        id_parts = parts[0].split('_')
-        
+        # Keys were saved as "{video_id}_{frame_id}_{file_name}" where file_name
+        # itself contains underscores. Split on '_' and treat the first two
+        # tokens as the IDs and the remainder as the full file_name.
+        parts = key_str.split('_')
+        if len(parts) < 3:
+            logging.warning(f"Malformed positive_frames_info key: {key_str}")
+            continue
         try:
-             video_id = int(id_parts[0])
-             frame_id = int(id_parts[1])
-             positive_frames_info[(video_id, frame_id, file_name)] = labels
+            video_id = int(parts[0])
+            frame_id = int(parts[1])
         except ValueError:
-             # Handle case where key might be malformed
-             continue
+            logging.warning(f"Non-integer IDs in positive_frames_info key: {key_str}")
+            continue
+
+        file_name = "_".join(parts[2:])
+        positive_frames_info[(video_id, frame_id, file_name)] = labels
         
     annotated_frames_set = set(positive_frames_info.keys())
     # --- Scan File System for All Frames and Annotate --- 
@@ -460,8 +481,7 @@ def main():
         save_annotations(anns, PersonClassification.LABELS_INPUT_DIR, mode, pos_frames_file_path)
         
     # 2. Build master frame list by scanning file system and annotating frames
-    logging.info("Building master frame list by scanning file system and annotating frames.")
-    df_combined, target_labels = build_master_frame_df(pos_frames_file_path, mode, PersonClassification.LABELS_INPUT_DIR)
+    df_combined, target_labels = build_master_frame_df(pos_frames_file_path, mode)
         
     if df_combined.empty:
         logging.error("No valid frames (positive or negative) created. Exiting.")
