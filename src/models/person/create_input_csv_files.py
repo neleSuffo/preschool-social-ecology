@@ -10,7 +10,8 @@ from typing import List, Dict, Tuple
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 from constants import BasePaths, DataPaths, PersonClassification
 from config import DataConfig, PersonConfig
 
@@ -116,10 +117,8 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
         raise ValueError(f"Invalid mode: {mode}")
 
     # label_map_csv maps model class id -> label string (e.g., {0: 'person'})
-    # keep a mapping from class id -> label string for lookups below
     label_id_to_string = {int(k): v for k, v in label_map_csv.items()}
 
-    logging.info(f"Saving annotations: received {len(annotations)} annotation rows")
     files = defaultdict(list)
     positive_frames_info = {}
     
@@ -161,20 +160,23 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
         except Exception as e:
             logging.error(f"Error processing {file_name}: {e}")
 
-    # Save YOLO annotation files (wait for all writes to finish so any file-system errors are surfaced)
-    logging.info(f"Writing {len(files)} YOLO label files to {output_dir}...")
-    futures = []
+    # Save YOLO annotation files (write in parallel and show progress)
+    total_files = len(files)
+    logging.info(f"Writing {total_files} YOLO label files to {output_dir}...")
+    futures_map = {}
     with ThreadPoolExecutor(max_workers=4) as executor:
         for file_name, lines in files.items():
             output_file = output_dir / f"{file_name}.txt"
-            futures.append(executor.submit(write_annotations, output_file, lines))
+            fut = executor.submit(write_annotations, output_file, lines)
+            futures_map[fut] = output_file
 
-    # ensure all file writes completed (and propagate exceptions if any)
-    for fut in futures:
-        try:
-            fut.result()
-        except Exception as e:
-            logging.error(f"Error writing YOLO file: {e}")
+        # iterate as futures complete and update progress bar
+        for _ in tqdm(as_completed(futures_map), total=total_files, desc="Writing YOLO files", unit="file"):
+            try:
+                # retrieving result will re-raise exceptions from the worker
+                _.result()
+            except Exception as e:
+                logging.error(f"Error writing YOLO file: {e}")
 
     # Save positive frames info to JSON
     logging.info(f"Collected {len(positive_frames_info)} positive frames to save")
