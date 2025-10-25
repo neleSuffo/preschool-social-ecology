@@ -162,7 +162,6 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
 
     # Save YOLO annotation files (write in parallel and show progress)
     total_files = len(files)
-    logging.info(f"Writing {total_files} YOLO label files to {output_dir}...")
     futures_map = {}
     with ThreadPoolExecutor(max_workers=4) as executor:
         for file_name, lines in files.items():
@@ -179,7 +178,6 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
                 logging.error(f"Error writing YOLO file: {e}")
 
     # Save positive frames info to JSON
-    logging.info(f"Collected {len(positive_frames_info)} positive frames to save")
     string_keyed_info = {
         f"{vid}_{fid}_{fname}": labels for (vid, fid, fname), labels in positive_frames_info.items()
     }
@@ -241,6 +239,9 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.Data
         positive_frames_info[(video_id, frame_id, file_name)] = labels
         
     annotated_frames_set = set(positive_frames_info.keys())
+    # keep a small sample for debugging
+    sample_positive_keys = list(annotated_frames_set)[:10]
+    logging.debug(f"Sample positive keys: {sample_positive_keys}")
     # --- Scan File System for All Frames and Annotate --- 
     conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
     video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
@@ -248,6 +249,8 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.Data
 
     # Build the set of annotated frames
     final_data_list = []
+    matched_positive_count = 0
+    seen_positive_keys = set()
     
     # Iterate through all videos in the database
     for _, row in video_map.iterrows():
@@ -280,6 +283,8 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.Data
             # Check if this frame was marked positive in the annotations
             if frame_key in annotated_frames_set:
                 entry.update(positive_frames_info[frame_key])
+                matched_positive_count += 1
+                seen_positive_keys.add(frame_key)
             else:
                 # Negative frame: apply 0s for all target classification labels
                 entry.update({label: 0 for label in target_labels})
@@ -287,6 +292,10 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.Data
             final_data_list.append(entry)
 
     df_full_frames_with_labels = pd.DataFrame(final_data_list)
+    logging.info(f"Matched {matched_positive_count} positive frames against filesystem frames")
+    if matched_positive_count == 0 and len(annotated_frames_set) > 0:
+        missing = list(annotated_frames_set - seen_positive_keys)[:10]
+        logging.warning(f"No annotated frames matched any image files. Sample missing keys: {missing}")
     
     return df_full_frames_with_labels, target_labels
 
@@ -303,13 +312,14 @@ def build_sequential_dataset(df_combined: pd.DataFrame, train_ids: List[str], va
     conn.close()
     
     video_map['child_id'] = video_map['file_name'].apply(get_child_id_from_filename)
-    
-    df_with_child_id = df_combined.merge(
-        video_map[['video_id', 'file_name', 'child_id']], 
-        on=['video_id', 'file_name'], 
-        how='left'
-    )
-    df_with_child_id.dropna(subset=['child_id'], inplace=True)
+
+    # Map child_id from video_id (frame-level file_name contains frame suffix and
+    # therefore will not match the video_map 'file_name'). Using video_id avoids
+    # mismatches between frame-level stems and video filenames.
+    videoid_to_child = video_map.set_index('video_id')['child_id'].to_dict()
+    df_combined = df_combined.copy()
+    df_combined['child_id'] = df_combined['video_id'].map(videoid_to_child)
+    df_with_child_id = df_combined.dropna(subset=['child_id'])
     
     def filter_split_data(child_ids: List[str]) -> pd.DataFrame:
         df_split = df_with_child_id[df_with_child_id['child_id'].isin(child_ids)].copy()
@@ -333,8 +343,12 @@ def split_by_child_id(df_combined: pd.DataFrame, target_labels: List[str], train
     conn.close()
 
     video_map['child_id'] = video_map['file_name'].apply(get_child_id_from_filename)
-    
-    df = df_combined.merge(video_map[['video_id', 'file_name', 'child_id']], on=['video_id', 'file_name'], how='left')
+
+    # Map child_id by video_id to avoid mismatches between frame-level file_name
+    # (which includes the frame number) and the video-level file_name in the DB.
+    videoid_to_child = video_map.set_index('video_id')['child_id'].to_dict()
+    df = df_combined.copy()
+    df['child_id'] = df['video_id'].map(videoid_to_child)
     df.dropna(subset=['child_id'], inplace=True)
 
     df_positive = df[df[target_labels].any(axis=1)].copy() 
@@ -489,6 +503,7 @@ def main():
         logging.error("No valid frames (positive or negative) created. Exiting.")
         return
 
+    print(f"df_combined: {df_combined.head(10)}")
     # Step 3: Split data by child IDs (Balancing is based on positive frames only)
     logging.info(f"Splitting children by IDs based on positive frame distribution...")
     train_ids, val_ids, test_ids = split_by_child_id(df_combined, target_labels)
