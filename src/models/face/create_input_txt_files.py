@@ -14,6 +14,8 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+from pandera import parser
+
 from constants import DataPaths, BasePaths, FaceDetection
 from config import FaceConfig, DataConfig
 
@@ -1313,8 +1315,6 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
         input_dir = FaceDetection.INPUT_DIR.parent / (FaceDetection.INPUT_DIR.name + "_retrain")
     else:
         input_dir = FaceDetection.INPUT_DIR
-
-    labels_input_dir = input_dir.parent / (FaceDetection.LABELS_INPUT_DIR.name + "_retrain") if data_distribution_file else annotation_folder
     
     try:
         # --- 2. Get All Positive Images and Negative Candidates ---
@@ -1337,11 +1337,11 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
             id_data = parse_retrain_file(data_distribution_file)
             train, val, test, df_train, df_val, df_test = retrain_split_by_child_id(
                 df, negative_candidates, id_data['train_ids'], id_data['val_ids'], id_data['test_ids'],
-                hard_neg_file, add_first_minutes, minutes, labels_input_dir, mode
+                hard_neg_file, annotation_folder, mode
             )
-        else:
+        elsed:
             train, val, test, df_train, df_val, df_test = split_by_child_id(
-                df, negative_candidates, len(positive_images), add_first_minutes, minutes, labels_input_dir, mode
+                df, negative_candidates, len(positive_images), add_first_minutes, minutes, annotation_folder, mode
             )
 
         # Get the IDs for logging
@@ -1386,35 +1386,37 @@ def main():
                        help='Number of minutes from the beginning to add to train/val')
     parser.add_argument('--fetch-annotations', action='store_true',
                        help='Fetch and save annotations from database (default: False)')
-    parser.add_argument('--retrain', default=None, type=bool,
-                       help='Whether to use retrain mode with fixed IDs (default: None)')
+    parser.add_argument('--retrain', action='store_true', default=False,
+                       help='Activate retrain mode using fixed IDs and hard negative files defined in FaceConfig.')
     args = parser.parse_args()
     
+    data_distribution_file = FaceConfig.DATA_DISTRIBUTION_PATH if args.retrain else None
+    hard_neg_file = FaceConfig.RETRAIN_FALSE_POSITIVES_PATH if args.retrain else None
+    is_retrain_mode = args.retrain
+
+    if is_retrain_mode:
+        logging.info("Retrain mode activated. Using fixed IDs and hard negative files from config.")
+        
     if args.add_first_minutes:
         logging.info(f"First minutes mode enabled: adding first {args.minutes} minutes of test children to train/val")
     
     try:            
         if args.fetch_annotations:
+            # Output annotations to the correct location (standard or retrain folder)
+            labels_output_dir = FaceDetection.LABELS_INPUT_DIR
             anns = fetch_all_annotations(FaceConfig.DATABASE_CATEGORY_IDS)
-            save_annotations(anns, output_dir=FaceDetection.LABELS_INPUT_DIR, mode=args.mode)
-            
-        if args.retrain:
-            annotation_folder = FaceDetection.LABELS_INPUT_DIR.parent / (FaceDetection.LABELS_INPUT_DIR.name + "_retrain")
-            # RETRAIN MODE, path to retrain false positives file
-            hard_neg_file = FaceConfig.RETRAIN_FALSE_POSITIVES_PATH
-            data_distribution_file = FaceConfig.DATA_DISTRIBUTION_PATH
-            split_data(annotation_folder, 
-                       add_first_minutes=args.add_first_minutes, 
-                       minutes=args.minutes,
-                       mode=args.mode,
-                       data_distribution_file=data_distribution_file,
-                       hard_neg_file=hard_neg_file)
-        else:
-            split_data(FaceDetection.LABELS_INPUT_DIR, 
-                       add_first_minutes=args.add_first_minutes, 
-                       minutes=args.minutes,
-                       mode=args.mode)
+            save_annotations(anns, output_dir=labels_output_dir, mode=args.mode)
+        
+        split_data(FaceDetection.LABELS_INPUT_DIR, 
+                   add_first_minutes=args.add_first_minutes, 
+                   minutes=args.minutes,
+                   mode=args.mode,
+                   data_distribution_file=data_distribution_file, # Will be Path or None
+                   hard_neg_file=hard_neg_file)                 # Will be Path or None
                                    
     except Exception as e:
         logging.error(f"Failed: {e}")
         raise
+                                   
+if __name__ == "__main__":
+    main()
