@@ -566,7 +566,8 @@ def get_all_frames_for_children(child_ids: List[str], image_folder: Path) -> Lis
 def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ids: List[str], val_ids: List[str], test_ids: List[str], hard_neg_file: Path, labels_input_dir: Path = None, mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Splits data using FIXED child IDs loaded from a file, incorporates Hard Negatives 
-    into the training set, and samples the remaining negative frames.
+    into the training set, and samples the remaining negative frames. 
+    The script copies frames and labels for validation and testing from the existing training set.
     
     Parameters
     ----------
@@ -618,22 +619,20 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
     df.dropna(subset=['child_id'], inplace=True)
 
     # --- Prepare Split DataFrames (Positive Frames Only) ---
-    train_df_pos = df[df["child_id"].isin(train_ids) & (df["has_annotation"] == True)].copy()
-    val_df_pos = df[df["child_id"].isin(val_ids) & (df["has_annotation"] == True)].copy()
-    
-    # Test set is initialized with ALL frames from test children
+    # The DF only contains positive frames (from get_class_distribution), so we slice by ID.
+    train_df_pos = df[df["child_id"].isin(train_ids)].copy()
+
+    # Val/Test DF slices are necessary only to generate statistics later.
+    val_df = df[df["child_id"].isin(val_ids)].copy()
     test_df = df[df["child_id"].isin(test_ids)].copy()
     
-    class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
-    
+    class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]    
     # --- 2. Compile Negative Pools and Load Hard Negatives ---
     
-    train_negative_candidates = []
-    val_negative_candidates = []
     hard_negative_stems = set()
 
-    # Load Hard Negatives from the provided file
     try:
+        # Load Hard Negatives from the provided file
         hard_neg_content = hard_neg_file.read_text().splitlines()
         hard_negative_stems = {line.strip() for line in hard_neg_content if line.strip()}
         logging.info(f"Loaded {len(hard_negative_stems)} Hard Negative image stems.")
@@ -647,21 +646,18 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
     hard_negatives = []
     soft_negatives = []
 
-    # Filter negative candidates into Hard (in file) and Soft (not in file)
+   # Filter negative candidates into Hard (in file) and Soft (not in file)
     for video_name, candidates in negative_candidates.items():
         child_id = get_child_id_from_video_name(video_name)
         
-        for image_path, image_id in candidates:
-            filename = Path(image_path).stem
-            
-            if child_id in train_ids:
+        # Only process candidates belonging to the Training IDs
+        if child_id in train_ids:
+            for image_path, image_id in candidates:
+                filename = Path(image_path).stem
                 if filename in hard_negative_stems:
                     hard_negatives.append((image_path, image_id))
                 else:
                     soft_negatives.append((image_path, image_id))
-            
-            elif child_id in val_ids:
-                val_negative_candidates.append((image_path, image_id))
 
     logging.info(f"Train negative pool: {len(hard_negatives)} Hard Negatives, {len(soft_negatives)} Soft Negatives.")
     
@@ -685,17 +681,7 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
             sampled_train_neg.extend(soft_negatives)
             logging.warning(f"Train: Only {len(sampled_train_neg)} negative frames available after hard negs, target was {target_train_neg}.")
     
-    # VAL NEGATIVE SAMPLING (Random sampling retained)
-    num_val_pos = len(val_df_pos)
-    target_val_neg = int(num_val_pos * FaceConfig.NEGATIVE_SAMPLING_RATIO)
-    
-    if len(val_negative_candidates) >= target_val_neg:
-        sampled_val_neg = random.sample(val_negative_candidates, target_val_neg)
-    else:
-        sampled_val_neg = val_negative_candidates
-        logging.warning(f"Val: Only {len(sampled_val_neg)} negative frames available, target was {target_val_neg}.")
-
-    # --- 4. Finalize DataFrames ---
+    # --- 4. Finalize Train DataFrame ---
     
     def create_neg_df(sampled_neg_list, child_id_getter, class_cols):
         entries = []
@@ -711,13 +697,18 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
         return pd.DataFrame(entries)
 
     train_neg_df = create_neg_df(sampled_train_neg, get_child_id_from_filename, class_columns)
-    val_neg_df = create_neg_df(sampled_val_neg, get_child_id_from_filename, class_columns)
     
+    # Final Train DataFrame: Positives + HNM/Soft Negatives
     train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
-    val_df = pd.concat([val_df_pos, val_neg_df], ignore_index=True)
     
-    return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
-            train_df, val_df, test_df)
+    # For Val/Test, we return all filenames that belong to their IDs,
+    # but the actual file movement will copy the existing directories.
+    val_df_all_frames = df[df["child_id"].isin(val_ids)].copy()
+    test_df_all_frames = df[df["child_id"].isin(test_ids)].copy()
+
+    # The returned lists are now only for the files we MUST move (Train) or files that exist (Val/Test).
+    return (train_df['filename'].tolist(), val_df_all_frames['filename'].tolist(), test_df_all_frames['filename'].tolist(),
+            train_df, val_df_all_frames, test_df_all_frames)
     
 def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, add_first_minutes: bool = False, minutes: int = 5, labels_input_dir: Path = None, mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -1313,6 +1304,7 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
     # --- 1. Determine Output Directory ---
     if data_distribution_file:
         input_dir = FaceDetection.INPUT_DIR.parent / (FaceDetection.INPUT_DIR.name + "_retrain")
+        original_input_dir = FaceDetection.INPUT_DIR
     else:
         input_dir = FaceDetection.INPUT_DIR
     
@@ -1333,16 +1325,42 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
         
         # --- 4. Select Splitting Strategy ---
         if data_distribution_file:
-            # RETRAIN MODE: Load fixed IDs and use HNM sampling
+            # RETRAIN MODE: Load fixed IDs, use HNM sampling, and COPY Val/Test
             id_data = parse_retrain_file(data_distribution_file)
             train, val, test, df_train, df_val, df_test = retrain_split_by_child_id(
                 df, negative_candidates, id_data['train_ids'], id_data['val_ids'], id_data['test_ids'],
-                hard_neg_file, annotation_folder, mode
-            )
-        elsed:
+                            hard_neg_file, mode
+            
+            logging.info("Copying original fixed Val and Test directories to the retrain folder...")
+            for split_name in ["val", "test"]:
+                original_images_dir = original_input_dir / "images" / split_name
+                original_labels_dir = original_input_dir / "labels" / split_name
+                
+                target_images_dir = input_dir / "images" / split_name
+                target_labels_dir = input_dir / "labels" / split_name
+                
+                # Use rmtree to delete and then copytree to create fresh copies
+                if target_images_dir.exists():
+                    shutil.rmtree(target_images_dir)
+                if target_labels_dir.exists():
+                    shutil.rmtree(target_labels_dir)
+                    
+                if original_images_dir.exists():
+                    shutil.copytree(original_images_dir, target_images_dir)
+                if original_labels_dir.exists():
+                    shutil.copytree(original_labels_dir, target_labels_dir)
+            
+            logging.info("Val and Test sets copied and remain immutable.")
+            
+            # We only need to move the new Training set files
+            splits_to_move = [("train", train)]
+                        )
+        else:
+            splits_to_move = []
             train, val, test, df_train, df_val, df_test = split_by_child_id(
                 df, negative_candidates, len(positive_images), add_first_minutes, minutes, annotation_folder, mode
             )
+            splits_to_move = [("train", train), ("val", val), ("test", test)]
 
         # Get the IDs for logging
         train_ids = df_train['child_id'].unique().tolist() if 'child_id' in df_train.columns else []
@@ -1353,7 +1371,7 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
         generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids, 
                                 add_first_minutes=add_first_minutes, minutes=minutes, mode=mode)
         
-        for split_name, split_set in [("train", train), ("val", val), ("test", test)]:
+        for split_name, split_set in splits_to_move:
             if split_set:
                 successful, failed = move_images(
                     image_names=split_set,
