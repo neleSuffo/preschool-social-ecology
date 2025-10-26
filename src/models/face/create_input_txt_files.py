@@ -3,7 +3,8 @@ import logging
 import sqlite3
 import cv2
 import re
-import sys
+import json
+import os
 import shutil
 import random
 import pandas as pd
@@ -1176,9 +1177,6 @@ def split_data(annotation_folder: Path, mode: str = "face-only", data_distributi
             for child_id, frames in negative_candidates.items():
                 f.write(f"{child_id}: {frames}\n")
         logging.info(f"Negative candidates saved to {neg_cand_file}")
-
-        # stop executing after saving negative candidates
-        return
         
         if not positive_images:
             logging.error("No annotated images found.")
@@ -1254,6 +1252,44 @@ def split_data(annotation_folder: Path, mode: str = "face-only", data_distributi
     
     logging.info(f"Completed dataset preparation for face detection in mode: {mode}")
 
+def generate_false_positive_list():
+    with open(FaceDetection.PREDICTIONS_JSON_PATH, "r") as f:
+        pred = json.load(f)
+        
+    # collect image_ids where category_id == 1
+    image_ids = [d["image_id"] for d in pred if int(d.get("category_id", -1)) == 1]
+    # make unique while preserving order
+    seen = set()
+    pred_frames = []
+    for img in image_ids:
+        if img not in seen:
+            seen.add(img)
+            pred_frames.append(img)
+        
+        
+    # get gt files
+    gt_train_dir = FaceDetection.INPUT_DIR/ "labels/train"
+    
+    gt_frames = []
+
+    for f in os.listdir(gt_train_dir):
+        if f.endswith(".txt"):
+            file_path = os.path.join(gt_train_dir, f)
+            
+            # Check if the file is not empty (ignoring whitespace)
+            with open(file_path, "r") as file:
+                content = file.read().strip()
+                if content:  # only include non-empty annotation files
+                    gt_frames.append(f[:-4])  # remove ".txt"
+    
+    # now from the two lists gt_files , pred_frames give me the list of images that are in pred but not in gt
+    false_positive_frames = [f for f in pred_frames if f not in gt_frames]
+
+    with open(FaceDetection.RETRAIN_FALSE_POSITIVES_PATH, "w") as f:
+        for item in false_positive_frames:
+            f.write(f"{item}\n")
+    logging.info(f"Saved {len(false_positive_frames)} false positive frames to {FaceDetection.RETRAIN_FALSE_POSITIVES_PATH}")
+        
 # ==============================
 # Main
 # ==============================
@@ -1268,13 +1304,15 @@ def main():
                        help='Activate retrain mode using fixed IDs and hard negative files defined in FaceConfig.')
     args = parser.parse_args()
     
-    data_distribution_file = FaceConfig.DATA_DISTRIBUTION_PATH if args.retrain else None
-    hard_neg_file = FaceConfig.RETRAIN_FALSE_POSITIVES_PATH if args.retrain else None
+    data_distribution_file = FaceDetection.DATA_DISTRIBUTION_PATH if args.retrain else None
+    hard_neg_file = FaceDetection.RETRAIN_FALSE_POSITIVES_PATH if args.retrain else None
     is_retrain_mode = args.retrain
 
     if is_retrain_mode:
         logging.info("Retrain mode activated. Using fixed IDs and hard negative files from config.")
             
+        # Generate false positive list first
+        generate_false_positive_list()  
     try:            
         if args.fetch_annotations:
             # Output annotations to the correct location (standard or retrain folder)
