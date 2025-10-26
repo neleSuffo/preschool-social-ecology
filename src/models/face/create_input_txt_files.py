@@ -710,7 +710,7 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
     return (train_df['filename'].tolist(), val_df_all_frames['filename'].tolist(), test_df_all_frames['filename'].tolist(),
             train_df, val_df_all_frames, test_df_all_frames)
     
-def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, add_first_minutes: bool = False, minutes: int = 5, labels_input_dir: Path = None, mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, labels_input_dir: Path = None, mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Splits the DataFrame into training, validation, and test sets using child IDs as the unit, while balancing class distributions.
 
@@ -724,10 +724,6 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
         Dictionary of potential negative frame candidates per video
     train_ratio : float
         Ratio for training split
-    add_first_minutes : bool
-        If True, adds first N minutes of test children to training/validation
-    minutes : int
-        Number of minutes to add from beginning of test children recordings
     labels_input_dir : Path
         Path to labels directory (if None, uses default FaceDetection.LABELS_INPUT_DIR)
     mode : str
@@ -1048,7 +1044,7 @@ def move_images(image_names: list,
     logging.info(f"\nCompleted moving {split_type} images:")    
     return successful, failed
     
-def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, add_first_minutes: bool = False, minutes: int = 5, mode: str = "face-only"):
+def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, mode: str = "face-only"):
     """
     Generates a statistics file with dataset split information, including percentages.
     
@@ -1080,8 +1076,6 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
     with open(file_path, "w") as f:
         f.write(f"Dataset Split Information - {timestamp}\n")
         f.write(f"*** DETECTION MODE: {mode.upper()} ***\n")
-        if add_first_minutes:
-            f.write(f"First {minutes} minutes of test children added to train/val\n")
         f.write("\n")
         
         # Original distribution (before test enhancement)
@@ -1148,7 +1142,7 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
         else:
             f.write("Overlap found: No\n")
 
-def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes: int = 5, mode: str = "face-only", data_distribution_file: Path = None, hard_neg_file: Path = None):
+def split_data(annotation_folder: Path, mode: str = "face-only", data_distribution_file: Path = None, hard_neg_file: Path = None):
     """
     This function prepares the dataset for face detection YOLO training by splitting the images into train, val, and test sets.
     
@@ -1156,10 +1150,6 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
     ----------
     annotation_folder: Path
         Path to the directory containing label files.
-    add_first_minutes : bool
-        If True, adds first N minutes of test children to training/validation
-    minutes : int
-        Number of minutes to add from beginning of test children recordings
     mode: str
         The mode for class mapping ('face-only' or 'age-binary').
     data_distribution_file: Path
@@ -1179,6 +1169,16 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
     try:
         # --- 2. Get All Positive Images and Negative Candidates ---
         positive_images, negative_candidates = get_total_number_of_annotated_frames(annotation_folder)
+        
+        # save negative candidates for debugging
+        neg_cand_file = BasePaths.LOGGING_DIR / f"negative_candidates_face_det_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(neg_cand_file, 'w') as f:
+            for child_id, frames in negative_candidates.items():
+                f.write(f"{child_id}: {frames}\n")
+        logging.info(f"Negative candidates saved to {neg_cand_file}")
+
+        # stop executing after saving negative candidates
+        return
         
         if not positive_images:
             logging.error("No annotated images found.")
@@ -1222,12 +1222,9 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
             
             # We only need to move the new Training set files
             splits_to_move = [("train", train)]
-                        )
         else:
             splits_to_move = []
-            train, val, test, df_train, df_val, df_test = split_by_child_id(
-                df, negative_candidates, len(positive_images), add_first_minutes, minutes, annotation_folder, mode
-            )
+            train, val, test, df_train, df_val, df_test = split_by_child_id(df, negative_candidates, len(positive_images), annotation_folder, mode)
             splits_to_move = [("train", train), ("val", val), ("test", test)]
 
         # Get the IDs for logging
@@ -1236,8 +1233,7 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
         test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
 
         # --- 5. Generate Statistics and Move Files ---
-        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids, 
-                                add_first_minutes=add_first_minutes, minutes=minutes, mode=mode)
+        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids, mode=mode)
         
         for split_name, split_set in splits_to_move:
             if split_set:
@@ -1266,10 +1262,6 @@ def main():
     parser = argparse.ArgumentParser(description='Create input files for face detection YOLO training')
     parser.add_argument('--mode', choices=["face-only", "age-binary"], default="face-only",
                        help='Select the detection mode')
-    parser.add_argument('--add-first-minutes', action='store_true', 
-                       help='Add first N minutes of test children recordings to training/validation sets')
-    parser.add_argument('--minutes', type=int, default=5, # Added default
-                       help='Number of minutes from the beginning to add to train/val')
     parser.add_argument('--fetch-annotations', action='store_true',
                        help='Fetch and save annotations from database (default: False)')
     parser.add_argument('--retrain', action='store_true', default=False,
@@ -1282,10 +1274,7 @@ def main():
 
     if is_retrain_mode:
         logging.info("Retrain mode activated. Using fixed IDs and hard negative files from config.")
-        
-    if args.add_first_minutes:
-        logging.info(f"First minutes mode enabled: adding first {args.minutes} minutes of test children to train/val")
-    
+            
     try:            
         if args.fetch_annotations:
             # Output annotations to the correct location (standard or retrain folder)
@@ -1294,8 +1283,6 @@ def main():
             save_annotations(anns, output_dir=labels_output_dir, mode=args.mode)
         
         split_data(FaceDetection.LABELS_INPUT_DIR, 
-                   add_first_minutes=args.add_first_minutes, 
-                   minutes=args.minutes,
                    mode=args.mode,
                    data_distribution_file=data_distribution_file, # Will be Path or None
                    hard_neg_file=hard_neg_file)                 # Will be Path or None
