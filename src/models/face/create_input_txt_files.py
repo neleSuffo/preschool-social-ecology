@@ -868,12 +868,13 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
     train_df_pos = df[df["child_id"].isin(train_ids) & (df["has_annotation"] == True)].copy()
     val_df_pos = df[df["child_id"].isin(val_ids) & (df["has_annotation"] == True)].copy()
     
-    # Test set still gets ALL frames from assigned children for true imbalance representation
+    # Test DF will be built later to include ALL frames from test children
     test_df = df[df["child_id"].isin(test_ids)].copy() 
 
     # 2b. Compile negative pools for Train and Val (Uses negative_candidates passed to the function)
     train_negative_candidates = []
     val_negative_candidates = []
+    test_negative_candidates = []
     
     def get_child_id_from_video_name(video_name):
         match = re.search(r'id(\d+)', video_name)
@@ -885,29 +886,37 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
             train_negative_candidates.extend(candidates)
         elif child_id in val_ids:
             val_negative_candidates.extend(candidates)
+        elif child_id in test_ids:
+            test_negative_candidates.extend(candidates)
                 
     # 2c. Apply 75% negative sampling to Train and Val sets
     random.seed(DataConfig.RANDOM_SEED)
     
     # TRAIN NEGATIVE SAMPLING
+    # 75% of positive samples
     num_train_pos = len(train_df_pos)
     target_train_neg = int(num_train_pos * FaceConfig.NEGATIVE_SAMPLING_RATIO)
-    
+
     if len(train_negative_candidates) >= target_train_neg:
         sampled_train_neg = random.sample(train_negative_candidates, target_train_neg)
     else:
         sampled_train_neg = train_negative_candidates
         logging.warning(f"Train: Only {len(sampled_train_neg)} negative frames available, target was {target_train_neg}.")
-
+    
     # VAL NEGATIVE SAMPLING
+    # 75% of positive samples
     num_val_pos = len(val_df_pos)
     target_val_neg = int(num_val_pos * FaceConfig.NEGATIVE_SAMPLING_RATIO)
-    
+
     if len(val_negative_candidates) >= target_val_neg:
         sampled_val_neg = random.sample(val_negative_candidates, target_val_neg)
     else:
         sampled_val_neg = val_negative_candidates
         logging.warning(f"Val: Only {len(sampled_val_neg)} negative frames available, target was {target_val_neg}.")
+
+    # TEST NEGATIVE SAMPLING
+    # For test set, we include ALL negative candidates to reflect real-world distribution
+    # No sampling needed, we take all test_negative_candidates
 
     # 2d. Convert sampled negative list to DataFrame rows
     def create_neg_df(sampled_neg_list, child_id_getter, class_cols):
@@ -925,156 +934,15 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
 
     train_neg_df = create_neg_df(sampled_train_neg, get_child_id_from_filename, class_columns)
     val_neg_df = create_neg_df(sampled_val_neg, get_child_id_from_filename, class_columns)
+    test_neg_df = create_neg_df(test_negative_candidates, get_child_id_from_filename, class_columns)
     
     # 2e. Finalize Train and Val DataFrames
     train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
     val_df = pd.concat([val_df_pos, val_neg_df], ignore_index=True)
-    
-    # --- 3. Handle First N Minutes and Final Test Set Enhancement (retained) ---
-    
-    first_minutes_train_frames = []
-    first_minutes_val_frames = []
-    
-    if add_first_minutes:
-        
-        first_minutes_train_frames, first_minutes_val_frames = get_first_n_minutes_frames(
-            test_ids, FaceDetection.IMAGES_INPUT_DIR, minutes
-        )
-        
-        # Add first minutes frames to training set
-        if first_minutes_train_frames:
-            additional_train_entries = []
-            for image_path, image_id in first_minutes_train_frames:
-                image_file = Path(image_path)
-                if image_file.stem not in train_df['filename'].values:
-                    annotation_file = labels_input_dir / f"{image_file.stem}.txt"
-                    has_annotation = annotation_file.exists() and annotation_file.stat().st_size > 0
-                    
-                    entry = {
-                        "filename": image_file.stem,
-                        "id": image_id,
-                        "has_annotation": has_annotation,
-                        "child_id": get_child_id_from_filename(image_file.stem)
-                    }
-                    
-                    labels = []
-                    if has_annotation:
-                        try:
-                            with open(annotation_file, 'r') as f:
-                                content = f.read().strip()
-                                if content:
-                                    lines = content.split('\n')
-                                    class_ids = {int(line.split()[0]) for line in lines if line.strip()}
-                                    labels = [id_to_label_map[cid] for cid in class_ids if cid in id_to_label_map]
-                        except Exception as e:
-                            logging.warning(f"Error reading annotation file {annotation_file}: {e}")
-                    
-                    for class_name in class_columns:
-                        entry[class_name] = 1 if class_name in labels else 0
-                    
-                    additional_train_entries.append(entry)
-            
-            if additional_train_entries:
-                additional_train_df = pd.DataFrame(additional_train_entries)
-                train_df = pd.concat([train_df, additional_train_df], ignore_index=True)
-        
-        # Add first minutes frames to validation set
-        if first_minutes_val_frames:
-            additional_val_entries = []
-            for image_path, image_id in first_minutes_val_frames:
-                image_file = Path(image_path)
-                if image_file.stem not in val_df['filename'].values:
-                    annotation_file = labels_input_dir / f"{image_file.stem}.txt"
-                    has_annotation = annotation_file.exists() and annotation_file.stat().st_size > 0
-                    
-                    entry = {
-                        "filename": image_file.stem,
-                        "id": image_id,
-                        "has_annotation": has_annotation,
-                        "child_id": get_child_id_from_filename(image_file.stem)
-                    }
-                    
-                    labels = []
-                    if has_annotation:
-                        try:
-                            with open(annotation_file, 'r') as f:
-                                content = f.read().strip()
-                                if content:
-                                    lines = content.split('\n')
-                                    class_ids = {int(line.split()[0]) for line in lines if line.strip()}
-                                    labels = [id_to_label_map[cid] for cid in class_ids if cid in id_to_label_map]
-                        except Exception as e:
-                            logging.warning(f"Error reading annotation file {annotation_file}: {e}")
-                    
-                    for class_name in class_columns:
-                        entry[class_name] = 1 if class_name in labels else 0
-                    
-                    additional_val_entries.append(entry)
-            
-            if additional_val_entries:
-                additional_val_df = pd.DataFrame(additional_val_entries)
-                val_df = pd.concat([val_df, additional_val_df], ignore_index=True)
-
-    # For test set: Add ALL frames from videos that have annotations for test children    
-    test_videos_with_annotations = set()
-    for filename in df[df['child_id'].isin(test_ids) & (df['has_annotation'] == True)]['filename']:
-        video_name = "_".join(filename.split("_")[:-1])
-        test_videos_with_annotations.add(video_name)
-    
-    first_minutes_frame_names = set()
-    if add_first_minutes:
-        for image_path, _ in first_minutes_train_frames + first_minutes_val_frames:
-            first_minutes_frame_names.add(Path(image_path).stem)
-    
-    # Add ALL frames from videos that have annotations (not just annotated frames)
-    additional_entries = []
-    for video_name in test_videos_with_annotations:
-        video_path = FaceDetection.IMAGES_INPUT_DIR / video_name
-        if video_path.exists() and video_path.is_dir():
-            for frame in video_path.iterdir():
-                if frame.is_file() and frame.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-                    parts = frame.name.split("_")
-                    if len(parts) > 3 and parts[3].startswith('id'):
-                        image_id = parts[3].replace("id", "")
-                    else:
-                        image_id = frame.stem
-                    
-                    if (frame.stem not in test_df['filename'].values and 
-                        frame.stem not in first_minutes_frame_names):
-                        
-                        annotation_file = labels_input_dir / f"{frame.stem}.txt"
-                        has_annotation = annotation_file.exists() and annotation_file.stat().st_size > 0
-                        
-                        entry = {
-                            "filename": frame.stem,
-                            "id": image_id,
-                            "has_annotation": has_annotation,
-                            "child_id": get_child_id_from_filename(frame.stem)
-                        }
-                        
-                        labels = []
-                        if has_annotation:
-                            try:
-                                with open(annotation_file, 'r') as f:
-                                    content = f.read().strip()
-                                    if content:
-                                        lines = content.split('\n')
-                                        class_ids = {int(line.split()[0]) for line in lines if line.strip()}
-                                        labels = [id_to_label_map[cid] for cid in class_ids if cid in id_to_label_map]
-                            except Exception as e:
-                                logging.warning(f"Error reading annotation file {annotation_file}: {e}")
-                        
-                        for class_name in class_columns:
-                            entry[class_name] = 1 if class_name in labels else 0
-                        
-                        additional_entries.append(entry)
-    
-    if additional_entries:
-        additional_df = pd.DataFrame(additional_entries)
-        test_df = pd.concat([test_df, additional_df], ignore_index=True)
+    test_df = pd.concat([test_df_pos, test_neg_df], ignore_index=True)
 
     return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
-            train_df, val_df, test_df)
+                train_df, val_df, test_df)
 
 def move_images(image_names: list, 
                 split_type: str, 
@@ -1329,7 +1197,7 @@ def split_data(annotation_folder: Path, add_first_minutes: bool = False, minutes
             id_data = parse_retrain_file(data_distribution_file)
             train, val, test, df_train, df_val, df_test = retrain_split_by_child_id(
                 df, negative_candidates, id_data['train_ids'], id_data['val_ids'], id_data['test_ids'],
-                            hard_neg_file, mode
+                            hard_neg_file, mode)
             
             logging.info("Copying original fixed Val and Test directories to the retrain folder...")
             for split_name in ["val", "test"]:
