@@ -10,6 +10,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Evaluate YOLO model for face detection')
     parser.add_argument('--config', type=str, default=str(FaceDetection.DATA_CONFIG_PATH),
                       help=f'Path to YOLO data config file (default: {FaceDetection.DATA_CONFIG_PATH})')
+    parser.add_argument('--iou', type=float, default=0.7,
+                        help='IoU threshold for evaluation (default: 0.7)')
     return parser.parse_args()
 
 def main():
@@ -17,7 +19,7 @@ def main():
     model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
     # Set output directory to parent of trained weights path
     output_dir = Path(FaceDetection.TRAINED_WEIGHTS_PATH).parent.parent
-    folder_name = Path(f"{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+    folder_name = Path(f"{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S_") + args.iou.__str__().replace('.', '_'))
 
     # Determine config file path
     if args.config:
@@ -29,7 +31,8 @@ def main():
         save_json=True,
         plots=True,
         project=output_dir,
-        name=folder_name
+        name=folder_name,
+        iou=args.iou,
     )
 
     # Extract precision and recall
