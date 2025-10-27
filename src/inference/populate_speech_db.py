@@ -120,48 +120,58 @@ def aggregate_and_save_results(snippets: List[Dict], db_cursor: sqlite3.Cursor, 
                 scores[AudioConfig.VALID_RTTM_CLASSES[0]]
             ))
 
-def main():
-    """Main: parse RTTM and insert snippets for each file_id into the DB.
-
-    The RTTM file is expected at AudioClassification.VTC_RTTM_FILE. For each
-    distinct fileID (first field after SPEAKER), the script will attempt to
-    map that fileID to a video_id in the DB via get_video_id(), then insert
-    per-frame AudioClassifications for each snippet.
+def main(selected_videos: List[str]):
+    """
+    Main function to process RTTM data for a list of selected videos.
+    
+    Parameters
+    ----------
+    selected_videos : List[str]
+        List of video stems (filenames without extension) to process.
     """
     rttm_path = Path(AudioClassification.VTC_RTTM_FILE)
-    snippets_by_file = parse_rttm_file_to_snippets(rttm_path)
+    all_snippets_by_file = parse_rttm_file_to_snippets(rttm_path)
 
-    if not snippets_by_file:
+    if not all_snippets_by_file:
         logging.info("No snippets found in RTTM file. Nothing to process.")
         return
 
+    # Create a set of base file stems (without RTTM's file extensions) for quick lookup
+    selected_stems = set(selected_videos)
+    
     # Connect to database
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
     cursor = conn.cursor()
+    
+    processed_count = 0
 
-    for file_id, snippets in snippets_by_file.items():
-        # Try mapping RTTM fileID variants to DB video name (strip extensions if present)
-        candidates = [file_id, file_id.replace('.wav', ''), file_id.replace('.mp4', ''), file_id.replace('.MP4', '')]
-        video_id = None
-        for cand in candidates:
-            video_id = get_video_id(cand, cursor)
-            if video_id is not None:
-                break
+    # Iterate over all RTTM file_ids, but only process if they are in the selected_stems set
+    for rttm_file_id, snippets in all_snippets_by_file.items():
+        
+        # Determine the base stem of the RTTM file_id (e.g., '387058' from '387058.MP4')
+        base_stem = rttm_file_id.split('.')[0]
+        
+        if base_stem not in selected_stems:
+            continue # Skip files not selected by the pipeline
+            
+        # Try mapping the base stem to a video_id in the DB
+        video_id = get_video_id(base_stem, cursor)
 
         if video_id is None:
-            logging.warning(f"Video ID not found for RTTM fileID '{file_id}'. Skipping {len(snippets)} snippets.")
+            logging.warning(f"Video ID not found for base stem '{base_stem}' (RTTM ID: {rttm_file_id}). Skipping.")
             continue
 
         try:
             aggregate_and_save_results(snippets, cursor, video_id)
             conn.commit()
-            logging.info(f"Inserted {len(snippets)} snippets for video_id {video_id} (RTTM fileID: {file_id})")
+            logging.info(f"Inserted {len(snippets)} snippets for video_id {video_id} (Stem: {base_stem})")
+            processed_count += 1
         except Exception as e:
-            logging.error(f"Error inserting snippets for {file_id}: {e}")
+            logging.error(f"Error inserting snippets for {base_stem}: {e}")
             conn.rollback()
 
     conn.close()
-    logging.info("RTTM-based audio classification processing completed")
+    logging.info(f"RTTM-based speech classification processing completed for {processed_count} videos.")
 
 if __name__ == "__main__":
     main()
