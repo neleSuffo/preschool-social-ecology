@@ -164,9 +164,6 @@ class FaceConfig:
     DEEPFACE_BACKEND = "retinaface"
     FINAL_CONFIRMATION_DISTANCE_THRESHOLD = 0.6
     VERIFIED_DISTANCE_THRESHOLD = 0.68
-    
-    RETRAIN_FALSE_POSITIVES_PATH = Path("/home/nele_pauline_suffo/ProcessedData/face_det_input/false_positive_frames.txt")
-    DATA_DISTRIBUTION_PATH = Path("/home/nele_pauline_suffo/outputs/dataset_statistics/split_distribution_face_det_20251023_144007.txt")
 
 class AudioConfig:
     """Configuration for audio classification."""
