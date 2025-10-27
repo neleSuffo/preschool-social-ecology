@@ -1,8 +1,8 @@
 import logging
 import argparse
 import run_face_proximity
-import run_speech_type
-import run_person
+import populate_speech_db as run_speech_type
+#import run_person
 from pathlib import Path
 from setup_interaction_db import main as setup_interaction_db
 from constants import DataPaths
@@ -72,10 +72,10 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
         else:
             models_to_run = models
         
-        # Run selected models
-        if 'person' in models_to_run:
-            logging.info("Running person detection model")
-            run_person.main(selected_videos)
+        # # Run selected models
+        # if 'person' in models_to_run:
+        #     logging.info("Running person detection model")
+        #     run_person.main(selected_videos)
         
         if 'face_proximity' in models_to_run:
             logging.info("Running face model with proximity heuristic")
