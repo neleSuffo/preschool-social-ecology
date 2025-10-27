@@ -21,210 +21,277 @@ from config import DataConfig, InferenceConfig
 FPS = DataConfig.FPS # frames per second
 SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling rate)
 
+# Constants
+FPS = DataConfig.FPS # frames per second
+SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling rate)
+
+def find_segments(video_df, column_name):
+    """
+    Identifies contiguous segments (utterances) from a binary frame column.
+    
+    Parameters:
+        video_df (pd.DataFrame): DataFrame for a single video.
+        column_name (str): The name of the binary column ('has_kchi' or 'has_kcds').
+        
+    Returns:
+        list of dicts: [{'start': frame_num, 'end': frame_num, 'type': 'kchi'/'kcds'}, ...]
+    """
+    segments = []
+    
+    # Ensure the column is integer type for accurate diff calculation
+    # Use .copy() to avoid SettingWithCopyWarning if speech_frames is modified later
+    speech_frames = video_df[video_df[column_name] == 1].copy()
+    
+    if speech_frames.empty:
+        return segments
+
+    frame_numbers = speech_frames['frame_number'].values
+    
+    # Initialize the start of the first segment
+    current_start = frame_numbers[0]
+    
+    for i in range(1, len(frame_numbers)):
+        # If the gap between this frame and the previous one is > 1 frame,
+        # it means the previous segment ended and a new one starts here (due to SAMPLE_RATE=1 assumption for continuity).
+        if frame_numbers[i] > frame_numbers[i-1] + SAMPLE_RATE: 
+            # Finalize the previous segment
+            segments.append({
+                'start': current_start,
+                'end': frame_numbers[i-1],
+                'type': column_name.split('_')[-1] # 'kchi' or 'kcds'
+            })
+            # Start a new segment
+            current_start = frame_numbers[i]
+
+    # Append the last segment
+    segments.append({
+        'start': current_start,
+        'end': frame_numbers[-1],
+        'type': column_name.split('_')[-1]
+    })
+    
+    return segments
+
 def get_all_analysis_data(conn):
     """
     Multimodal data integration at configurable frame intervals.
     
-    This function creates a unified dataset by combining three detection modalities:
-    
-    1. FACE AGGREGATION (FaceAgg temp table):
-    - Aggregates multiple face detections per frame into binary presence flags
-    - Computes proximity values (0=far, 1=close) for social distance analysis
-    
-    2. PERSON CLASSIFICATION (PRIMARY temporal grid):
-    - Uses PersonClassifications as PRIMARY table (every sample rate-th frame)
-    
-    3. AUDIO SAMPLING (filtered to match person frames):
-    - Samples AudioClassifications to every sample rate-th frame only
-    
-    4. MAIN DATA INTEGRATION:
-    - PersonClassifications defines temporal grid (every sample rate-th frame)
-    - LEFT JOINs audio and face data to matching frames
-    - Creates combined presence flags (person OR face = presence)
-    - Optimizes processing efficiency with aligned temporal sampling
+    ADJUSTED: Uses Videos.max_frame to generate a full temporal grid (FrameGrid) 
+    at SAMPLE_RATE intervals. All detection/classification tables are LEFT JOINED 
+    onto this dense grid.
     
     Returns:
-        pd.DataFrame: Temporally-aligned dataset at sample rate-frame intervals
-                    Columns: frame_number, video_id, person flags, audio flags, 
-                            face flags, proximity, combined presence
-                    
-    Temporal Resolution:
-        - Every {SAMPLE_RATE}-th frame = every {SAMPLE_RATE/FPS:.2f} second at FPS
-        - Efficient for social interaction analysis
-        - Aligned with person classification temporal sampling
+        pd.DataFrame: Temporally-aligned dataset at SAMPLE_RATE intervals.
     """
+    
     # ====================================================================
     # STEP 1: FACE DETECTION AGGREGATION
     # ====================================================================
-    # Purpose: Convert multiple face detections per frame into binary flags
-
+    # Aggregate face detections, ensuring they align with the temporal grid.
+    
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS FaceAgg AS
     SELECT 
         frame_number, 
         video_id, 
         proximity,
-        MAX(CASE WHEN age_class IN (0,1) THEN 1 ELSE 0 END) AS has_face
+        1 AS has_face
         
     FROM FaceDetections
+    -- Filter FaceDetections to match the SAMPLE_RATE temporal grid
+    WHERE frame_number % ? = 0 
     GROUP BY frame_number, video_id;
-    """)
+    """, (SAMPLE_RATE,)) 
     
     # ====================================================================
-    # STEP 2: DIRECT AUDIO INTEGRATION APPROACH
+    # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID
     # ====================================================================
-    # Purpose: Use AudioClassifications table directly as primary data source
     
-    # ====================================================================
-    # STEP 3: MAIN DATA INTEGRATION QUERY - OPTIMIZED FOR CONFIGURABLE FRAME ALIGNMENT
-    # ====================================================================
-    # Purpose: Combine all modalities into a unified frame-level dataset
-    # 
-    # Data Sources:
-    #   1. PersonClassifications (pd) - PRIMARY: every {SAMPLE_RATE}-th frame, defines temporal grid
-    #   2. AudioClassifications (af) - SECONDARY: filter to matching frames only  
-    #   3. FaceAgg (fa) - TERTIARY: aggregated face detections with proximity
-    #   4. Videos (v) - METADATA: video information and naming
-    #
-    # Join Strategy:
-    #   - PersonClassifications as PRIMARY defines the {SAMPLE_RATE}-frame temporal grid
-    #   - LEFT JOIN AudioClassifications WHERE frame matches (efficient filtering)
-    #   - LEFT JOIN FaceAgg on same temporal grid    
     query = f"""
+    -- RECURSIVE CTE to generate the full temporal grid for all videos
+    WITH RECURSIVE FrameGrid AS (
+        -- Anchor member: Start at frame 0 for every video
+        SELECT
+            video_id,
+            video_name,
+            0 AS frame_number,
+            max_frame
+        FROM Videos
+        
+        UNION ALL
+        
+        -- Recursive member: Increment frame_number by SAMPLE_RATE
+        SELECT
+            v.video_id,
+            v.video_name,
+            fg.frame_number + {SAMPLE_RATE},
+            v.max_frame
+        FROM FrameGrid fg
+        JOIN Videos v ON fg.video_id = v.video_id
+        -- Termination condition: Stop when the next frame exceeds max_frame
+        WHERE fg.frame_number + {SAMPLE_RATE} <= v.max_frame
+    )
+    
     SELECT
-        pd.frame_number,
-        pd.video_id,
-        v.video_name,
+        fg.frame_number,
+        fg.video_id,
+        fg.video_name,
         
-        -- PERSON DETECTION MODALITY
-        pd.has_child_person,
-        pd.has_adult_person,
+        -- PERSON DETECTION MODALITY (Set to 0 as PersonClassifications is excluded)
+        0 AS has_child_person,
+        0 AS has_adult_person,
         
-        -- AUDIO CLASSIFICATION MODALITY
+        -- AUDIO CLASSIFICATION MODALITY (LEFT JOIN onto the grid)
         COALESCE(af.has_kchi, 0) AS has_kchi,
         COALESCE(af.has_ohs, 0) AS has_ohs,
         COALESCE(af.has_cds, 0) AS has_kcds,
         
-        -- FACE DETECTION MODALITY
+        -- FACE DETECTION MODALITY (LEFT JOIN onto the grid)
         COALESCE(fa.has_face, 0) AS has_face,
         fa.proximity,
         
         -- MULTIMODAL FUSION FLAGS
         CASE 
-            WHEN COALESCE(fa.has_face,0)=1 OR pd.has_child_person=1 OR pd.has_adult_person=1 THEN 1 
+            WHEN COALESCE(fa.has_face, 0)=1 THEN 1 
             ELSE 0 
-        END AS person_present
+        END AS person_present -- Simplified: person_present = has_face in this mode
 
-    FROM PersonClassifications pd
+    FROM FrameGrid fg
     LEFT JOIN AudioClassifications af 
-        ON pd.frame_number = af.frame_number AND pd.video_id = af.video_id
+        ON fg.frame_number = af.frame_number AND fg.video_id = af.video_id
     LEFT JOIN FaceAgg fa 
-        ON pd.frame_number = fa.frame_number AND pd.video_id = fa.video_id
-    LEFT JOIN Videos v 
-        ON pd.video_id = v.video_id
-    ORDER BY pd.video_id, pd.frame_number
+        ON fg.frame_number = fa.frame_number AND fg.video_id = fa.video_id
+    ORDER BY fg.video_id, fg.frame_number
     """
     return pd.read_sql(query, conn)
 
-def check_audio_interaction_turn_taking(df, fps, base_window_sec, extended_window_sec):
-    """
-    Adaptive turn-taking detection with temporal gap constraint:
-    - Uses smaller window (base_window_sec) when child is alone
-    - Expands window (extended_window_sec) if a person or face is visible
-    - Only considers it turn-taking if gap between KCHI and KCDS is ≤ 5 seconds
 
+def check_audio_interaction_turn_taking(df, fps):
+    """
+    Identifies continuous audio interaction bouts based on segment merging.
+    
+    An interaction bout consists of KCHI and KCDS segments where the gap 
+    between any two adjacent segments (regardless of type) is 
+    less than or equal to MAX_TURN_TAKING_GAP_SEC.
+    
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain ['video_id', 'frame_number', 'has_kchi', 'has_kcds', 'child_present', 'adult_present']
+        Must contain ['video_id', 'frame_number', 'has_kchi', 'has_kcds']
     fps : int
-        Frames per second
-    base_window_sec : int
-        Base window size in seconds (when child is alone)
-    extended_window_sec : int
-        Extended window size in seconds (when someone else is present)
+        Frames per second (used for gap calculation)
+    
+    Returns
+    -------
+    pd.Series: Boolean Series of 'is_audio_interaction' for all frames.
     """
-    base_window_frames = base_window_sec * fps
-    extended_window_frames = extended_window_sec * fps
+    
+    # Handle empty DataFrame gracefully
+    if df.empty:
+        return pd.Series([], dtype=bool, name='is_audio_interaction')
 
-    df_copy = df.copy()   
-    # Use the new audio classification columns
-    df_copy['has_kchi'] = df_copy['has_kchi'].astype(int)  # Child speech
-    df_copy['has_kcds'] = df_copy['has_kcds'].astype(int)    # Key Child-directed speech
-
+    # 5 seconds in frames
+    MAX_GAP_FRAMES = InferenceConfig.MAX_TURN_TAKING_GAP_SEC * fps
+    
+    # Initialize the output column to False
+    df['is_audio_interaction'] = False
+    
     all_results = []
 
-    for video_id, video_df in df_copy.groupby('video_id'):
-        video_df = video_df.sort_values('frame_number').reset_index(drop=True)
-        interaction_flags = []
-
-        for _, row in video_df.iterrows():
-            current_frame = row['frame_number']
-
-            # Check initial small window for person/face
-            half_base_window = base_window_frames // 2
-            base_start = current_frame - half_base_window
-            base_end = current_frame + half_base_window
-
-            base_window_data = video_df[
-                (video_df['frame_number'] >= base_start) &
-                (video_df['frame_number'] <= base_end)
-            ]
-
-            # Check for ANY person presence
-            person_present_in_base = (base_window_data['person_present'].sum() > 0) or (base_window_data['has_face'].sum() > 0)
-
-            # Decide window size based on context
-            if person_present_in_base:
-                # Use extended window
-                half_window = extended_window_frames // 2
+    for video_id, video_df in df.groupby('video_id'):
+        
+        # 1. Identify all KCHI and KCDS segments
+        # Work on a copy of the video subset to avoid SettingWithCopyWarning
+        video_df = video_df.copy() 
+        kchi_segments = find_segments(video_df, 'has_kchi')
+        kcds_segments = find_segments(video_df, 'has_kcds')
+        
+        # 2. Combine and sort all segments by start time
+        all_segments = sorted(kchi_segments + kcds_segments, key=lambda x: x['start'])
+        
+        if not all_segments:
+            all_results.append(video_df[['frame_number', 'is_audio_interaction']])
+            continue
+            
+        interaction_windows = []
+        
+        # 3. Merge segments into continuous interaction bouts
+        current_window_start = all_segments[0]['start']
+        current_window_end = all_segments[0]['end']
+        
+        for i in range(1, len(all_segments)):
+            prev_segment_end = current_window_end
+            current_segment_start = all_segments[i]['start']
+            current_segment_end = all_segments[i]['end']
+            
+            # Gap calculation must account for the frame number difference
+            gap = current_segment_start - prev_segment_end
+            
+            if gap <= MAX_GAP_FRAMES:
+                # Merge: Extend the current window
+                current_window_end = current_segment_end
             else:
-                # Use base window
-                half_window = half_base_window
+                # Break: The current interaction window is finalized.
+                interaction_windows.append({
+                    'start': current_window_start, 
+                    'end': current_window_end
+                })
+                # Start a new window
+                current_window_start = current_segment_start
+                current_window_end = current_segment_end
+                
+        # Append the last window
+        interaction_windows.append({
+            'start': current_window_start, 
+            'end': current_window_end
+        })
 
-            window_start = current_frame - half_window
-            window_end = current_frame + half_window
+        # 4. Filter and Mark Frames
+        video_df['is_audio_interaction'] = False
+        
+        # The key filter: An interaction bout must contain *both* KCHI and KCDS
+        for window in interaction_windows:
+            window_start = window['start']
+            window_end = window['end']
 
-            # Get actual window data
-            window_data = video_df[
-                (video_df['frame_number'] >= window_start) &
+            # Check if this bout contains at least one KCHI and one KCDS segment
+            bout_data = video_df[
+                (video_df['frame_number'] >= window_start) & 
                 (video_df['frame_number'] <= window_end)
             ]
-
-            # Check for interaction with gap constraint
-            has_kchi_in_window = window_data['has_kchi'].sum() > 0
-            has_kcds_in_window = window_data['has_kcds'].sum() > 0
             
-            # Only consider it turn-taking if both KCHI and KCDS present AND gap <= 5 seconds
-            is_interaction = False
-            if has_kchi_in_window and has_kcds_in_window:
-                # Find frames with KCHI and KCDS
-                kchi_frames = window_data[window_data['has_kchi'] == 1]['frame_number'].values
-                kcds_frames = window_data[window_data['has_kcds'] == 1]['frame_number'].values
-
-                if len(kchi_frames) > 0 and len(kcds_frames) > 0:
-                    # Calculate minimum gap between any KCHI and KCDS frames
-                    min_gap_frames = float('inf')
-                    for kchi_frame in kchi_frames:
-                        for cds_frame in kcds_frames:
-                            gap_frames = abs(kchi_frame - cds_frame)
-                            min_gap_frames = min(min_gap_frames, gap_frames)
-                    
-                    # Convert gap from frames to seconds (5 seconds = 5 * fps frames)
-                    max_gap_frames = InferenceConfig.MAX_TURN_TAKING_GAP_SEC * fps
-                    is_interaction = min_gap_frames <= max_gap_frames
+            has_kchi = (bout_data['has_kchi'].sum() > 0)
+            has_kcds = (bout_data['has_kcds'].sum() > 0)
             
-            interaction_flags.append(is_interaction)
+            if has_kchi and has_kcds:
+                # Mark all frames within the confirmed interaction bout
+                video_df.loc[
+                    (video_df['frame_number'] >= window_start) & 
+                    (video_df['frame_number'] <= window_end), 
+                    'is_audio_interaction'
+                ] = True
+        
+        all_results.append(video_df[['frame_number', 'is_audio_interaction']])
 
-        video_df['is_audio_interaction'] = interaction_flags
-        all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
-
-    # Combine and merge back
+    # Combine and merge back to ensure the series is in the original DataFrame's order
     result_df = pd.concat(all_results, ignore_index=True)
-    df_with_interaction = df.merge(result_df, on=['frame_number', 'video_id'], how='left')
-    df_with_interaction['is_audio_interaction'] = df_with_interaction['is_audio_interaction'].fillna(False)
+    
+    # Add a unique key for merging
+    result_df['temp_merge_key'] = result_df['frame_number'].astype(str) + '_' + result_df['video_id'].astype(str)
+    df['temp_merge_key'] = df['frame_number'].astype(str) + '_' + df['video_id'].astype(str)
+    
+    df_merged = df.merge(
+        result_df[['temp_merge_key', 'is_audio_interaction']], 
+        on='temp_merge_key',
+        how='left'
+    )
+    
+    # Clean up and return
+    df.drop(columns=['temp_merge_key'], inplace=True)
+    df_merged.drop(columns=['temp_merge_key'], inplace=True)
+    
+    return df_merged['is_audio_interaction'].fillna(False)
 
-    return df_with_interaction['is_audio_interaction']
 
 def classify_frames(row, results_df, included_rules=None):
     """
@@ -265,14 +332,24 @@ def classify_frames(row, results_df, included_rules=None):
     
     # Calculate recent speech activity once at the beginning
     current_index = row.name
-    window_start = max(0, current_index - InferenceConfig.PERSON_AUDIO_WINDOW_SEC)
+    
+    # Calculate the window start index based on the frame rate and sample rate
+    # Window size in samples = (Window size in seconds * FPS) / SAMPLE_RATE
+    window_samples = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * FPS / SAMPLE_RATE)
+    window_start = max(0, current_index - window_samples)
+    
+    # Check for recent KCDS in the window based on the original dataframe's index
     recent_speech_exists = (results_df.loc[window_start:current_index, 'has_kcds'] == 1).any()
-    person_present = (row['person_present'] == 1)
+    
+    # In this simplified mode, person_present = has_face
+    person_present = (row['person_present'] == 1) 
     
     # Evaluate all rules and track their activation
     rule1_turn_taking = bool(row['is_audio_interaction'])
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
     rule3_kcds_speaking = bool(row['has_kcds'])
+    
+    # Rule 4: Person (Face) present + recent speech
     rule4_person_recent_speech = bool(person_present and recent_speech_exists)
     
     # Tier 1: INTERACTING (Active engagement) - check only included rules
@@ -301,10 +378,9 @@ def classify_frames(row, results_df, included_rules=None):
     return interaction_category, rule1_turn_taking, rule2_close_proximity, rule3_kcds_speaking, rule4_person_recent_speech
 
 def classify_face_category(row):
-    """Categorize face detection presence using simplified `has_face` indicator.
-
-    Returns:
-        'has_face' if any face detected, else 'no_faces'.
+    """
+    Categorize face detection presence using simplified `has_face` indicator.
+    (Note: In the current simplified mode, this captures any face detection).
     """
     try:
         return 'has_face' if int(row.get('has_face', 0)) == 1 else 'no_faces'
@@ -312,10 +388,9 @@ def classify_face_category(row):
         return 'no_faces'
 
 def classify_person_category(row):
-    """Categorize person presence using simplified `person_present` indicator.
-
-    Returns:
-        'person_present' if a person is present, else 'no_persons'.
+    """
+    Categorize person presence using simplified `person_present` indicator.
+    (Note: In the current simplified mode, this is equivalent to has_face).
     """
     try:
         return 'person_present' if int(row.get('person_present', 0)) == 1 else 'no_persons'
@@ -415,13 +490,11 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
     print(f"📋 Using interaction rules: {[f'{i}: {rule_names[i]}' for i in included_rules]}")
     
     with sqlite3.connect(db_path) as conn:
-        # Data integration
+        # Data integration (uses adjusted query with Recursive CTE)
         all_data = get_all_analysis_data(conn)
-
-        # Audio turn-taking analysis
-        all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(
-            all_data, FPS, InferenceConfig.TURN_TAKING_BASE_WINDOW_SEC, InferenceConfig.TURN_TAKING_EXT_WINDOW_SEC
-        )
+        
+        # Audio turn-taking analysis (uses segment merging logic)
+        all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(all_data, FPS)
         
         # Social interaction classification with specified rules
         classification_results = all_data.apply(
@@ -456,9 +529,7 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
     parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4],
-                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=KCDS-speech, 4=adult-face-recent-speech). Default: [1, 2, 3, 4]')
-    parser.add_argument('--output_dir', type=str, default=str(Inference.BASE_OUTPUT_DIR),
-                    help='Path to the output file (CSV) for saving results.')
+                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=cds-speaking, 4=adult-face-recent-speech). Default: [1, 2, 3, 4]')
 
     args = parser.parse_args()
     
@@ -468,4 +539,4 @@ if __name__ == "__main__":
         print(f"❌ Error: Invalid rule numbers. Valid options are: {valid_rules}")
         sys.exit(1)
 
-    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=Path(args.output_dir), included_rules=args.rules)
+    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=Inference.BASE_OUTPUT_DIR, included_rules=args.rules)
