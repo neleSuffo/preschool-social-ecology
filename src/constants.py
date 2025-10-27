@@ -61,12 +61,16 @@ class PersonClassification:
     TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
 class FaceDetection:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/"face_detections/yolo12l_20251023_144724/weights/best.pt")
+    INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
+    OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
+    TRAINED_WEIGHTS_PATH = Path(OUTPUT_DIR/"yolo12l_20251026_011719/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
-    INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
-    OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
+    
+    PREDICTIONS_JSON_PATH = Path(OUTPUT_DIR/"yolo12l_20251023_144724/yolo12l_validation_20251026_153856/predictions.json")
+    RETRAIN_FALSE_POSITIVES_PATH = Path(BasePaths.DATA_DIR/"face_det_input/false_positive_frames.txt")
+    DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_face_det_20251023_144007.txt")
 
 class Proximity:
     REFERENCE_VALUES = {"child_ref_close": 458185,
