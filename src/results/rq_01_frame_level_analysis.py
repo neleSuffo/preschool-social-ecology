@@ -31,7 +31,7 @@ def find_segments(video_df, column_name):
     
     Parameters:
         video_df (pd.DataFrame): DataFrame for a single video.
-        column_name (str): The name of the binary column ('has_kchi' or 'has_kcds').
+        column_name (str): The name of the binary column ('has_kchi' or 'has_cds').
         
     Returns:
         list of dicts: [{'start': frame_num, 'end': frame_num, 'type': 'kchi'/'kcds'}, ...]
@@ -144,7 +144,7 @@ def get_all_analysis_data(conn):
         -- AUDIO CLASSIFICATION MODALITY (LEFT JOIN onto the grid)
         COALESCE(af.has_kchi, 0) AS has_kchi,
         COALESCE(af.has_ohs, 0) AS has_ohs,
-        COALESCE(af.has_cds, 0) AS has_kcds,
+        COALESCE(af.has_cds, 0) AS has_cds,
         
         -- FACE DETECTION MODALITY (LEFT JOIN onto the grid)
         COALESCE(fa.has_face, 0) AS has_face,
@@ -177,7 +177,7 @@ def check_audio_interaction_turn_taking(df, fps):
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain ['video_id', 'frame_number', 'has_kchi', 'has_kcds']
+        Must contain ['video_id', 'frame_number', 'has_kchi', 'has_cds']
     fps : int
         Frames per second (used for gap calculation)
     
@@ -204,13 +204,13 @@ def check_audio_interaction_turn_taking(df, fps):
         # Work on a copy of the video subset to avoid SettingWithCopyWarning
         video_df = video_df.copy() 
         kchi_segments = find_segments(video_df, 'has_kchi')
-        kcds_segments = find_segments(video_df, 'has_kcds')
+        kcds_segments = find_segments(video_df, 'has_cds')
         
         # 2. Combine and sort all segments by start time
         all_segments = sorted(kchi_segments + kcds_segments, key=lambda x: x['start'])
         
         if not all_segments:
-            all_results.append(video_df[['frame_number', 'is_audio_interaction']])
+            all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
             continue
             
         interaction_windows = []
@@ -261,9 +261,9 @@ def check_audio_interaction_turn_taking(df, fps):
             ]
             
             has_kchi = (bout_data['has_kchi'].sum() > 0)
-            has_kcds = (bout_data['has_kcds'].sum() > 0)
+            has_cds = (bout_data['has_cds'].sum() > 0)
             
-            if has_kchi and has_kcds:
+            if has_kchi and has_cds:
                 # Mark all frames within the confirmed interaction bout
                 video_df.loc[
                     (video_df['frame_number'] >= window_start) & 
@@ -339,7 +339,7 @@ def classify_frames(row, results_df, included_rules=None):
     window_start = max(0, current_index - window_samples)
     
     # Check for recent KCDS in the window based on the original dataframe's index
-    recent_speech_exists = (results_df.loc[window_start:current_index, 'has_kcds'] == 1).any()
+    recent_speech_exists = (results_df.loc[window_start:current_index, 'has_cds'] == 1).any()
     
     # In this simplified mode, person_present = has_face
     person_present = (row['person_present'] == 1) 
@@ -347,7 +347,7 @@ def classify_frames(row, results_df, included_rules=None):
     # Evaluate all rules and track their activation
     rule1_turn_taking = bool(row['is_audio_interaction'])
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
-    rule3_kcds_speaking = bool(row['has_kcds'])
+    rule3_kcds_speaking = bool(row['has_cds'])
     
     # Rule 4: Person (Face) present + recent speech
     rule4_person_recent_speech = bool(person_present and recent_speech_exists)
