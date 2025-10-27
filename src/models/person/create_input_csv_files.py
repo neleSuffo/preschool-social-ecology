@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from torch import mode
 from tqdm import tqdm
 from constants import BasePaths, DataPaths, PersonClassification
 from config import DataConfig, PersonConfig
@@ -69,6 +70,20 @@ def fetch_all_annotations(category_ids: List[int]) -> List[Tuple]:
     logging.info(f"Found {len(results)} annotations.")
     return results
 
+def fetch_noisy_frames() -> List[str]:
+    """Fetch file_names of frames that contain *only* the category_id = -1 (noisy frames)."""
+    query = """
+    SELECT i.file_name
+    FROM images i JOIN annotations a ON i.frame_id = a.image_id AND i.video_id = a.video_id
+    WHERE a.category_id = -1
+    GROUP BY i.file_name
+    HAVING COUNT(CASE WHEN a.category_id != -1 THEN 1 END) = 0
+    """
+    with sqlite3.connect(DataPaths.ANNO_DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        return [row[0] for row in cursor.fetchall()]
+    
 # ==============================
 # YOLO Generation and Master DF Creation (Combines labeling and file system scan)
 # ==============================
@@ -192,19 +207,76 @@ def save_annotations(annotations: List[Tuple], output_dir: Path, mode: str, posi
     except Exception as e:
         logging.error(f"Failed to write positive frames info JSON: {e}")
 
-def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.DataFrame, List[str]]:
+def is_valid_negative_candidate(file_name_stem: str, frame_id: int, video_name: str, noisy_frames_set: set) -> bool:
     """
-    Build a master DataFrame of all frames (positive and negative) with labels.
+    Checks if a frame is a valid candidate for a negative sample based on the user's rules:
+    1. Must not be flagged as noisy.
+    2. Must be a sampled frame (multiple of FPS, potentially shifted).    
     
     Parameters:
     -----------
-    pos_frames_file_path : str
-        Path to the positive frames info JSON file.
-    mode : str
-        Classification mode: 'age-binary' or 'person-only'.
+    file_name_stem : str
+        The stem of the file name (without extension).
+    frame_id : int
+        The ID of the frame.
+    video_name : str
+        The name of the video file.
+    noisy_frames_set : set
+        A set of noisy frame identifiers.
 
     Returns:
+    --------
+    bool
+        True if the frame is a valid negative candidate, False otherwise.
+    """
+    DEFAULT_OFFSET = 0
+    
+    # 1. Check exclusion list (noisy frames)
+    if file_name_stem in noisy_frames_set:
+        return False
+    
+    # 2. Check FPS/Sampling Rule (e.g., multiples of 30)
+    if frame_id <= 0:
+        return False
+        
+    is_sampled_frame = False
+    
+    exception_map = DataConfig.SHIFTED_VIDEOS_OFFSETS
+    
+    if video_name in exception_map:
+        # Logic for exception videos with frame shift (Rule 2)
+        start_frame, shift = exception_map[video_name]
+        
+        if frame_id < start_frame:
+            # Rule 1: Before the exception start, use standard sampling
+            if frame_id % DataConfig.FPS == DEFAULT_OFFSET:
+                is_sampled_frame = True
+        else:
+            # Rule 2: From the exception start onward, use the shifted modulo rule
+            if (frame_id - start_frame) % DataConfig.FPS == DEFAULT_OFFSET:
+                is_sampled_frame = True
+            
+    else:
+        # Default rule for all other videos: multiples of DataConfig.FPS
+        if frame_id % DataConfig.FPS == DEFAULT_OFFSET:
+            is_sampled_frame = True
+            
+    return is_sampled_frame
+
+def build_master_frame_df(pos_frames_file_path: Path, mode: str) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Build a master DataFrame of all frames (positive and negative) with labels 
+    by scanning the file system.
+    
+    Parameters:
     -----------
+    pos_frames_file_path : Path
+        Path to the JSON file containing positive frames info.
+    mode : str  
+        Classification mode ('age-binary' or 'person-only').
+        
+    Returns:
+    --------
     Tuple[pd.DataFrame, List[str]]
         A tuple containing the master DataFrame and the list of target labels.
     """
@@ -215,54 +287,49 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.Data
     else:
         raise ValueError(f"Invalid classification_mode: {mode}")
 
-    # --- Load and Deserialize Positive Frames Info (Crucial Fix) ---
-    with open(pos_frames_file_path, "r") as f:
-        string_keyed_info = json.load(f)
+    # --- Load and Deserialize Positive Frames Info ---
+    try:
+        with open(pos_frames_file_path, "r") as f:
+            string_keyed_info = json.load(f)
+    except FileNotFoundError:
+        logging.warning("Positive frames info JSON not found. Assuming zero positive frames.")
+        string_keyed_info = {}
 
     positive_frames_info = {}
     for key_str, labels in string_keyed_info.items():
-        # Keys were saved as "{video_id}_{frame_id}_{file_name}" where file_name
-        # itself contains underscores. Split on '_' and treat the first two
-        # tokens as the IDs and the remainder as the full file_name.
         parts = key_str.split('_')
-        if len(parts) < 3:
-            logging.warning(f"Malformed positive_frames_info key: {key_str}")
-            continue
-        try:
-            video_id = int(parts[0])
-            frame_id = int(parts[1])
-        except ValueError:
-            logging.warning(f"Non-integer IDs in positive_frames_info key: {key_str}")
-            continue
+        if len(parts) < 3: continue
 
         file_name = "_".join(parts[2:])
-        positive_frames_info[(video_id, frame_id, file_name)] = labels
-        
+        try:
+             video_id = int(parts[0])
+             frame_id = int(parts[1])
+             positive_frames_info[(video_id, frame_id, file_name)] = labels
+        except ValueError:
+             continue
+    
     annotated_frames_set = set(positive_frames_info.keys())
-    # keep a small sample for debugging
-    sample_positive_keys = list(annotated_frames_set)[:10]
-    logging.debug(f"Sample positive keys: {sample_positive_keys}")
-    # --- Scan File System for All Frames and Annotate --- 
+
+    # --- Fetch noisy frames to exclude from negative pool ---
+    noisy_frames_set = set(fetch_noisy_frames())
+
+    # --- Scan File System for All Frames --- 
     conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
     video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
     conn.close()
 
-    # Build the set of annotated frames
     final_data_list = []
-    matched_positive_count = 0
-    seen_positive_keys = set()
-    
-    # Iterate through all videos in the database
+
+    # --- Iterate through all videos and frames ---
     for _, row in video_map.iterrows():
         video_id = row['video_id']
         video_file_name = row['file_name']
-                
-        video_folder_name = video_file_name.replace('.mp4', '') 
+        
+        video_folder_name = video_file_name.replace('.avi', '').replace('.mp4', '') 
         folder_path = PersonClassification.IMAGES_INPUT_DIR / video_folder_name
         
         if not folder_path.is_dir(): continue
 
-        # Iterate through all image files in the video folder (gets all frames)
         for image_file in folder_path.iterdir():
             file_name_stem = image_file.stem
 
@@ -280,22 +347,18 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.Data
 
             entry = {"video_id": video_id, "frame_id": frame_id, "file_name": file_name_stem, "file_path": image_path}
             
-            # Check if this frame was marked positive in the annotations
-            if frame_key in annotated_frames_set:
+            is_positive = frame_key in annotated_frames_set
+
+            if is_positive:
                 entry.update(positive_frames_info[frame_key])
-                matched_positive_count += 1
-                seen_positive_keys.add(frame_key)
+                final_data_list.append(entry)
             else:
-                # Negative frame: apply 0s for all target classification labels
-                entry.update({label: 0 for label in target_labels})
-                
-            final_data_list.append(entry)
+                # Negative frame logic: ONLY include if it meets sampling criteria
+                if is_valid_negative_candidate(file_name_stem, frame_id, video_file_name, noisy_frames_set):
+                    entry.update({label: 0 for label in target_labels})
+                    final_data_list.append(entry)
 
     df_full_frames_with_labels = pd.DataFrame(final_data_list)
-    logging.info(f"Matched {matched_positive_count} positive frames against filesystem frames")
-    if matched_positive_count == 0 and len(annotated_frames_set) > 0:
-        missing = list(annotated_frames_set - seen_positive_keys)[:10]
-        logging.warning(f"No annotated frames matched any image files. Sample missing keys: {missing}")
     
     return df_full_frames_with_labels, target_labels
 
@@ -303,26 +366,28 @@ def build_master_frame_df(pos_frames_file_path: str, mode: str) -> Tuple[pd.Data
 # Sequential Data Pipeline Functions
 # ==============================
 
-def build_sequential_dataset(df_combined: pd.DataFrame, train_ids: List[str], val_ids: List[str], test_ids: List[str], target_labels: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_sequential_dataset(df: pd.DataFrame, train_ids: List[str], val_ids: List[str], test_ids: List[str], target_labels: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Build complete sequential datasets by filtering the master df by child ID and sorting.
-    """    
-    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
-    video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
-    conn.close()
+    Build complete sequential datasets for train, val, and test splits. The function filters
+    the master DataFrame based on child IDs and sorts frames by video_id and frame_id.
     
-    video_map['child_id'] = video_map['file_name'].apply(get_child_id_from_filename)
-
-    # Map child_id from video_id (frame-level file_name contains frame suffix and
-    # therefore will not match the video_map 'file_name'). Using video_id avoids
-    # mismatches between frame-level stems and video filenames.
-    videoid_to_child = video_map.set_index('video_id')['child_id'].to_dict()
-    df_combined = df_combined.copy()
-    df_combined['child_id'] = df_combined['video_id'].map(videoid_to_child)
-    df_with_child_id = df_combined.dropna(subset=['child_id'])
-    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        Master DataFrame containing all frames with labels.
+    train_ids : List[str]
+        List of child IDs for the training set.
+    val_ids : List[str]
+        List of child IDs for the validation set.
+    test_ids : List[str]
+        List of child IDs for the test set.
+    target_labels : List[str]
+        List of target label column names.
+    """        
+    df['child_id'] = df['file_name'].apply(get_child_id_from_filename)
+        
     def filter_split_data(child_ids: List[str]) -> pd.DataFrame:
-        df_split = df_with_child_id[df_with_child_id['child_id'].isin(child_ids)].copy()
+        df_split = df[df['child_id'].isin(child_ids)].copy()
         
         df_split.sort_values(by=['video_id', 'frame_id'], inplace=True)
         
@@ -336,22 +401,16 @@ def build_sequential_dataset(df_combined: pd.DataFrame, train_ids: List[str], va
     return df_train_full, df_val_full, df_test_full
 
 
-def split_by_child_id(df_combined: pd.DataFrame, target_labels: List[str], train_ratio: float = PersonConfig.TRAIN_SPLIT_RATIO):
+def split_by_child_id(df: pd.DataFrame, target_labels: List[str], train_ratio: float = PersonConfig.TRAIN_SPLIT_RATIO):
     """Split dataset by child IDs, balancing based on positive frames only."""
-    conn = sqlite3.connect(DataPaths.ANNO_DB_PATH)
-    video_map = pd.read_sql_query("SELECT id as video_id, file_name FROM videos", conn)
-    conn.close()
 
-    video_map['child_id'] = video_map['file_name'].apply(get_child_id_from_filename)
-
-    # Map child_id by video_id to avoid mismatches between frame-level file_name
-    # (which includes the frame number) and the video-level file_name in the DB.
-    videoid_to_child = video_map.set_index('video_id')['child_id'].to_dict()
-    df = df_combined.copy()
-    df['child_id'] = df['video_id'].map(videoid_to_child)
-    df.dropna(subset=['child_id'], inplace=True)
-
-    df_positive = df[df[target_labels].any(axis=1)].copy() 
+    df['child_id'] = df['file_name'].apply(get_child_id_from_filename)
+    
+    # Explicitly cast target label columns to integer/boolean before filtering
+    df[target_labels] = df[target_labels].astype(int)
+    
+    print(f"df: {df.head(10)}")
+    df_positive = df[df[target_labels].any(axis=1)].copy()
     
     if df_positive.empty:
         logging.warning("No positively labeled frames found. Cannot perform balanced split.")
@@ -503,7 +562,6 @@ def main():
         logging.error("No valid frames (positive or negative) created. Exiting.")
         return
 
-    print(f"df_combined: {df_combined.head(10)}")
     # Step 3: Split data by child IDs (Balancing is based on positive frames only)
     logging.info(f"Splitting children by IDs based on positive frame distribution...")
     train_ids, val_ids, test_ids = split_by_child_id(df_combined, target_labels)
