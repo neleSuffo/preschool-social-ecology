@@ -250,7 +250,7 @@ def run_training_loop(out_dir, device, scaler, train_loader, val_loader, model, 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument('--mode', choices=["person-only", "age-binary"], default="age-binary",
+    parser.add_argument('--mode', choices=["person-only", "age-binary"], default="person-only",
                        help='Select the classification mode to load the correct number of outputs.')
     args = parser.parse_args()
 
@@ -258,9 +258,11 @@ def main():
     if args.mode == "age-binary":
         class_names = PersonConfig.TARGET_LABELS_AGE_BINARY
         num_outputs = 2
-    else:
+    elif args.mode == "person-only":
         class_names = PersonConfig.TARGET_LABELS_PERSON_ONLY
         num_outputs = 1
+    else:
+        raise ValueError(f"Unsupported mode: {args.mode}, choose from 'person-only' or 'age-binary'.")
         
     # Setup environment (output directory depends on mode)
     out_dir, device, scaler = setup_environment(is_training=True, num_outputs=num_outputs)

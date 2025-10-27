@@ -17,7 +17,7 @@ class YOLOFeatureExtractor(nn.Module):
     Loads the YOLO model and strips the detection head to use the backbone
     for high-quality egocentric features.
     """
-    def __init__(self, yolo_model_path=PersonConfig.YOLO_BACKBONE_PATH, feat_dim=PersonConfig.FEAT_DIM):
+    def __init__(self, feat_dim=PersonConfig.FEAT_DIM):
         super().__init__()
         try:
             # 1. Load the pre-trained YOLOv12l model

@@ -7,7 +7,7 @@ import pandas as pd
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from person_classifier import CNNEncoder, VideoFrameDataset
+from person_classifier import YOLOFeatureExtractor
 from config import PersonConfig
 from constants import PersonClassification
 

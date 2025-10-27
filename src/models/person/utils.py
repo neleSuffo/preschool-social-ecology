@@ -11,13 +11,13 @@ import numpy as np
 from pathlib import Path
 import pandas as pd
 import torch
+from typing import List
 import torch.nn as nn
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from app.src.boost.tools.build.test.BoostBuild import List
 from config import PersonConfig
 from constants import PersonClassification
-from models.person.person_classifier import VideoFrameDataset, CNNEncoder, FrameRNNClassifier, PersonDetectionClassifier
+from models.person.person_classifier import VideoFrameDataset, FrameRNNClassifier, PersonDetectionClassifier
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
