@@ -48,7 +48,7 @@ def process_video(
         return
 
     # Frames directory
-    frames_dir = DataPaths.IMAGES_INPUT_DIR / video_name
+    frames_dir = DataPaths.QUANTEX_IMAGES_INPUT_DIR / video_name
     if not frames_dir.exists():
         logging.error(f"Frames directory not found: {frames_dir}")
         return
