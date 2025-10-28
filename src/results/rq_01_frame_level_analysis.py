@@ -341,13 +341,27 @@ def classify_frames(row, results_df, included_rules=None):
     # Check for recent KCDS in the window based on the original dataframe's index
     recent_speech_exists = (results_df.loc[window_start:current_index, 'has_cds'] == 1).any()
     
+    # --- Check Window for Rule 3 (Sustained KCDS, 3 seconds) ---
+    window_samples_rule3 = int(InferenceConfig.SUSTAINED_KCDS_SEC * FPS / SAMPLE_RATE)
+    window_start_rule3 = max(0, current_index - window_samples_rule3 + 1)
+    # Check if KCDS has been ON (value == 1) in ALL samples within the 3-second window
+    # If the current row itself does not have KCDS, the rule must be False.
+    if row['has_cds'] == 1:
+        # Check if the sum of 'has_cds' in the window equals the size of the window (all frames must be 1)
+        kcds_window_data = results_df.loc[window_start_rule3 : current_index, 'has_cds']
+        is_sustained_kcds = (kcds_window_data.sum() == len(kcds_window_data))
+    else:
+        is_sustained_kcds = False
+        
     # In this simplified mode, person_present = has_face
     person_present = (row['person_present'] == 1) 
     
     # Evaluate all rules and track their activation
     rule1_turn_taking = bool(row['is_audio_interaction'])
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
-    rule3_kcds_speaking = bool(row['has_cds'])
+    
+    # 💥 ADJUSTED RULE 3: Activated only for sustained KCDS (3 seconds)
+    rule3_kcds_speaking = is_sustained_kcds
     
     # Rule 4: Person (Face) present + recent speech
     rule4_person_recent_speech = bool(person_present and recent_speech_exists)
