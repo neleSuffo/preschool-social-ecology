@@ -210,27 +210,19 @@ def check_audio_interaction_turn_taking(df, fps):
     # Handle empty DataFrame gracefully
     if df is None or df.empty:
         return pd.Series(False, index=df.index if df is not None else [], name='is_audio_interaction')
-
-    # Use MAX() to aggregate boolean flags and keep one row per frame/video pair.
-    initial_df = df.groupby(['video_id', 'frame_number'], as_index=False).agg({
-        'has_kchi': 'max',
-        'has_cds': 'max',
-        'video_name': 'first' # Keep non-numeric columns
-        # All other columns (proximity, person_present, etc.) are discarded here 
-        # but are still present in the outer 'df' for the final merge.
-    })
     
     MAX_GAP_FRAMES = InferenceConfig.MAX_TURN_TAKING_GAP_SEC * fps
     all_results = []
 
     # Iterate over the clean, unique initial_df
-    for video_id, video_df in initial_df.groupby('video_id'):
+    for video_id, video_df in df.groupby('video_id'):
         
         # 1. Prepare video segment: Index by frame_number for easy marking
         video_df = video_df.copy() 
         video_df.set_index('frame_number', inplace=True) 
         video_df['is_audio_interaction'] = False
         
+        # Identify KCHI and KCDS segments and combine them
         kchi_segments = find_segments(video_df, 'has_kchi')
         kcds_segments = find_segments(video_df, 'has_cds')
         all_segments = sorted(kchi_segments + kcds_segments, key=lambda x: x['start'])
@@ -241,54 +233,45 @@ def check_audio_interaction_turn_taking(df, fps):
             continue
             
         interaction_windows = []
-        
-        # 2. STRICT Alternation Chaining Logic
-        
+
+        # 2. GAP-BASED MERGING (more permissive)
+        # Merge adjacent segments if the gap between them is <= MAX_GAP_FRAMES.
         current_segment = all_segments[0]
         current_window_start = current_segment['start']
         current_window_end = current_segment['end']
         segments_in_window = [current_segment]
-        
-        for i in range(1, len(all_segments)):
-            prev_window_end = current_window_end
-            current_segment = all_segments[i]
-            
-            gap = current_segment['start'] - prev_window_end
-            
-            last_segment_type = segments_in_window[-1]['type']
-            types_alternate = (current_segment['type'] != last_segment_type)
-            
-            # --- STRICT CHAINING LOGIC ---
-            
-            # Merge condition: Gap is small AND types alternate
-            if gap <= MAX_GAP_FRAMES and types_alternate:
-                current_window_end = current_segment['end']
-                segments_in_window.append(current_segment)
-                
+
+        for seg in all_segments[1:]:
+            gap = seg['start'] - current_window_end
+            if gap <= MAX_GAP_FRAMES:
+                # extend the current window
+                current_window_end = seg['end']
+                segments_in_window.append(seg)
             else:
-                # Case 2: Gap is too large OR Speaker type is the same.
-                
-                # Check validation (finalize the previous bout)
-                types_in_window = {seg['type'] for seg in segments_in_window}
+                # finalize current window if it contains both speaker types
+                types_in_window = {s['type'] for s in segments_in_window}
                 if 'kchi' in types_in_window and 'cds' in types_in_window:
                     interaction_windows.append({
-                        'start': current_window_start, 
+                        'start': current_window_start,
                         'end': current_window_end,
+                        'segments': list(segments_in_window)
                     })
-                
-                # Start a new bout with the current segment
-                current_window_start = current_segment['start']
-                current_window_end = current_segment['end']
-                segments_in_window = [current_segment]
-                
-        # 3. Finalize the last window/bout after the loop finishes
-        
-        types_in_window = {seg['type'] for seg in segments_in_window}
+                # start a new window
+                current_window_start = seg['start']
+                current_window_end = seg['end']
+                segments_in_window = [seg]
+
+        # finalize last window
+        types_in_window = {s['type'] for s in segments_in_window}
         if 'kchi' in types_in_window and 'cds' in types_in_window:
             interaction_windows.append({
-                'start': current_window_start, 
+                'start': current_window_start,
                 'end': current_window_end,
+                'segments': list(segments_in_window)
             })
+
+        logging.debug(f"Video {video_id} - all_segments: {all_segments}")
+        logging.debug(f"Video {video_id} - interaction_windows: {interaction_windows}")
 
         # 4. Final Marking on the DataFrame
         for window in interaction_windows:
@@ -305,21 +288,10 @@ def check_audio_interaction_turn_taking(df, fps):
     # 5. Combine and Merge Results Back to Original DF
     result_df = pd.concat(all_results, ignore_index=True)
 
-    # Create unique keys for reliable merge
-    result_df['temp_merge_key'] = result_df['frame_number'].astype(str) + '_' + result_df['video_id'].astype(str)
-    df['temp_merge_key'] = df['frame_number'].astype(str) + '_' + df['video_id'].astype(str)
-
-    # Merge the calculated interaction flags back to the original full dataframe (df)
-    df_merged = df.merge(
-        result_df[['temp_merge_key', 'is_audio_interaction']], 
-        on='temp_merge_key',
-        how='left'
-    )
-
-    # Clean up and return
-    df.drop(columns=['temp_merge_key'], inplace=True, errors='ignore')
-    result = df_merged['is_audio_interaction'].fillna(False).rename('is_audio_interaction')
-    return result
+    # save result_df for debugging
+    result_df.to_csv("/home/nele_pauline_suffo/outputs/quantex_inference/debug_audio_interaction_segments.csv", index=False)
+    
+    return result_df['is_audio_interaction']
 
 def classify_frames(row, results_df, included_rules=None):
     """
