@@ -4,6 +4,7 @@
 # It uses a SQLite database to query the relevant data.
 # The analysis focuses on identifying frames where children are not in the presence of adults.
 
+import logging
 import sqlite3
 import argparse
 import sys
@@ -44,39 +45,53 @@ def find_segments(video_df, column_name):
         [{'start': frame_num, 'end': frame_num, 'type': 'kchi'/'kcds'}, ...]
     """
     segments = []
-    
-    # Ensure the column is integer type for accurate diff calculation
-    # Use .copy() to avoid SettingWithCopyWarning if speech_frames is modified later
+
+    # If requested binary column doesn't exist, return empty
+    if column_name not in video_df.columns:
+        return segments
+
+    # Work on a copy to avoid SettingWithCopy warnings and allow index manipulations
     speech_frames = video_df[video_df[column_name] == 1].copy()
-    
     if speech_frames.empty:
         return segments
 
-    frame_numbers = speech_frames['frame_number'].values
-    
-    # Initialize the start of the first segment
-    current_start = frame_numbers[0]
-    
-    for i in range(1, len(frame_numbers)):
-        # If the gap between this frame and the previous one is > 1 frame,
-        # it means the previous segment ended and a new one starts here (due to SAMPLE_RATE=1 assumption for continuity).
-        if frame_numbers[i] > frame_numbers[i-1] + SAMPLE_RATE: 
-            # Finalize the previous segment
-            segments.append({
-                'start': current_start,
-                'end': frame_numbers[i-1],
-                'type': column_name.split('_')[-1] # 'kchi' or 'kcds'
-            })
-            # Start a new segment
-            current_start = frame_numbers[i]
+    # Determine frame numbers: prefer explicit 'frame_number' column, then any column containing 'frame', then the index
+    if 'frame_number' in speech_frames.columns:
+        frame_numbers = speech_frames['frame_number'].values
+    else:
+        candidate_cols = [c for c in speech_frames.columns if 'frame' in c.lower()]
+        if candidate_cols:
+            frame_numbers = speech_frames[candidate_cols[0]].values
+        else:
+            # If frame_number is the index (common when callers set it), use the index values
+            frame_numbers = speech_frames.index.values
 
-    # Append the last segment
+    # Ensure frame_numbers is a 1-D numpy array of integers
+    try:
+        frame_numbers = frame_numbers.astype(int)
+    except Exception:
+        frame_numbers = pd.Series(frame_numbers).astype(int).values
+
+    # Initialize the start of the first segment
+    current_start = int(frame_numbers[0])
+
+    for i in range(1, len(frame_numbers)):
+        # Treat gaps larger than SAMPLE_RATE as segment breaks
+        if int(frame_numbers[i]) > int(frame_numbers[i-1]) + SAMPLE_RATE:
+            segments.append({
+                'start': int(current_start),
+                'end': int(frame_numbers[i-1]),
+                'type': column_name.split('_')[-1]
+            })
+            current_start = int(frame_numbers[i])
+
+    # Append last segment
     segments.append({
-        'start': current_start,
-        'end': frame_numbers[-1],
+        'start': int(current_start),
+        'end': int(frame_numbers[-1]),
         'type': column_name.split('_')[-1]
     })
-    
+
     return segments
 
 def get_all_analysis_data(conn):
@@ -193,9 +208,9 @@ def check_audio_interaction_turn_taking(df, fps):
     pd.Series: Boolean Series of 'is_audio_interaction' for all frames.
     """
     
-    # Handle empty DataFrame
-    if df.empty:
-        return pd.Series([], dtype=bool, name='is_audio_interaction')
+    # Handle empty DataFrame: return a boolean Series aligned to the input df index
+    if df is None or df.empty:
+        return pd.Series(False, index=df.index if df is not None else [], name='is_audio_interaction')
 
     # 5 seconds in frames
     MAX_GAP_FRAMES = InferenceConfig.MAX_TURN_TAKING_GAP_SEC * fps
@@ -206,6 +221,7 @@ def check_audio_interaction_turn_taking(df, fps):
         
         # 1. Identify all KCHI and KCDS segments
         video_df = video_df.copy() 
+        video_df.set_index('frame_number', inplace=True) # Use frame_number as index
         video_df['is_audio_interaction'] = False
         
         kchi_segments = find_segments(video_df, 'has_kchi')
@@ -215,7 +231,9 @@ def check_audio_interaction_turn_taking(df, fps):
         all_segments = sorted(kchi_segments + kcds_segments, key=lambda x: x['start'])
         
         if not all_segments:
-            all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
+            # No segments to mark; ensure frame_number is a column before appending
+            temp = video_df.reset_index()
+            all_results.append(temp[['frame_number', 'video_id', 'is_audio_interaction']])
             continue
             
         interaction_windows = []
@@ -266,20 +284,25 @@ def check_audio_interaction_turn_taking(df, fps):
             
             if has_kchi and has_cds:
                 video_df.loc[
-                    (video_df['frame_number'] >= window['start']) & 
-                    (video_df['frame_number'] <= window['end']), 
+                    window['start'] : window['end'], 
                     'is_audio_interaction'
                 ] = True
         
-        # FIX: Include 'video_id'
+        video_df.reset_index(inplace=True)
         all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
-    # Combine all results 
+    # Combine all results
     result_df = pd.concat(all_results, ignore_index=True)
-    
+
+    # Save intermediate results for debugging
+    result_csv_path = Path('results') / 'rq_01_frame_level_analysis.csv'
+    result_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    result_df.to_csv(result_csv_path, index=False)
+    logging.info(f"Saved intermediate audio interaction results to {result_csv_path}")
+
     # Create unique keys for reliable merge
     result_df['temp_merge_key'] = result_df['frame_number'].astype(str) + '_' + result_df['video_id'].astype(str)
     df['temp_merge_key'] = df['frame_number'].astype(str) + '_' + df['video_id'].astype(str)
-    
+
     # Merge the calculated interaction flags back to the original full dataframe (df)
     df_merged = df.merge(
         result_df[['temp_merge_key', 'is_audio_interaction']], 
@@ -288,10 +311,9 @@ def check_audio_interaction_turn_taking(df, fps):
     )
 
     # Clean up and return
-    df.drop(columns=['temp_merge_key'], inplace=True, errors='ignore') 
-        
-    # Ensure the returned Series has the correct name for assignment in main()
-    return df_merged['is_audio_interaction'].fillna(False).rename('is_audio_interaction')
+    df.drop(columns=['temp_merge_key'], inplace=True, errors='ignore')
+    result = df_merged['is_audio_interaction'].fillna(False).rename('is_audio_interaction')
+    return result
 
 def classify_frames(row, results_df, included_rules=None):
     """
