@@ -207,85 +207,102 @@ def check_audio_interaction_turn_taking(df, fps):
     -------
     pd.Series: Boolean Series of 'is_audio_interaction' for all frames.
     """
-    
-    # Handle empty DataFrame: return a boolean Series aligned to the input df index
+    # Handle empty DataFrame gracefully
     if df is None or df.empty:
         return pd.Series(False, index=df.index if df is not None else [], name='is_audio_interaction')
 
-    # 5 seconds in frames
+    # Use MAX() to aggregate boolean flags and keep one row per frame/video pair.
+    initial_df = df.groupby(['video_id', 'frame_number'], as_index=False).agg({
+        'has_kchi': 'max',
+        'has_cds': 'max',
+        'video_name': 'first' # Keep non-numeric columns
+        # All other columns (proximity, person_present, etc.) are discarded here 
+        # but are still present in the outer 'df' for the final merge.
+    })
+    
     MAX_GAP_FRAMES = InferenceConfig.MAX_TURN_TAKING_GAP_SEC * fps
     all_results = []
 
-    for video_id, video_df in df.groupby('video_id'):
+    # Iterate over the clean, unique initial_df
+    for video_id, video_df in initial_df.groupby('video_id'):
         
-        # 1. Identify all KCHI and KCDS segments
+        # 1. Prepare video segment: Index by frame_number for easy marking
         video_df = video_df.copy() 
-        video_df.set_index('frame_number', inplace=True) # Use frame_number as index
+        video_df.set_index('frame_number', inplace=True) 
         video_df['is_audio_interaction'] = False
         
         kchi_segments = find_segments(video_df, 'has_kchi')
         kcds_segments = find_segments(video_df, 'has_cds')
-        
-        # 2. Combine and sort all segments by start time
         all_segments = sorted(kchi_segments + kcds_segments, key=lambda x: x['start'])
         
         if not all_segments:
-            # No segments to mark; ensure frame_number is a column before appending
             temp = video_df.reset_index()
-            all_results.append(temp[['frame_number', 'video_id', 'is_audio_interaction']])
+            all_results.append(temp[['frame_number', 'is_audio_interaction']])
             continue
             
         interaction_windows = []
         
-        # Initialize the first interaction window
-        current_window_start = all_segments[0]['start']
-        current_window_end = all_segments[0]['end']
-        current_window_type = all_segments[0]['type']
-        segments_in_window = [all_segments[0]]
-            
+        # 2. STRICT Alternation Chaining Logic
+        
+        current_segment = all_segments[0]
+        current_window_start = current_segment['start']
+        current_window_end = current_segment['end']
+        segments_in_window = [current_segment]
+        
         for i in range(1, len(all_segments)):
             prev_window_end = current_window_end
-            prev_window_type = current_window_type
             current_segment = all_segments[i]
             
             gap = current_segment['start'] - prev_window_end
-
-            type_interaction = True if prev_window_type != current_segment['type'] else False
-            # Check if the segment belongs to the current interaction window
-            if gap <= MAX_GAP_FRAMES and type_interaction:
-                # Merge: Extend the current interaction window
+            
+            last_segment_type = segments_in_window[-1]['type']
+            types_alternate = (current_segment['type'] != last_segment_type)
+            
+            # --- STRICT CHAINING LOGIC ---
+            
+            # Merge condition: Gap is small AND types alternate
+            if gap <= MAX_GAP_FRAMES and types_alternate:
                 current_window_end = current_segment['end']
                 segments_in_window.append(current_segment)
+                
             else:
-                # Break: Finalize the current window if it has both KCHI and KCDS
+                # Case 2: Gap is too large OR Speaker type is the same.
+                
+                # Check validation (finalize the previous bout)
                 types_in_window = {seg['type'] for seg in segments_in_window}
                 if 'kchi' in types_in_window and 'cds' in types_in_window:
                     interaction_windows.append({
-                        'start': current_window_start,
+                        'start': current_window_start, 
                         'end': current_window_end,
-                        'segments': segments_in_window
                     })
-                # Start a new interaction window
+                
+                # Start a new bout with the current segment
                 current_window_start = current_segment['start']
                 current_window_end = current_segment['end']
                 segments_in_window = [current_segment]
                 
-            # Append the last window after loop finishes if it has both types
+        # 3. Finalize the last window/bout after the loop finishes
+        
         types_in_window = {seg['type'] for seg in segments_in_window}
         if 'kchi' in types_in_window and 'cds' in types_in_window:
             interaction_windows.append({
-                'start': current_window_start,
+                'start': current_window_start, 
                 'end': current_window_end,
-                'segments': segments_in_window
             })
-        
-        # Final Marking on the DataFrame
+
+        # 4. Final Marking on the DataFrame
         for window in interaction_windows:
-            video_df.loc[window['start'] : window['end'], 'is_audio_interaction'] = True
+            video_df.loc[
+                window['start'] : window['end'], 
+                'is_audio_interaction'
+            ] = True
         
+        # Reset index, add video_id, and append to results list
         video_df.reset_index(inplace=True)
+        video_df['video_id'] = video_id 
         all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
-    # Combine all results
+
+    # 5. Combine and Merge Results Back to Original DF
     result_df = pd.concat(all_results, ignore_index=True)
 
     # Create unique keys for reliable merge
