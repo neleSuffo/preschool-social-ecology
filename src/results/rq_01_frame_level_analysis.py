@@ -18,23 +18,30 @@ from constants import DataPaths, Inference
 from config import DataConfig, InferenceConfig
 
 # Constants
-FPS = DataConfig.FPS # frames per second
-SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling rate)
-
 # Constants
 FPS = DataConfig.FPS # frames per second
 SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling rate)
 
 def find_segments(video_df, column_name):
     """
-    Identifies contiguous segments (utterances) from a binary frame column.
+    Identifies continuous audio interaction bouts by chaining segments 
+    where the gap between any two adjacent segments (KCHI or CDS) is 
+    less than or equal to MAX_TURN_TAKING_GAP_SEC.
     
+    The entire chained sequence of KCHI and CDS segments is marked as 
+    'is_audio_interaction', provided the intervals contain both KCHI and CDS.
+
     Parameters:
-        video_df (pd.DataFrame): DataFrame for a single video.
-        column_name (str): The name of the binary column ('has_kchi' or 'has_cds').
+    ----------
+    video_df (pd.DataFrame): 
+        DataFrame for a single video.
+    column_name (str): 
+        The name of the binary column ('has_kchi' or 'has_cds').
         
     Returns:
-        list of dicts: [{'start': frame_num, 'end': frame_num, 'type': 'kchi'/'kcds'}, ...]
+    ----------
+    list of dicts: 
+        [{'start': frame_num, 'end': frame_num, 'type': 'kchi'/'kcds'}, ...]
     """
     segments = []
     
@@ -186,23 +193,21 @@ def check_audio_interaction_turn_taking(df, fps):
     pd.Series: Boolean Series of 'is_audio_interaction' for all frames.
     """
     
-    # Handle empty DataFrame gracefully
+    # Handle empty DataFrame
     if df.empty:
         return pd.Series([], dtype=bool, name='is_audio_interaction')
 
     # 5 seconds in frames
     MAX_GAP_FRAMES = InferenceConfig.MAX_TURN_TAKING_GAP_SEC * fps
     
-    # Initialize the output column to False
-    df['is_audio_interaction'] = False
-    
     all_results = []
 
     for video_id, video_df in df.groupby('video_id'):
         
         # 1. Identify all KCHI and KCDS segments
-        # Work on a copy of the video subset to avoid SettingWithCopyWarning
         video_df = video_df.copy() 
+        video_df['is_audio_interaction'] = False
+        
         kchi_segments = find_segments(video_df, 'has_kchi')
         kcds_segments = find_segments(video_df, 'has_cds')
         
@@ -215,83 +220,78 @@ def check_audio_interaction_turn_taking(df, fps):
             
         interaction_windows = []
         
-        # 3. Merge segments into continuous interaction bouts
+        # 3. Merge segments into continuous interaction intervals
         current_window_start = all_segments[0]['start']
         current_window_end = all_segments[0]['end']
+        
+        # Track all segment types within the current window to enforce KCHI+CDS requirement
+        segments_in_window = [all_segments[0]]
         
         for i in range(1, len(all_segments)):
             prev_segment_end = current_window_end
             current_segment_start = all_segments[i]['start']
             current_segment_end = all_segments[i]['end']
-            
-            # Gap calculation must account for the frame number difference
+
+            # Gap is the frame difference between the end of the previous segment/window and the start of the current segment
             gap = current_segment_start - prev_segment_end
             
             if gap <= MAX_GAP_FRAMES:
                 # Merge: Extend the current window
                 current_window_end = current_segment_end
+                segments_in_window.append(all_segments[i])
             else:
                 # Break: The current interaction window is finalized.
                 interaction_windows.append({
                     'start': current_window_start, 
-                    'end': current_window_end
+                    'end': current_window_end,
+                    'segments': segments_in_window
                 })
                 # Start a new window
                 current_window_start = current_segment_start
                 current_window_end = current_segment_end
+                segments_in_window = [all_segments[i]]
                 
         # Append the last window
         interaction_windows.append({
             'start': current_window_start, 
-            'end': current_window_end
+            'end': current_window_end,
+            'segments': segments_in_window
         })
-
-        # 4. Filter and Mark Frames
-        video_df['is_audio_interaction'] = False
         
-        # The key filter: An interaction bout must contain *both* KCHI and KCDS
+        # The key filter: An interaction bout must contain *both* KCHI and CDS
         for window in interaction_windows:
-            window_start = window['start']
-            window_end = window['end']
-
-            # Check if this bout contains at least one KCHI and one KCDS segment
-            bout_data = video_df[
-                (video_df['frame_number'] >= window_start) & 
-                (video_df['frame_number'] <= window_end)
-            ]
-            
-            has_kchi = (bout_data['has_kchi'].sum() > 0)
-            has_cds = (bout_data['has_cds'].sum() > 0)
+            # Check segment types in the window (more efficient than summing frames)
+            has_kchi = any(s['type'] == 'kchi' for s in window['segments'])
+            has_cds = any(s['type'] == 'cds' for s in window['segments'])
             
             if has_kchi and has_cds:
-                # Mark all frames within the confirmed interaction bout
                 video_df.loc[
-                    (video_df['frame_number'] >= window_start) & 
-                    (video_df['frame_number'] <= window_end), 
+                    (video_df['frame_number'] >= window['start']) & 
+                    (video_df['frame_number'] <= window['end']), 
                     'is_audio_interaction'
                 ] = True
         
-        all_results.append(video_df[['frame_number', 'is_audio_interaction']])
-
-    # Combine and merge back to ensure the series is in the original DataFrame's order
+        # FIX: Include 'video_id'
+        all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
+    # Combine all results 
     result_df = pd.concat(all_results, ignore_index=True)
     
-    # Add a unique key for merging
+    # Create unique keys for reliable merge
     result_df['temp_merge_key'] = result_df['frame_number'].astype(str) + '_' + result_df['video_id'].astype(str)
     df['temp_merge_key'] = df['frame_number'].astype(str) + '_' + df['video_id'].astype(str)
     
+    # Merge the calculated interaction flags back to the original full dataframe (df)
     df_merged = df.merge(
         result_df[['temp_merge_key', 'is_audio_interaction']], 
         on='temp_merge_key',
         how='left'
     )
-    
-    # Clean up and return
-    df.drop(columns=['temp_merge_key'], inplace=True)
-    df_merged.drop(columns=['temp_merge_key'], inplace=True)
-    
-    return df_merged['is_audio_interaction'].fillna(False)
 
+    # Clean up and return
+    df.drop(columns=['temp_merge_key'], inplace=True, errors='ignore') 
+        
+    # Ensure the returned Series has the correct name for assignment in main()
+    return df_merged['is_audio_interaction'].fillna(False).rename('is_audio_interaction')
 
 def classify_frames(row, results_df, included_rules=None):
     """
