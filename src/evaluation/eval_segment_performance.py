@@ -24,7 +24,6 @@ def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
     """
     # Convert GT time columns from min:sec format to seconds if necessary
     if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
-        # NOTE: This relies on the time_to_seconds function already defined in this file.
         ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
         ground_truth_df['end_time_sec'] = ground_truth_df['end_time_min'].apply(time_to_seconds)
     
@@ -375,14 +374,6 @@ def save_performance_results(results, detailed_metrics, total_frames, total_hour
                 f.write(f"  False Positives: {metrics['false_positives']:,}\n")
                 f.write(f"  False Negatives: {metrics['false_negatives']:,}\n")
             f.write("\n")
-        # Add interpretation guide
-        f.write("METRIC INTERPRETATION GUIDE\n")
-        f.write("=" * 70 + "\n")
-        f.write("Accuracy:   Overall percentage of seconds classified correctly\n")
-        f.write("Precision:  Of seconds predicted as this class, how many were correct?\n")
-        f.write("Recall:     Of actual seconds of this class, how many were detected?\n")
-        f.write("F1-Score:   Harmonic mean of precision and recall (balanced metric)\n\n")
-        f.write("Macro Avg:    Unweighted average across classes (treats all classes equally)\n")
     print(f"✅ Performance results saved: {filename}")
 
 def calculate_detailed_metrics(results):
