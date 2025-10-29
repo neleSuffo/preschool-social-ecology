@@ -310,7 +310,9 @@ def generate_confusion_matrix_plots(results):
     plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
     plt.tight_layout()
     Evaluation.CONF_MATRIX_COUNTS.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(Evaluation.CONF_MATRIX_COUNTS, dpi=300, bbox_inches='tight')
+    # Add timestamp to filename
+    conf_matrix_counts_path = Evaluation.CONF_MATRIX_COUNTS.with_name(f"{Evaluation.CONF_MATRIX_COUNTS.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}{Evaluation.CONF_MATRIX_COUNTS.suffix}")
+    plt.savefig(conf_matrix_counts_path, dpi=300, bbox_inches='tight')
     plt.close()
 
     # Relative count heatmap (row-normalized)
@@ -333,14 +335,18 @@ def generate_confusion_matrix_plots(results):
     plt.xlabel('Predicted Labels', fontsize=12, fontweight='bold')
     plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(Evaluation.CONF_MATRIX_PERCENTAGES, dpi=300, bbox_inches='tight')
+    conf_matrix_percentages_path = Evaluation.CONF_MATRIX_PERCENTAGES.with_name(f"{Evaluation.CONF_MATRIX_PERCENTAGES.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}{Evaluation.CONF_MATRIX_PERCENTAGES.suffix}")
+    plt.savefig(conf_matrix_percentages_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"✅ Confusion matrix saved: {Evaluation.CONF_MATRIX_COUNTS} and {Evaluation.CONF_MATRIX_PERCENTAGES}")
+    print(f"✅ Confusion matrix saved: {conf_matrix_percentages_path}")
 
 def save_performance_results(results, detailed_metrics, total_frames, total_hours, filename=Evaluation.PERFORMANCE_RESULTS_TXT):
     """
     Save category-specific performance results with detailed metrics to a text file.
     """
+    # Add timestamp to filename
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    filename = filename.with_name(f"{filename.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}{filename.suffix}")
     with open(filename, 'w') as f:
         # Write analysis summary
         f.write("ANALYSIS SUMMARY\n")
@@ -374,7 +380,6 @@ def save_performance_results(results, detailed_metrics, total_frames, total_hour
                 f.write(f"  False Positives: {metrics['false_positives']:,}\n")
                 f.write(f"  False Negatives: {metrics['false_negatives']:,}\n")
             f.write("\n")
-    print(f"✅ Performance results saved: {filename}")
 
 def calculate_detailed_metrics(results):
     """
@@ -472,6 +477,19 @@ def main(predictions_df, ground_truth_df):
         print(f"GT types: {sorted(gt_types_set)}")
         print(f"Metrics types: {sorted(metrics_types_set)}")
 
+    # Print F1 scores to terminal
+    print("\nDETAILED F1-SCORES")
+    print("=" * 40)
+    for class_name, metrics in detailed_metrics.items():
+        if class_name == 'macro_avg':
+            continue
+        print(f"{class_name:<20} F1-score: {metrics['f1_score']:.4f} ({metrics['f1_score']*100:.2f}%)")
+
+    if 'macro_avg' in detailed_metrics:
+        print("\nMACRO AVERAGE")
+        print("=" * 40)
+        print(f"Macro F1-score: {detailed_metrics['macro_avg']['f1_score']:.4f} ({detailed_metrics['macro_avg']['f1_score']*100:.2f}%)")
+        
     # Generate confusion matrix plots
     generate_confusion_matrix_plots(results)
     
