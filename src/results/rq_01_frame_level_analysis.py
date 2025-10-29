@@ -121,9 +121,11 @@ def get_all_analysis_data(conn):
         
     FROM FaceDetections
     -- Filter FaceDetections to match the SAMPLE_RATE temporal grid
-    WHERE frame_number % ? = 0 
+    WHERE 
+        frame_number % ? = 0 
+        AND confidence_score >= ?        
     GROUP BY frame_number, video_id;
-    """, (SAMPLE_RATE,)) 
+    """, (SAMPLE_RATE, InferenceConfig.FACE_DET_CONFIDENCE_THRESHOLD))
     
     # ====================================================================
     # STEP 1B: PERSON DETECTION AGGREGATION (NEW)
@@ -136,12 +138,12 @@ def get_all_analysis_data(conn):
         frame_number, 
         video_id, 
         1 AS has_person
-                
     FROM PersonClassifications
-    -- Filter PersonDetections to match the SAMPLE_RATE temporal grid
-    WHERE frame_number % ? = 0 
+    WHERE 
+        frame_number % ? = 0
+        AND confidence_score >= ?
     GROUP BY frame_number, video_id;
-    """, (SAMPLE_RATE,)) 
+    """, (SAMPLE_RATE, InferenceConfig.PERSON_DET_CONFIDENCE_THRESHOLD))
     
     # ====================================================================
     # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID
@@ -355,8 +357,7 @@ def classify_frames(row, results_df, included_rules=None):
     # Calculate recent speech activity once at the beginning
     current_index = row.name
     
-    # Calculate the window start index based on the frame rate and sample rate
-    # Window size in samples = (Window size in seconds * FPS) / SAMPLE_RATE
+    # --- Lookback Window Setup for Rule 4 (Person + Recent Speech) ---
     window_samples = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * FPS / SAMPLE_RATE)
     window_start = max(0, current_index - window_samples)
     
@@ -375,8 +376,26 @@ def classify_frames(row, results_df, included_rules=None):
         is_sustained_kcds = False
 
     # Check for person presence and OHS
-    person_present = (row['person_present'] == 1)
+    person_present_instant = (row['person_present'] == 1) # Fused flag (Face OR Person detection)
     has_ohs = (row['has_ohs'] == 1)
+    
+    # Uses InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC for the window (e.g., 10 seconds)
+    MIN_PRESENCE_FRACTION = 0.5 # Require at least 50% presence
+
+    window_samples_person = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * FPS / SAMPLE_RATE)
+    window_start_person = max(0, current_index - window_samples_person + 1)
+    
+    # 1. Look back over the designated window
+    window_data_person = results_df.loc[window_start_person : current_index]
+    window_size = len(window_data_person)
+    
+    # 2. Check if the person presence threshold is met
+    if window_size > 0:
+        person_count_in_window = (window_data_person['person_present'] == 1).sum()
+        presence_fraction = person_count_in_window / window_size
+        is_sustained_person_present = presence_fraction >= MIN_PRESENCE_FRACTION
+    else:
+        is_sustained_person_present = False
     
     # Evaluate all rules and track their activation
     rule1_turn_taking = bool(row['is_audio_interaction'])
@@ -385,8 +404,8 @@ def classify_frames(row, results_df, included_rules=None):
     # Activated only for sustained KCDS
     rule3_kcds_speaking = is_sustained_kcds
     
-    # Rule 4: Person (Face) present + recent speech
-    rule4_person_recent_speech = bool(person_present and recent_speech_exists)
+    # Rule 4: Person (Face) present + recent speech (uses the instantaneous person_present flag)
+    rule4_person_recent_speech = bool(person_present_instant and recent_speech_exists)
     
     # Tier 1: INTERACTING (Active engagement) - check only included rules
     active_rules = []
@@ -406,8 +425,8 @@ def classify_frames(row, results_df, included_rules=None):
     # Determine interaction category
     if active_rules:
         interaction_category = "Interacting"
-    # Trigger 'Available' if person is present OR if OHS is heard
-    elif person_present or has_ohs: 
+    # Trigger 'Available' if (OHS is heard) OR (Sustained Person Presence is true)
+    elif has_ohs or is_sustained_person_present: 
         interaction_category = "Available"
     else:
         interaction_category = "Alone"
