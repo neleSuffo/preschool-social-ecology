@@ -73,7 +73,8 @@ class LabelMapping:
 # Specific Task Configurations
 class PersonConfig:
     """Configuration for person detection and classification."""
-    MODEL_NAME = "resnet18_bilstm"
+    MODEL_SIZE = 'l'  # Default model size
+    MODEL_NAME = f"yolo12{MODEL_SIZE}"
     # Ratio of training data to use for training
     TRAIN_SPLIT_RATIO = 0.6
     # Ratio of class-to-class samples in each dataset split
@@ -99,11 +100,15 @@ class PersonConfig:
     DATABASE_CATEGORY_IDS = [1, 2]
     TARGET_LABELS_AGE_BINARY = ['child', 'adult']
     TARGET_LABELS_PERSON_ONLY = ['person']
+    NEGATIVE_SAMPLING_RATIO = 1 #100% negative samples compared to positive samples in train and val splits
+
     MIN_IDS_PER_SPLIT = 2
 
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 300
+    BATCH_SIZE = 20
+    IMG_SIZE = 832
+    
     # number of videos per batch
-    BATCH_SIZE = 4
     LR = 1e-3
     FREEZE_CNN = True
     PATIENCE = 15
@@ -196,6 +201,7 @@ class InferenceConfig:
     SPEECH_CLASSES = ['KCHI', 'FEM_MAL']
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
     PERSON_AUDIO_WINDOW_SEC = 5 # window duration for person audio analysis
+    PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
     GAP_MERGE_DURATION_SEC = 3 # duration for merging gaps in interaction segments
     SUSTAINED_KCDS_SEC = 2 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
     VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
