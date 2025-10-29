@@ -107,15 +107,17 @@ def setup_interaction_db(db_path: Path):
     ''')
 
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS PersonClassifications (
-            classification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS PersonDetections (
+            detection_id INTEGER PRIMARY KEY AUTOINCREMENT,
             video_id INTEGER,
             frame_number INTEGER,
             model_id INTEGER,
-            has_adult_person INTEGER CHECK(has_adult_person IN (0, 1)),
-            adult_confidence_score REAL,
-            has_child_person INTEGER CHECK(has_child_person IN (0, 1)),
-            child_confidence_score REAL,
+            confidence_score REAL,
+            x_min REAL,
+            y_min REAL,
+            x_max REAL,
+            y_max REAL,
+            age_class INTEGER CHECK(age_class IN (0, 1)),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (video_id) REFERENCES Videos(video_id),
             FOREIGN KEY (model_id) REFERENCES Models(model_id)
