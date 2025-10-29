@@ -1,7 +1,7 @@
 
-train: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/train
-val: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/val
-test: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/test
+train: /home/nele_pauline_suffo/ProcessedData/face_det_input_retrain/images/train
+val: /home/nele_pauline_suffo/ProcessedData/face_det_input_retrain/images/test
+test: /home/nele_pauline_suffo/ProcessedData/face_det_input_retrain/images/test
 
 
 # Number of classes
