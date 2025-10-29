@@ -107,7 +107,7 @@ def get_all_analysis_data(conn):
     """
     
     # ====================================================================
-    # STEP 1: FACE DETECTION AGGREGATION
+    # STEP 1A: FACE DETECTION AGGREGATION
     # ====================================================================
     # Aggregate face detections, ensuring they align with the temporal grid.
     
@@ -121,6 +121,24 @@ def get_all_analysis_data(conn):
         
     FROM FaceDetections
     -- Filter FaceDetections to match the SAMPLE_RATE temporal grid
+    WHERE frame_number % ? = 0 
+    GROUP BY frame_number, video_id;
+    """, (SAMPLE_RATE,)) 
+    
+    # ====================================================================
+    # STEP 1B: PERSON DETECTION AGGREGATION (NEW)
+    # ====================================================================
+    # Aggregate person detections (single "person" class), aligning with the grid.
+    
+    conn.execute("""
+    CREATE TEMP TABLE IF NOT EXISTS PersonAgg AS
+    SELECT 
+        frame_number, 
+        video_id, 
+        1 AS has_person
+                
+    FROM PersonClassifications
+    -- Filter PersonDetections to match the SAMPLE_RATE temporal grid
     WHERE frame_number % ? = 0 
     GROUP BY frame_number, video_id;
     """, (SAMPLE_RATE,)) 
@@ -159,9 +177,9 @@ def get_all_analysis_data(conn):
         fg.video_id,
         fg.video_name,
         
-        -- PERSON DETECTION MODALITY (Set to 0 as PersonClassifications is excluded)
-        0 AS has_child_person,
-        0 AS has_adult_person,
+        -- PERSON DETECTION MODALITY (LEFT JOIN onto the grid)
+        -- Simplified to a single 'has_person' column
+        COALESCE(pa.has_person, 0) AS has_person, 
         
         -- AUDIO CLASSIFICATION MODALITY (LEFT JOIN onto the grid)
         COALESCE(af.has_kchi, 0) AS has_kchi,
@@ -173,16 +191,19 @@ def get_all_analysis_data(conn):
         fa.proximity,
         
         -- MULTIMODAL FUSION FLAGS
+        -- person_present is true if EITHER face OR person detection is present
         CASE 
-            WHEN COALESCE(fa.has_face, 0)=1 THEN 1 
+            WHEN COALESCE(fa.has_face, 0)=1 OR COALESCE(pa.has_person, 0)=1 THEN 1 
             ELSE 0 
-        END AS person_present -- Simplified: person_present = has_face in this mode
+        END AS person_present -- Fused person presence flag
 
     FROM FrameGrid fg
     LEFT JOIN AudioClassifications af 
         ON fg.frame_number = af.frame_number AND fg.video_id = af.video_id
     LEFT JOIN FaceAgg fa 
         ON fg.frame_number = fa.frame_number AND fg.video_id = fa.video_id
+    LEFT JOIN PersonAgg pa
+        ON fg.frame_number = pa.frame_number AND fg.video_id = pa.video_id
     ORDER BY fg.video_id, fg.frame_number
     """
     return pd.read_sql(query, conn)
@@ -396,7 +417,6 @@ def classify_frames(row, results_df, included_rules=None):
 def classify_face_category(row):
     """
     Categorize face detection presence using simplified `has_face` indicator.
-    (Note: In the current simplified mode, this captures any face detection).
     """
     try:
         return 'has_face' if int(row.get('has_face', 0)) == 1 else 'no_faces'
@@ -405,10 +425,10 @@ def classify_face_category(row):
 
 def classify_person_category(row):
     """
-    Categorize person presence using simplified `person_present` indicator.
-    (Note: In the current simplified mode, this is equivalent to has_face).
+    Categorize person presence using the fused `person_present` indicator.
     """
     try:
+        # Use the fused 'person_present' column created in get_all_analysis_data
         return 'person_present' if int(row.get('person_present', 0)) == 1 else 'no_persons'
     except Exception:
         return 'no_persons'
