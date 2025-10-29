@@ -299,14 +299,15 @@ def classify_frames(row, results_df, included_rules=None):
     Also returns individual rule activations for analysis.
     
     CLASSIFICATION LOGIC:
-    1. INTERACTING: Active social engagement
-    - Turn-taking detected (highest priority)
-    - OR Very close proximity (>= PROXIMITY_THRESHOLD)
-    - OR Key child-directed speech present
-    - OR a Person or Face (proximity doesn't matter) + recent speech
+    1. INTERACTING: Active social engagement (Highest Priority)
+    - Turn-taking detected (Rule 1)
+    - OR Very close proximity (Rule 2)
+    - OR Sustained child-directed speech present (Rule 3)
+    - OR Face/Person + recent speech (Rule 4)
     
-    2. Available: Passive social presence
-    - Person detected but no active interaction indicators
+    2. Available: Passive social presence (Tier 2)
+    - Person detected (person_present) 
+    - OR **Other-directed Speech (ohs) is present**
     
     3. ALONE: No social presence detected
     
@@ -344,23 +345,23 @@ def classify_frames(row, results_df, included_rules=None):
     # --- Check Window for Rule 3 (Sustained KCDS, 3 seconds) ---
     window_samples_rule3 = int(InferenceConfig.SUSTAINED_KCDS_SEC * FPS / SAMPLE_RATE)
     window_start_rule3 = max(0, current_index - window_samples_rule3 + 1)
-    # Check if KCDS has been ON (value == 1) in ALL samples within the 3-second window
-    # If the current row itself does not have KCDS, the rule must be False.
+    
     if row['has_cds'] == 1:
         # Check if the sum of 'has_cds' in the window equals the size of the window (all frames must be 1)
         kcds_window_data = results_df.loc[window_start_rule3 : current_index, 'has_cds']
         is_sustained_kcds = (kcds_window_data.sum() == len(kcds_window_data))
     else:
         is_sustained_kcds = False
-        
-    # In this simplified mode, person_present = has_face
-    person_present = (row['person_present'] == 1) 
+
+    # Check for person presence and OHS
+    person_present = (row['person_present'] == 1)
+    has_ohs = (row['has_ohs'] == 1)
     
     # Evaluate all rules and track their activation
     rule1_turn_taking = bool(row['is_audio_interaction'])
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
     
-    # 💥 ADJUSTED RULE 3: Activated only for sustained KCDS (3 seconds)
+    # Activated only for sustained KCDS
     rule3_kcds_speaking = is_sustained_kcds
     
     # Rule 4: Person (Face) present + recent speech
@@ -384,7 +385,8 @@ def classify_frames(row, results_df, included_rules=None):
     # Determine interaction category
     if active_rules:
         interaction_category = "Interacting"
-    elif person_present:
+    # Trigger 'Available' if person is present OR if OHS is heard
+    elif person_present or has_ohs: 
         interaction_category = "Available"
     else:
         interaction_category = "Alone"
