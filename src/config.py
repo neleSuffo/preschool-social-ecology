@@ -198,10 +198,10 @@ class InferenceConfig:
     
     # -- Face Related Parameters --
     PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
-    FACE_DET_CONFIDENCE_THRESHOLD = 0.0 # confidence threshold for face detection
+    FACE_DET_CONFIDENCE_THRESHOLD = 0.3 # confidence threshold for face detection
     
     # -- Person Related Parameters --
-    PERSON_DET_CONFIDENCE_THRESHOLD = 0.5 # confidence threshold for person detection
+    PERSON_DET_CONFIDENCE_THRESHOLD = 0.8 # confidence threshold for person detection
     PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
     PERSON_AUDIO_WINDOW_SEC = 5 # window duration for rule4_person_recent_speech
 
@@ -210,9 +210,9 @@ class InferenceConfig:
     SUSTAINED_KCDS_SEC = 2 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
 
     # -- Segment Merging Parameters --
-    MIN_SEGMENT_DURATION_SEC = 3 # minimum duration for a segment to be considered
+    MIN_SEGMENT_DURATION_SEC = 5 # minimum duration for a segment to be considered
     MIN_CHANGE_DURATION_SEC = 3 # minimum duration for a change to be considered
-    GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps for segments with same label
+    GAP_MERGE_DURATION_SEC = 7 # duration for merging gaps for segments with same label
 
     
     # -- Hyperparameter Tuning Parameters --
