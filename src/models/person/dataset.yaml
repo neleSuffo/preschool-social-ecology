@@ -1,0 +1,15 @@
+
+train: /home/nele_pauline_suffo/ProcessedData/person_cls_input/images/train
+val: /home/nele_pauline_suffo/ProcessedData/person_cls_input/images/test
+test: /home/nele_pauline_suffo/ProcessedData/person_cls_input/images/test
+
+
+# Number of classes
+nc: 1
+
+# Class names
+#names:
+  #0: "child person"
+  #1: "adult person"
+
+names: ["person"]
