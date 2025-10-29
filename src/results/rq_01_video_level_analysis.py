@@ -6,6 +6,7 @@
 import re
 import argparse
 import sys
+import sqlite3
 import pandas as pd
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import Inference
+from constants import Inference, DataPaths
 from config import DataConfig, InferenceConfig
 
 # Constants
@@ -22,64 +23,6 @@ FPS = DataConfig.FPS # frames per second
 def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
-
-def validate_interaction_segment(interaction_type, duration, video_id, start_time_sec, end_time_sec, video_name):
-    """
-    Validate "Interacting" segments for sufficient turn-taking evidence.
-    
-    Checks if KCHI and other speakers alternate within 3-second windows 
-    at least 3 times in segments longer than 30 seconds.
-    
-    Returns the final interaction_type (may downgrade "Interacting" to "Alone")
-    """
-    if interaction_type == "Interacting" and duration > InferenceConfig.VALIDATION_SEGMENT_DURATION_SEC:
-        # Import here to avoid circular imports
-        import sqlite3
-        from constants import DataPaths
-        
-        # Connect to database and get vocalizations for this video and time window
-        conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
-        vocalizations_query = """
-        SELECT speaker, start_time_seconds, end_time_seconds
-        FROM Vocalizations v
-        JOIN Videos vid ON v.video_id = vid.video_id
-        WHERE vid.video_id = ? 
-        AND start_time_seconds < ? 
-        AND end_time_seconds > ?
-        ORDER BY start_time_seconds
-        """
-        
-        vocs_df = pd.read_sql_query(vocalizations_query, conn, 
-                                params=[video_id, end_time_sec, start_time_sec])
-        conn.close()
-
-        if len(vocs_df) < 1:  # Need at least 1 vocalization for turn-taking
-            return "Alone"
-
-        # Count turn-taking instances within 5-second windows
-        turn_taking_count = 0
-        
-        for i in range(len(vocs_df) - 1):
-            current_voc = vocs_df.iloc[i]
-            next_voc = vocs_df.iloc[i + 1]
-            
-            # Check if speakers are different
-            if current_voc['speaker'] != next_voc['speaker']:
-                # Check if one is KCHI and the other is not
-                speakers = {current_voc['speaker'], next_voc['speaker']}
-                if 'KCHI' in speakers and len(speakers) == 2:
-                    # Calculate time gap between vocalizations
-                    time_gap = next_voc['start_time_seconds'] - current_voc['end_time_seconds']
-
-                    # If within 5-second window, count as turn-taking
-                    if 0 <= time_gap <= 5.0:
-                        turn_taking_count += 1
-        
-        # Require at least 3 turn-taking instances for validation
-        if turn_taking_count < 2:
-            return "Alone"
-    
-    return interaction_type
 
 def buffer_short_state_changes(states, frame_numbers):
     """
@@ -161,12 +104,6 @@ def create_segments_for_video(video_id, video_df):
             # Only keep segments longer than minimum duration
             segment_duration = (segment_end_frame - segment_start_frame) / FPS
             if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
-
-                # Validate "Interacting" segments for turn-taking evidence
-                # final_interaction_type = validate_interaction_segment(
-                #     current_state, segment_duration, video_id, 
-                #     segment_start_frame / FPS, segment_end_frame / FPS, video_name
-                # )
                 
                 segments.append({
                     'video_id': video_id,
@@ -187,12 +124,6 @@ def create_segments_for_video(video_id, video_df):
     segment_end_frame = frame_numbers[-1]
     segment_duration = (segment_end_frame - segment_start_frame) / FPS
     if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
-        
-        # # Validate "Interacting" segments for turn-taking evidence
-        # final_interaction_type = validate_interaction_segment(
-        #     current_state, segment_duration, video_id, 
-        #     segment_start_frame / FPS, segment_end_frame / FPS, video_name
-        # )
         
         segments.append({
             'video_id': video_id,
@@ -332,7 +263,7 @@ def print_segment_summary(segments_df):
         total_segments = len(segments_df)
         interacting_segments = len(segments_df[segments_df['interaction_type'] == 'Interacting'])
         alone_segments = len(segments_df[segments_df['interaction_type'] == 'Alone'])
-        copresent_segments = len(segments_df[segments_df['interaction_type'] == 'Available'])
+        available_segments = len(segments_df[segments_df['interaction_type'] == 'Available'])
 
         # Calculate total duration for each segment interaction_type in minutes (with two decimals)
         total_duration = round(segments_df['duration_sec'].sum() / 60, 2)
@@ -344,8 +275,8 @@ def print_segment_summary(segments_df):
         print(f"   Total segments: {total_segments} ({total_duration} minutes)")
         print(f"   Interacting: {interacting_segments} ({interacting_duration} minutes - {interacting_duration/total_duration*100:.1f}%)")
         print(f"   Alone: {alone_segments} ({alone_duration} minutes - {alone_duration/total_duration*100:.1f}%)")
-        if copresent_segments > 0:
-            print(f"   Available: {copresent_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
+        if available_segments > 0:
+            print(f"   Available: {available_segments} ({available_segments} minutes - {available_segments/total_duration*100:.1f}%)")
     else:
         print("\n📊 No segments created")
 
