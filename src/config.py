@@ -193,19 +193,28 @@ class KchiVoc_Config:
 class InferenceConfig:
     """Configuration for inference settings."""
     EXCLUSION_SECONDS = 30 # seconds to exclude at start and end of videos
-    INTERACTION_CLASSES = ['Interacting', 'Co-present', 'Alone']
+    INTERACTION_CLASSES = ['Interacting', 'Available', 'Alone']
     SAMPLE_RATE = 10 # every n-th frame is processed
+    
+    # -- Face Related Parameters --
     PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
+    FACE_DET_CONFIDENCE_THRESHOLD = 0.0 # confidence threshold for face detection
+    
+    # -- Person Related Parameters --
+    PERSON_DET_CONFIDENCE_THRESHOLD = 0.5 # confidence threshold for person detection
+    PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
+    PERSON_AUDIO_WINDOW_SEC = 5 # window duration for rule4_person_recent_speech
+
+    # -- Audio Related Parameters --
+    MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
+    SUSTAINED_KCDS_SEC = 2 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
+
+    # -- Segment Merging Parameters --
     MIN_SEGMENT_DURATION_SEC = 3 # minimum duration for a segment to be considered
     MIN_CHANGE_DURATION_SEC = 3 # minimum duration for a change to be considered
-    SPEECH_CLASSES = ['KCHI', 'FEM_MAL']
-    MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
-    PERSON_AUDIO_WINDOW_SEC = 5 # window duration for person audio analysis
-    PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
-    GAP_MERGE_DURATION_SEC = 3 # duration for merging gaps in interaction segments
-    SUSTAINED_KCDS_SEC = 2 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
-    VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
-    PERSON_PRESENT_THRESHOLD = 0.05 # threshold for considering a person present in a window segment with only audio turn taking
-    EVALUATION_IOU = 0.5 # IoU threshold for evaluation
+    GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps for segments with same label
+
+    
+    # -- Hyperparameter Tuning Parameters --
     MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
     RANDOM_SAMPLING = True # Whether to use random sampling for hyperparameter tuning
