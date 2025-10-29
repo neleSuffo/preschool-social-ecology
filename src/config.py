@@ -191,14 +191,13 @@ class InferenceConfig:
     INTERACTION_CLASSES = ['Interacting', 'Co-present', 'Alone']
     SAMPLE_RATE = 10 # every n-th frame is processed
     PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
-    MIN_SEGMENT_DURATION_SEC = 5 # minimum duration for a segment to be considered
+    MIN_SEGMENT_DURATION_SEC = 3 # minimum duration for a segment to be considered
     MIN_CHANGE_DURATION_SEC = 3 # minimum duration for a change to be considered
     SPEECH_CLASSES = ['KCHI', 'FEM_MAL']
-    TURN_TAKING_BASE_WINDOW_SEC = 5 # base window duration for turn-taking analysis
-    TURN_TAKING_EXT_WINDOW_SEC = 10 # extended window duration for turn-taking analysis
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
     PERSON_AUDIO_WINDOW_SEC = 5 # window duration for person audio analysis
-    GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps in interaction segments
+    GAP_MERGE_DURATION_SEC = 3 # duration for merging gaps in interaction segments
+    SUSTAINED_KCDS_SEC = 2 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
     VALIDATION_SEGMENT_DURATION_SEC = 10 # min duration for validation segments
     PERSON_PRESENT_THRESHOLD = 0.05 # threshold for considering a person present in a window segment with only audio turn taking
     EVALUATION_IOU = 0.5 # IoU threshold for evaluation
