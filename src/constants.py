@@ -55,7 +55,7 @@ class PersonClassification:
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
-    DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/yolo_classifications/person_dataset.yaml")
+    DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/person/dataset.yaml")
     TRAIN_CSV_PATH = Path(INPUT_DIR/"train.csv")
     VAL_CSV_PATH = Path(INPUT_DIR/"val.csv")
     TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
