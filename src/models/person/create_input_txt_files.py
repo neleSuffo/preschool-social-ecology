@@ -934,7 +934,9 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
     # 2e. Finalize Train and Val DataFrames
     train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
     val_df = pd.concat([val_df_pos, val_neg_df], ignore_index=True)
-    test_df = pd.concat([test_df_pos, test_neg_df], ignore_index=True)
+    # test_df currently contains positive frames for test IDs (from earlier).
+    # Combine those positives with the sampled/collected negative candidates for test.
+    test_df = pd.concat([test_df, test_neg_df], ignore_index=True)
 
     return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
                 train_df, val_df, test_df)
