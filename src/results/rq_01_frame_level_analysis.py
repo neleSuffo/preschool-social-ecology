@@ -378,9 +378,6 @@ def classify_frames(row, results_df, included_rules=None):
     # Check for person/face presence and OHS
     person_or_face_present_instant = (row['person_or_face_present'] == 1)
     has_ohs = (row['has_ohs'] == 1)
-    
-    # Uses InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC for the window (e.g., 10 seconds)
-    MIN_PRESENCE_FRACTION = 0.5 # Require at least 50% presence
 
     window_samples_person = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * FPS / SAMPLE_RATE)
     window_start_person = max(0, current_index - window_samples_person + 1)
@@ -393,7 +390,7 @@ def classify_frames(row, results_df, included_rules=None):
     if window_size > 0:
         person_count_in_window = (window_data_person['person_or_face_present'] == 1).sum()
         presence_fraction = person_count_in_window / window_size
-        is_sustained_person_or_face_present = presence_fraction >= MIN_PRESENCE_FRACTION
+        is_sustained_person_or_face_present = presence_fraction >= InferenceConfig.MIN_PRESENCE_FRACTION
     else:
         is_sustained_person_or_face_present = False
     
