@@ -193,11 +193,11 @@ def get_all_analysis_data(conn):
         fa.proximity,
         
         -- MULTIMODAL FUSION FLAGS
-        -- person_present is true if EITHER face OR person detection is present
+        -- person_or_face_present is true if EITHER face OR person detection is present
         CASE 
             WHEN COALESCE(fa.has_face, 0)=1 OR COALESCE(pa.has_person, 0)=1 THEN 1 
             ELSE 0 
-        END AS person_present -- Fused person presence flag
+        END AS person_or_face_present
 
     FROM FrameGrid fg
     LEFT JOIN AudioClassifications af 
@@ -375,8 +375,8 @@ def classify_frames(row, results_df, included_rules=None):
     else:
         is_sustained_kcds = False
 
-    # Check for person presence and OHS
-    person_present_instant = (row['person_present'] == 1) # Fused flag (Face OR Person detection)
+    # Check for person/face presence and OHS
+    person_or_face_present_instant = (row['person_or_face_present'] == 1)
     has_ohs = (row['has_ohs'] == 1)
     
     # Uses InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC for the window (e.g., 10 seconds)
@@ -391,11 +391,11 @@ def classify_frames(row, results_df, included_rules=None):
     
     # 2. Check if the person presence threshold is met
     if window_size > 0:
-        person_count_in_window = (window_data_person['person_present'] == 1).sum()
+        person_count_in_window = (window_data_person['person_or_face_present'] == 1).sum()
         presence_fraction = person_count_in_window / window_size
-        is_sustained_person_present = presence_fraction >= MIN_PRESENCE_FRACTION
+        is_sustained_person_or_face_present = presence_fraction >= MIN_PRESENCE_FRACTION
     else:
-        is_sustained_person_present = False
+        is_sustained_person_or_face_present = False
     
     # Evaluate all rules and track their activation
     rule1_turn_taking = bool(row['is_audio_interaction'])
@@ -404,8 +404,8 @@ def classify_frames(row, results_df, included_rules=None):
     # Activated only for sustained KCDS
     rule3_kcds_speaking = is_sustained_kcds
     
-    # Rule 4: Person (Face) present + recent speech (uses the instantaneous person_present flag)
-    rule4_person_recent_speech = bool(person_present_instant and recent_speech_exists)
+    # Rule 4: Person (Face) present + recent speech (uses the instantaneous fused flag)
+    rule4_person_recent_speech = bool(person_or_face_present_instant and recent_speech_exists)
     
     # Tier 1: INTERACTING (Active engagement) - check only included rules
     active_rules = []
@@ -425,8 +425,8 @@ def classify_frames(row, results_df, included_rules=None):
     # Determine interaction category
     if active_rules:
         interaction_category = "Interacting"
-    # Trigger 'Available' if (OHS is heard) OR (Sustained Person Presence is true)
-    elif has_ohs or is_sustained_person_present: 
+    # Trigger 'Available' if (OHS is heard) OR (Sustained Person/Face Presence is true)
+    elif has_ohs or is_sustained_person_or_face_present: 
         interaction_category = "Available"
     else:
         interaction_category = "Alone"
@@ -444,13 +444,24 @@ def classify_face_category(row):
 
 def classify_person_category(row):
     """
-    Categorize person presence using the fused `person_present` indicator.
+    Categorize raw person detection presence using the `has_person` indicator.
     """
     try:
-        # Use the fused 'person_present' column created in get_all_analysis_data
-        return 'person_present' if int(row.get('person_present', 0)) == 1 else 'no_persons'
+        # Reverted to use the raw 'has_person' column
+        return 'has_person' if int(row.get('has_person', 0)) == 1 else 'no_persons'
     except Exception:
         return 'no_persons'
+
+def classify_fused_category(row):
+    """
+    Categorize person presence using the fused `person_or_face_present` indicator.
+    This tracks the presence of EITHER an adult person OR an adult face.
+    """
+    try:
+        # Uses the fused column
+        return 'has_person_or_face' if int(row.get('person_or_face_present', 0)) == 1 else 'no_person_or_face'
+    except Exception:
+        return 'no_person_or_face'
 
 def merge_age_information(df):
     """
@@ -563,9 +574,19 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         all_data['rule3_kcds_speaking'] = [result[3] for result in classification_results]
         all_data['rule4_person_recent_speech'] = [result[4] for result in classification_results]
 
-        # Step 5: Presence pattern categorization       
+        # Step 5: Presence pattern categorization
+        
+        # 5a. Raw Face Detection
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
+
+        # 5b. Raw Person Detection
         all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
+
+        # 5c. Fused Detection
+        all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
+
+        # 5c. Fused Detection
+        all_data['fused_frame_category'] = all_data.apply(classify_fused_category, axis=1)
 
         # Step 7: Merge age information
         all_data = merge_age_information(all_data)
