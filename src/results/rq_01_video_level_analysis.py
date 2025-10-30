@@ -1,8 +1,3 @@
-# Research Question 1. How much time do children spend alone?
-#
-# This script generates video-level segments to analyze the amount of time children spend alone.
-# It applies post-processing to the frame-level data to create these segments.
-
 import re
 import argparse
 import sys
@@ -14,7 +9,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import Inference, DataPaths
+from constants import Inference
 from config import DataConfig, InferenceConfig
 
 # Constants
@@ -195,6 +190,65 @@ def merge_segments_with_small_gaps(segments_df):
     else:
         return segments_df
 
+def reclassify_available_segments(segments_df, frame_data, detection_col='has_person_or_face'):
+    """
+    Reclassify 'Available' segments to 'Alone' if no person/face detection 
+    occurred in any frame within the segment's duration.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with final interaction segments.
+    frame_data : pd.DataFrame
+        Original frame-level data.
+    detection_col : str
+        The name of the column in frame_data indicating detection (1=detected, 0=not detected).
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with reclassified segments.
+    """
+    print("\n🔄 Starting reclassification of 'Available' segments...")
+    
+    # Ensure the required column exists in frame_data
+    if detection_col not in frame_data.columns:
+        print(f"⚠️ Warning: Detection column '{detection_col}' not found in frame data. Skipping reclassification.")
+        return segments_df
+        
+    reclassified_count = 0
+    # Create a copy to modify
+    updated_segments_df = segments_df.copy()
+
+    # Iterate through segments that are currently 'Available'
+    available_indices = updated_segments_df[updated_segments_df['interaction_type'] == 'Available'].index
+
+    for idx in available_indices:
+        segment = updated_segments_df.loc[idx]
+        video_name = segment['video_name']
+        start_frame = segment['segment_start']
+        end_frame = segment['segment_end']
+        
+        # Filter frame data for the current segment's video and frame range
+        video_frames = frame_data[frame_data['video_name'] == video_name]
+        segment_frames = video_frames[
+            (video_frames['frame_number'] >= start_frame) & 
+            (video_frames['frame_number'] <= end_frame)
+        ]
+        
+        # Check if ANY detection occurred in the segment's frames
+        # Assuming detection_col is 1 for detection, 0 for no detection
+        detection_frames = segment_frames[detection_col]
+        
+        if detection_frames.empty or detection_frames.sum() == 0:
+            # If no frames or sum is 0, then no detection occurred. Reclassify.
+            updated_segments_df.loc[idx, 'interaction_type'] = 'Alone'
+            reclassified_count += 1
+            
+    print(f"   Reclassified {reclassified_count} 'Available' segments to 'Alone'.")
+    return updated_segments_df
+
+
 def add_metadata_to_segments(segments_df, frame_data):
     """
     Add child_id and age information to segments.
@@ -261,6 +315,9 @@ def print_segment_summary(segments_df):
     """
     if len(segments_df) > 0:
         total_segments = len(segments_df)
+        # Recalculate duration for all segments after reclassification
+        segments_df['duration_sec'] = segments_df['end_time_sec'] - segments_df['start_time_sec']
+
         interacting_segments = len(segments_df[segments_df['interaction_type'] == 'Interacting'])
         alone_segments = len(segments_df[segments_df['interaction_type'] == 'Alone'])
         available_segments = len(segments_df[segments_df['interaction_type'] == 'Available'])
@@ -276,7 +333,7 @@ def print_segment_summary(segments_df):
         print(f"   Interacting: {interacting_segments} ({interacting_duration} minutes - {interacting_duration/total_duration*100:.1f}%)")
         print(f"   Alone: {alone_segments} ({alone_duration} minutes - {alone_duration/total_duration*100:.1f}%)")
         if available_segments > 0:
-            print(f"   Available: {available_segments} ({available_segments} minutes - {available_segments/total_duration*100:.1f}%)")
+            print(f"   Available: {available_segments} ({copresent_duration} minutes - {copresent_duration/total_duration*100:.1f}%)")
     else:
         print("\n📊 No segments created")
 
@@ -289,9 +346,10 @@ def main(output_file_path: Path, frame_data_path: Path):
     1. Load and process frame-level data
     2. Create initial segments for each video
     3. Merge segments with small gaps
-    4. Add metadata (child_id, age)
-    5. Generate summary statistics
-    6. Save results to CSV
+    4. Reclassify 'Available' segments if no detection occurred (NEW STEP)
+    5. Add metadata (child_id, age)
+    6. Generate summary statistics
+    7. Save results to CSV
     
     Parameters
     ----------
@@ -320,14 +378,17 @@ def main(output_file_path: Path, frame_data_path: Path):
         segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'interaction_type',
                                         'segment_start', 'segment_end', 
                                         'start_time_sec', 'end_time_sec', 'duration_sec'])
-        
-    # Step 4: Add metadata
+
+    # Step 4: Reclassify 'Available' segments if no detection occurred
+    segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='has_person_or_face')
+
+    # Step 5: Add metadata
     segments_df = add_metadata_to_segments(segments_df, frame_data)
     
-    # Step 5: Generate and print summary
+    # Step 6: Generate and print summary
     print_segment_summary(segments_df)
     
-    # Step 6: Save results
+    # Step 7: Save results
     segments_df.to_csv(output_file_path, index=False)
     print(f"✅ Saved {len(segments_df)} interaction segments to {output_file_path}")
 
