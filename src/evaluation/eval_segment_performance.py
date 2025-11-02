@@ -159,6 +159,8 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
     videos_with_gt = set(ground_truth_df['video_name'].unique())
     videos_with_pred = set(predictions_df['video_name'].unique())
     videos_to_evaluate = videos_with_gt.intersection(videos_with_pred)
+    
+    print(f"Evaluating {len(videos_to_evaluate)} videos with both GT and Predictions...")
 
     interaction_types = [str(t).lower() for t in ground_truth_df['interaction_type'].unique()]
     total_seconds_all = 0
@@ -446,6 +448,17 @@ def run_evaluation(predictions_path: Path):
 
     performance_path = output_folder / Evaluation.PERFORMANCE_RESULTS_TXT
     save_performance_results(results, detailed_metrics, total_seconds, total_hours, filename=performance_path)
+    
+    # Print F1-scores to console
+    print("\n--- F1-Scores by Category ---")
+    for category, metrics in detailed_metrics.items():
+        if category != 'macro_avg':
+            print(f"{category.capitalize()}: F1-Score = {metrics['f1_score']:.4f}")
+    if 'macro_avg' in detailed_metrics:
+        # print empty line
+        print("")
+        print("\n--- Overall Macro Average ---")
+        print(f"Macro Average: F1-Score = {detailed_metrics['macro_avg']['f1_score']:.4f}")
 
     return predictions_df, ground_truth_df
 
@@ -453,22 +466,23 @@ def run_evaluation(predictions_path: Path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate social interaction predictions against ground truth.")
     parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g. 02_interaction_segments.csv)')
-    parser.add_argument('--plot', type=str, default=None, help='Video name to plot. If specified without a value, plots all videos found.')
+    parser.add_argument('--plot', type=str, nargs='?', const='all', default='all', help='Video name to plot (default: all). If specified without value, all videos will be plotted.')
 
     args = parser.parse_args()
     predictions_path = Path(args.input)
 
     # 1. Run evaluation (loads data, runs metrics, prints/saves results)
     predictions_df, ground_truth_df = run_evaluation(predictions_path)
-    
-    # 2. Run plotting logic if requested
-    if args.plot:
-        plot_video_name = args.plot
-        output_folder = predictions_path.parent
+    output_folder = predictions_path.parent
 
-        if not re.match(r'.+', plot_video_name):
-                print(f"❌ Error: Invalid video name '{plot_video_name}' for plotting.")
-                sys.exit(1)
-        
+    # 2. Plotting logic
+    if args.plot.lower() == 'all':
+        video_names = ground_truth_df['video_name'].unique()
+        print(f"\n📊 Generating plots for all {len(video_names)} videos...")
+        for video_name in video_names:
+            plot_path = output_folder / f"{video_name}_segment_timeline.png"
+            plot_segment_timeline(predictions_df, ground_truth_df, video_name, plot_path)
+    else:
+        plot_video_name = args.plot
         plot_path = output_folder / f"{plot_video_name}_segment_timeline.png"
         plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path)
