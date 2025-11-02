@@ -220,10 +220,11 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
 
     confusion_matrix = results['confusion_matrix']
     interaction_types = results['interaction_types']
-    preferred_order = ['interacting', 'available', 'alone']
+    preferred_order = ['alone', 'available', 'interacting']
 
     sorted_gt_labels = [label for label in preferred_order if label in interaction_types]
-    sorted_pred_labels = sorted_gt_labels
+    # sorted_gt_labels backwards
+    sorted_pred_labels = sorted_gt_labels[::-1]
 
     matrix_array = np.array([
         [confusion_matrix[gt_label].get(pred_label, 0)
@@ -265,29 +266,49 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
     plt.savefig(conf_matrix_percentages_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"✅ Confusion matrices saved in: {output_folder}")
+    print(f"✅ Confusion matrices saved to: {conf_matrix_percentages_path}")
 
 
 def save_performance_results(results, detailed_metrics, total_seconds, total_hours, filename: Path):
     """Save performance summary and detailed metrics to a text file."""
     with open(filename, 'w') as f:
-        f.write(f"Total evaluated time: {total_seconds:.0f} seconds ({total_hours:.2f} hours)\n\n")
-        f.write("=== Performance Metrics ===\n")
-        for k, v in results['metrics'].items():
-            f.write(f"{k}: {v:.3f}\n")
-        f.write("\n=== Detailed Metrics ===\n")
-        for label, metrics in detailed_metrics.items():
-            f.write(f"\nLabel: {label}\n")
-            for m, val in metrics.items():
-                f.write(f"  {m}: {val:.3f}\n")
+        # Write analysis summary
+        f.write("ANALYSIS SUMMARY\n")
+        f.write("=" * 70 + "\n")
+        f.write(f"Total seconds analyzed: {total_seconds:,}\n")
+        f.write(f"Total time analyzed: {total_hours:.2f} hours\n\n")
 
-    print(f"✅ Performance results saved to: {filename}")
+        # Write overall performance metrics from detailed_metrics
+        if 'macro_avg' in detailed_metrics:
+            f.write("OVERALL PERFORMANCE METRICS (Macro Average)\n")
+            f.write("=" * 70 + "\n")
+            f.write(f"Accuracy (second-level):  {results['overall_accuracy']:.4f}\n")
+            f.write(f"Macro Average Precision:  {detailed_metrics['macro_avg']['precision']:.4f}\n")
+            f.write(f"Macro Average Recall:     {detailed_metrics['macro_avg']['recall']:.4f}\n")
+            f.write(f"Macro Average F1-Score:   {detailed_metrics['macro_avg']['f1_score']:.4f}\n\n")
 
+        # Write category-specific performance
+        f.write("CATEGORY-SPECIFIC PERFORMANCE\n")
+        f.write("=" * 70 + "\n\n")
+        for category, metrics in detailed_metrics.items():
+            if category == 'macro_avg':
+                continue
+            
+            stats = results['category_accuracies'].get(category, {'total_seconds': 0, 'correct_seconds': 0, 'accuracy': 0})
+
+            f.write(f"{category.upper()}:\n")
+            f.write(f"  Total seconds (GT): {stats['total_seconds']:,}\n")
+            f.write(f"  Accuracy (second-level): {stats['accuracy']:.4f}\n")
+            f.write(f"  Precision: {metrics['precision']:.4f}\n")
+            f.write(f"  Recall: {metrics['recall']:.4f}\n")
+            f.write(f"  F1-Score: {metrics['f1_score']:.4f}\n")
+            f.write(f"  True Positives: {metrics['true_positives']:,}\n")
+            f.write(f"  False Positives: {metrics['false_positives']:,}\n")
+            f.write(f"  False Negatives: {metrics['false_negatives']:,}\n")
+            f.write("\n")
 
 def run_evaluation(predictions_path: Path):
     """Loads data, runs evaluation, and saves outputs in the same folder."""
-
-    print(f"Loading predictions from: {predictions_path}")
     try:
         predictions_df = pd.read_csv(predictions_path)
     except FileNotFoundError:
@@ -295,7 +316,6 @@ def run_evaluation(predictions_path: Path):
         sys.exit(1)
 
     ground_truth_path = Inference.GROUND_TRUTH_SEGMENTS_CSV
-    print(f"Loading ground truth from: {ground_truth_path}")
     try:
         ground_truth_df = pd.read_csv(ground_truth_path, delimiter=';')
     except FileNotFoundError:
