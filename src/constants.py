@@ -48,7 +48,8 @@ class Vocalizations:
     OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "OTH_output_utterances.txt"
 
 class PersonClassification:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/resnet18_bilstm_20251008_140718/best.pth')
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/yolo12l_20251029_204358/weights/best.pt')
+    #TRAINED_WEIGHTS_PATH = Path("/home/nele_pauline_suffo/models/yolo8n_person.pt")
     EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_extraction_progress.txt")
     MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_missing_frames.txt")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_labels")
@@ -91,8 +92,8 @@ class Inference:
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
     SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
     GROUND_TRUTH_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments_gt.csv"
-    FRAME_LEVEL_INTERACTIONS_CSV = BASE_OUTPUT_DIR / "01_frame_level_social_interactions.csv"
-    INTERACTION_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments.csv"
+    FRAME_LEVEL_INTERACTIONS_CSV = Path("01_frame_level_social_interactions.csv")
+    INTERACTION_SEGMENTS_CSV = Path("01_interaction_segments.csv")
     UTTERANCE_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_utterance_segments.csv"
     KCS_SUMMARY_CSV = BASE_OUTPUT_DIR / "02_kcs_summary.csv"
     TURN_TAKING_CSV = BASE_OUTPUT_DIR / "03_turn_taking_summary.csv"
@@ -103,8 +104,8 @@ class Inference:
 class Evaluation:
     BASE_OUTPUT_DIR = BasePaths.OUTPUT_DIR / "segment_evaluation"
     HYPERPARAMETER_OUTPUT_DIR = BASE_OUTPUT_DIR / "hyperparameter_tuning"
-    CONF_MATRIX_COUNTS = BASE_OUTPUT_DIR / "confusion_matrix_counts.png"
-    CONF_MATRIX_PERCENTAGES = BASE_OUTPUT_DIR / "confusion_matrix_percentages.png"
-    PERFORMANCE_RESULTS_TXT = BASE_OUTPUT_DIR / "performance_results.txt"
+    CONF_MATRIX_COUNTS = Path("confusion_matrix_counts.png")
+    CONF_MATRIX_PERCENTAGES = Path("confusion_matrix_percentages.png")
+    PERFORMANCE_RESULTS_TXT = Path("performance_results.txt")
     RULE_ABLATION_SUMMARY_CSV = BASE_OUTPUT_DIR / "rule_ablation_summary.csv"
     RULE_ABLATION_PLOT = BASE_OUTPUT_DIR/ "rule_ablation_plot.png"
