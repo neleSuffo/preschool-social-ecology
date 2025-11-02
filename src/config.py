@@ -201,11 +201,11 @@ class InferenceConfig:
     FACE_DET_CONFIDENCE_THRESHOLD = 0.3 # confidence threshold for face detection
     
     # -- Person Related Parameters --
-    PERSON_DET_CONFIDENCE_THRESHOLD = 0.8 # confidence threshold for person detection
+    PERSON_DET_CONFIDENCE_THRESHOLD = 0.5 # confidence threshold for person detection
     PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
     MIN_PRESENCE_FRACTION = 0.5 # # At least 50% presencen in PERSON_AVAILABLE_WINDOW_SEC window
     PERSON_AUDIO_WINDOW_SEC = 5 # window duration for rule4_person_recent_speech
-
+    KCHI_PERSON_BUFFER_FRAMES = 30 # number of frames to look back and forward for KCHI + visual presence
 
     # -- Audio Related Parameters --
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
