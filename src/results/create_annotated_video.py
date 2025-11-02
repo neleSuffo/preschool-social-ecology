@@ -7,7 +7,8 @@ import sys
 import pandas as pd
 import subprocess
 import shutil
-import fire
+import json
+import argparse
 from pathlib import Path
 
 # Get the src directory (2 levels up from current notebook location)
@@ -15,36 +16,50 @@ src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else P
 sys.path.append(str(src_path))
 
 from constants import Inference
-from config import DataConfig
+from config import DataConfig, InferenceConfig
 
 # Constants
 FPS = DataConfig.FPS # frames per second
 
-def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, frame_csv_path: str = None):
+def find_frame_level_file(search_dir: Path) -> Path or None:
+    """
+    Searches the directory for the frame level file.
+    
+    The pattern assumes files are named like: 
+    '02_interaction_segments_<rules>_...csv' or similar.
+    """
+    # Pattern to look for segment files
+    segment_files = list(search_dir.glob(f'{Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem}*{Inference.FRAME_LEVEL_INTERACTIONS_CSV.suffix}'))
+    
+    if not segment_files:
+        return None
+    
+    segment_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    
+    return segment_files[0]
+
+def create_annotated_video_from_csv(video_path: Path, segments_csv_path: Path, frame_csv_path: Path, final_output_dir: Path):
     """
     Annotate a video and create a final video file by combining
     annotated frames with the original audio using FFMPEG.
     
     Parameters
     ----------
-    video_path (str/Path): 
-        Path to the input video file or directory containing video files.
-    output_dir (str/Path): 
+    video_path (Path): 
+        Path to the input video file.
+    segments_csv_path (Path):
+        Path to the segment-level interactions CSV (Required).
+    frame_csv_path (Path):
+        Path to the frame-level interactions CSV (Required).
+    final_output_dir (Path): 
         Path to the output directory where the annotated video will be saved.
-    frame_csv_path (str, optional):
-        Path to the frame-level interactions CSV. If not provided, uses default.
     """
     print("=" * 60)
     print("CREATING ANNOTATED VIDEO WITH FFMPEG")
     print("=" * 60)
     
-    # Set paths to existing CSV files
-    segments_csv_path = Inference.INTERACTION_SEGMENTS_CSV
-    if frame_csv_path is None:
-        frame_csv_path = Inference.FRAME_LEVEL_INTERACTIONS_CSV
-        
-    # Define temporary and final output directories
-    temp_frames_dir = Path("temp_annotated_frames")
+    # Define temporary directory
+    temp_frames_dir = final_output_dir / "temp_annotated_frames"
     
     # Create necessary directories
     shutil.rmtree(temp_frames_dir, ignore_errors=True) # Clean up old temp directory
@@ -56,18 +71,19 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
         segments_df = pd.read_csv(segments_csv_path)
     except FileNotFoundError:
         print(f"❌ Error: Segments file not found at {segments_csv_path}")
-        print("Run the main analysis first to generate segments!")
+        print("Ensure the correct output folder was specified and segments exist.")
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
 
     # Get video name from path
-    video_path = Path(video_path)
     video_name = video_path.stem
     
     # Filter segments for the specific video
     video_segments = segments_df[segments_df['video_name'] == video_name].copy()
     if len(video_segments) == 0:
-        print(f"❌ Error: No segments found for video_name '{video_name}'")
+        print(f"❌ Error: No segments found for video_name '{video_name}' in {segments_csv_path.name}")
         print(f"Available video names in segments: {segments_df['video_name'].unique()[:10]}")
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
 
     print(f"🎯 Found {len(video_segments)} segments for video '{video_name}'")
@@ -77,18 +93,20 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
         frame_data = pd.read_csv(frame_csv_path)
         video_frame_data = frame_data[frame_data['video_name'] == video_name].copy()
     except FileNotFoundError:
-        print("⚠️ Warning: Frame-level data not found. Using segments only.")
+        print(f"⚠️ Warning: Frame-level data not found at {frame_csv_path.name}. Using segments only.")
         video_frame_data = pd.DataFrame()
     
     # Check if video file exists
     if not video_path.exists():
         print(f"❌ Error: Video file not found at {video_path}")
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
     
     # Open video
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"❌ Error: Could not open video {video_path}")
+        shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
     
     # Get video properties
@@ -124,17 +142,15 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
         for _, row in video_frame_data.iterrows():
             frame_num = int(row['frame_number'])
             detection_lookup[frame_num] = {
-                'child_present': row.get('child_present', 0),
-                'adult_present': row.get('adult_present', 0),
-                'has_child_face': row.get('has_child_face', 0),
-                'has_adult_face': row.get('has_adult_face', 0),
+                # Note: These column names assume the structure output by rq_01_frame_level_analysis.py
+                'person_or_face_present': row.get('person_or_face_present', 0),
                 'proximity': row.get('proximity', None),
                 'has_kchi': row.get('has_kchi', 0),
                 'has_ohs': row.get('has_ohs', 0),
                 'has_cds': row.get('has_cds', 0),
                 'rule1_turn_taking': row.get('rule1_turn_taking', 0),
                 'rule2_close_proximity': row.get('rule2_close_proximity', 0),
-                'rule3_cds_speaking': row.get('rule3_cds_speaking', 0),
+                'rule3_cds_speaking': row.get('rule3_kcds_speaking', 0),
                 'rule4_person_recent_speech': row.get('rule4_person_recent_speech', 0),
             }
     
@@ -149,8 +165,8 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
         if frame.shape[:2] != (height, width):
             frame = cv2.resize(frame, (width, height))
         
-        # Convert frame number to match our data (10-frame intervals)
-        aligned_frame = int(round(frame_number / 10) * 10)
+        # Convert frame number to match our data (aligned to SAMPLE_RATE from config)
+        aligned_frame = int(round(frame_number / DataConfig.FPS) * InferenceConfig.SAMPLE_RATE)
         
         # Get current segment info
         current_segment = segment_lookup.get(aligned_frame, {})
@@ -173,13 +189,13 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
         
         y_pos = overlay_start + 20
         
-        # Time information
+        # Line 1: Time information
         current_time = frame_number / fps
-        time_text = f"Time: {current_time:.1f}s | Frame: {frame_number} ({aligned_frame})"
+        time_text = f"Time: {current_time:.1f}s | Frame: {frame_number} (Aligned: {aligned_frame})"
         cv2.putText(frame, time_text, (10, y_pos), font, font_scale, text_color, 1)
         y_pos += line_height
         
-        # Segment information
+        # Line 2: Segment information
         if current_segment:
             segment_text = f"Segment: {current_segment['interaction_type']} ({current_segment['duration']:.1f}s)"
             # Color code segments
@@ -192,32 +208,22 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
             cv2.putText(frame, segment_text, (10, y_pos), font, font_scale, segment_color, 2)
         else:
             cv2.putText(frame, "Segment: No segment", (10, y_pos), font, font_scale, (128, 128, 128), 1)
+        
+        # Line 2 (Right): Visual Presence
+        if current_detection:
+            fused_presence = current_detection.get('person_or_face_present', 0)
+            prox = current_detection.get('proximity')
+            
+            presence_text = f"Visual: {'Present' if fused_presence else 'Absent'}"
+            if prox is not None:
+                 presence_text += f" (Prox: {prox:.2f})"
+                 
+            presence_color = (0, 255, 0) if fused_presence else (128, 128, 128)
+            cv2.putText(frame, presence_text, (300, y_pos), font, font_scale, presence_color, 1)
         y_pos += line_height
         
-        # Detection information
+        # Line 3: Speech detection
         if current_detection:
-            # Person detection
-            person_info = []
-            if current_detection['child_present']:
-                person_info.append("Child")
-            if current_detection['adult_present']:
-                person_info.append("Adult")
-            person_text = f"Persons: {', '.join(person_info) if person_info else 'None'}"
-            cv2.putText(frame, person_text, (10, y_pos), font, font_scale, text_color, 1)
-            
-            # Face detection with proximity
-            face_info = []
-            if current_detection['has_child_face']:
-                face_info.append("Child Face")
-            if current_detection['has_adult_face']:
-                face_info.append("Adult Face")
-            face_text = f"Faces: {', '.join(face_info) if face_info else 'None'}"
-            if current_detection['proximity'] is not None:
-                face_text += f" (Prox: {current_detection['proximity']:.2f})"
-            cv2.putText(frame, face_text, (300, y_pos), font, font_scale, text_color, 1)
-            y_pos += line_height
-            
-            # Speech detection
             speech_info = []
             if current_detection['has_kchi']:
                 speech_info.append("KCHI")
@@ -228,22 +234,22 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
             speech_text = f"Speech: {', '.join(speech_info) if speech_info else 'Silent'}"
             speech_color = (0, 255, 255) if speech_info else text_color  # Yellow if speech
             cv2.putText(frame, speech_text, (10, y_pos), font, font_scale, speech_color, 1)
-            y_pos += line_height
-            
-            # Interaction rules (active rules)
+
+            # Line 3 (Right): Interaction rules (active rules)
             active_rules = []
-            if current_detection['rule1_turn_taking']:
-                active_rules.append("1:Turn-Taking")
-            if current_detection['rule2_close_proximity']:
-                active_rules.append("2:Close-Prox")
-            if current_detection['rule3_cds_speaking']:
-                active_rules.append("3:CDS")
-            if current_detection['rule4_person_recent_speech']:
-                active_rules.append("4:Person+Speech")
+            if current_detection.get('rule1_turn_taking'):
+                active_rules.append("1:TT")
+            if current_detection.get('rule2_close_proximity'):
+                active_rules.append("2:Prox")
+            if current_detection.get('rule3_cds_speaking'):
+                active_rules.append("3:SustCDS")
+            if current_detection.get('rule4_person_recent_speech'):
+                active_rules.append("4:Vis+RecSpeech")
             
             rules_text = f"Rules: {', '.join(active_rules) if active_rules else 'None'}"
-            rules_color = (0, 255, 0) if active_rules else text_color  # Green if any rules active
+            rules_color = (0, 255, 0) if active_rules else (128, 128, 128) # Green if any rules active
             cv2.putText(frame, rules_text, (300, y_pos), font, font_scale, rules_color, 1)
+            y_pos += line_height
             
         # Save the annotated frame to the temporary directory
         image_path = temp_frames_dir / f"frame_{frame_number:05d}.png"
@@ -252,7 +258,7 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
         frame_number += 1
         
         # Progress indicator
-        if frame_number % 300 == 0:  # Every 10 seconds at 30fps
+        if total_frames > 0 and frame_number % (30 * 10) == 0: # Every 10 seconds at 30fps
             progress = (frame_number / total_frames) * 100
             print(f"⏳ Progress: {progress:.1f}% ({frame_number}/{total_frames} frames)")
     
@@ -318,91 +324,46 @@ def create_annotated_video_from_csv(video_path: Path, final_output_dir: Path, fr
         shutil.rmtree(temp_frames_dir, ignore_errors=True)
         return None
 
-def main(input_path, final_output_dir: Path = Inference.BASE_OUTPUT_DIR, frame_csv_path: str = None):
+def main(video_path, output_folder: Path):
     """
-    Create annotated video(s) from existing segments and frame-level data.
+    Main function to orchestrate the video annotation process.
     
-    Args:
-        input_path (str): Path to either:
-            - A single video file to annotate
-            - A folder containing multiple video files to process
-        frame_csv_path (str, optional): Path to frame-level interactions CSV. If not provided, uses default.
+    Parameters
+    ---------
+    video_path (str): 
+        Path to the single video file.
+    output_folder (Path): 
+        Directory containing the segment and frame analysis files.
     """
-    if not final_output_dir:
-        print("❌ Error: Please provide a final output directory")
+    
+    # 1. Find the latest segment and frame CSV files in the output folder
+    frame_csv_path = find_frame_level_file(output_folder)
+    segments_csv_path = Path(output_folder / Inference.INTERACTION_SEGMENTS_CSV)
+    
+    if not frame_csv_path.exists():
+        print(f"⚠️ Warning: Corresponding frame file {frame_csv_path.name} not found. Using segments only for annotation.")
+        # Proceed with segments only, the annotation function handles missing frame data gracefully.
+    
+        
+    if segments_csv_path is None:
+        print(f"❌ Error: Could not find any segment CSV file in {output_folder}. Ensure analysis has run.")
+        return
+    
+    # 2. Check video file
+    video_path = Path(video_path)
+    if not video_path.is_file():
+        print(f"❌ Error: Video file not found at {video_path}")
         return
 
-    final_output_dir = Path(final_output_dir)
-    
-    if not input_path:
-        print("❌ Error: Please provide an input path")
-        print("Usage: python create_annotated_video.py <video_path_or_folder> [--frame_csv_path <csv_path>]")
-        return
-    
-    input_path = Path(input_path)
-    if not input_path.exists():
-        print(f"❌ Error: Path not found at {input_path}")
-        return
-    
-    # Determine if input is a file or directory
-    if input_path.is_file():
-        # Single file processing
-        if not input_path.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.MP4']:
-            print(f"❌ Error: Unsupported video file extension: {input_path.suffix}")
-            return
-        
-        result = create_annotated_video_from_csv(input_path, final_output_dir, frame_csv_path)
-
-        if result is None:
-            print(f"❌ Failed to process: {input_path.name}")
-            
-    elif input_path.is_dir():
-        # Directory processing - find all video files
-        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.MP4', '.AVI', '.MOV', '.MKV'}
-        video_files = [f for f in input_path.iterdir() 
-                    if f.is_file() and f.suffix in video_extensions]
-        
-        if not video_files:
-            print(f"❌ Error: No video files found in {input_path}")
-            print(f"Looking for extensions: {', '.join(sorted(video_extensions))}")
-            return
-        
-        print(f"📁 Found {len(video_files)} video files in: {input_path}")
-        print(f"🎬 Processing multiple videos...")
-        
-        successful = 0
-        failed = 0
-        
-        for i, video_file in enumerate(sorted(video_files), 1):
-            print(f"\n{'='*60}")
-            print(f"Processing video {i}/{len(video_files)}: {video_file.name}")
-            print(f"{'='*60}")
-            
-            try:
-                result = create_annotated_video_from_csv(video_file, final_output_dir, frame_csv_path)
-                if result is not None:
-                    successful += 1
-                    print(f"✅ Successfully processed: {video_file.name}")
-                else:
-                    failed += 1
-                    print(f"❌ Failed to process: {video_file.name}")
-            except Exception as e:
-                failed += 1
-                print(f"❌ Error processing {video_file.name}: {e}")
-        
-        # Summary
-        print(f"\n{'='*60}")
-        print(f"📊 BATCH PROCESSING SUMMARY")
-        print(f"{'='*60}")
-        print(f"Total videos: {len(video_files)}")
-        print(f"✅ Successful: {successful}")
-        print(f"❌ Failed: {failed}")
-        
-        if successful > 0:
-            print(f"🎉 Batch processing completed with {successful} successful annotations!")
-        
-    else:
-        print(f"❌ Error: {input_path} is neither a file nor a directory")
+    # 3. Create annotated video
+    create_annotated_video_from_csv(video_path, segments_csv_path, frame_csv_path, output_folder)
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    parser = argparse.ArgumentParser(description="Create an annotated video by overlaying segment analysis results.")
+    parser.add_argument('--video_path', type=str, help='Path to the single input video file.')
+    parser.add_argument('--output_folder', type=str, help='Path to the analysis output folder containing the segment/frame CSVs.')
+    
+    args = parser.parse_args()
+    
+    # Use Path objects for consistency
+    main(args.video_path, Path(args.output_folder))
