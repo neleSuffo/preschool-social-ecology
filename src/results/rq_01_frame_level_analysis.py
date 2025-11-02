@@ -8,8 +8,11 @@ import logging
 import sqlite3
 import argparse
 import sys
+import shutil
+import json
 import pandas as pd
 from pathlib import Path
+from datetime import datetime
 
 # Get the src directory (2 levels up from current notebook location)
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
@@ -539,7 +542,7 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         Summary statistics including interaction and presence distributions
     """
     if included_rules is None:
-        included_rules = [1, 2, 3, 4]  # Default: include all rules
+        included_rules = [1, 2, 3, 4]
 
     # Print which rules are being used
     rule_names = {
@@ -548,55 +551,70 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         3: "KCDS Present", 
         4: "Face/Person + Recent KCDS"
     }
-    
+
     print("🔄 Running comprehensive multimodal social interaction analysis...")
     print(f"📋 Using interaction rules: {[f'{i}: {rule_names[i]}' for i in included_rules]}")
-    
+
+    # ------------------------------------------------------------------
+    # 🕒 Create timestamped output folder inside base output directory
+    # ------------------------------------------------------------------
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = output_dir / f"interaction_analysis_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📁 Created output folder: {run_dir}")
+
+    # ------------------------------------------------------------------
+    # 💾 Save current InferenceConfig snapshot as JSON
+    # ------------------------------------------------------------------
+    config_snapshot = {attr: getattr(InferenceConfig, attr) 
+                       for attr in dir(InferenceConfig) 
+                       if not attr.startswith("__") and not callable(getattr(InferenceConfig, attr))}
+    config_path = run_dir / "inference_config_snapshot.json"
+    with open(config_path, "w") as f:
+        json.dump(config_snapshot, f, indent=4)
+
+    # ------------------------------------------------------------------
+    # 📜 Copy executed script into the run directory
+    # ------------------------------------------------------------------
+    try:
+        script_path = Path(__file__)
+        shutil.copy(script_path, run_dir / script_path.name)
+    except NameError:
+        print("⚠️ __file__ not defined (likely running in notebook), skipping script copy.")
+
+    # ------------------------------------------------------------------
+    # 🔍 Perform analysis
+    # ------------------------------------------------------------------
     with sqlite3.connect(db_path) as conn:
-        # Data integration (uses adjusted query with Recursive CTE)
         all_data = get_all_analysis_data(conn)
-        
-        # Audio turn-taking analysis (uses segment merging logic)
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(all_data, FPS)
         
-        # Social interaction classification with specified rules
         classification_results = all_data.apply(
             lambda row: classify_frames(row, all_data, included_rules), axis=1
         )
-        
-        # Unpack the classification results into separate columns
+
         all_data['interaction_type'] = [result[0] for result in classification_results]
         all_data['rule1_turn_taking'] = [result[1] for result in classification_results]
         all_data['rule2_close_proximity'] = [result[2] for result in classification_results]
         all_data['rule3_kcds_speaking'] = [result[3] for result in classification_results]
         all_data['rule4_person_recent_speech'] = [result[4] for result in classification_results]
 
-        # Step 5: Presence pattern categorization
-        
-        # 5a. Raw Face Detection
+        # Categorization
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
-
-        # 5b. Raw Person Detection
         all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
-
-        # 5c. Fused Detection
-        all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
-
-        # 5c. Fused Detection
         all_data['fused_frame_category'] = all_data.apply(classify_fused_category, axis=1)
 
-        # Step 7: Merge age information
+        # Merge age info
         all_data = merge_age_information(all_data)
-                
-        # Create output directory if it doesn't exist
-        output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Step 8: Save results with information about which rules were included e.g. 01_frame_level_social_interactions_1_2_3_4.csv
-        file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem + f"_{'_'.join(map(str, included_rules))}.csv"  
-        all_data.to_csv(output_dir / file_name, index=False)
+        # ------------------------------------------------------------------
+        # 💾 Save frame-level CSV to the timestamped output folder
+        # ------------------------------------------------------------------
+        file_name = FRAME_LEVEL_INTERACTIONS_CSV.stem + f"_{'_'.join(map(str, included_rules))}.csv"
+        csv_path = run_dir / file_name
+        all_data.to_csv(csv_path, index=False)
+        print(f"✅ Saved detailed frame-level analysis to {csv_path}")
 
-        print(f"✅ Saved detailed frame-level analysis to {output_dir / file_name}")
-        
         return all_data
 
 if __name__ == "__main__":    

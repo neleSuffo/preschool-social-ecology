@@ -509,16 +509,27 @@ def main(output_file_path: Path, frame_data_path: Path):
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Video-level social interaction segment analysis')
-    parser.add_argument('--input', type=str, default=str(Inference.FRAME_LEVEL_INTERACTIONS_CSV),
-                    help='Path to the frame-level interactions CSV file')
-    parser.add_argument('--output', type=str, default=str(Inference.INTERACTION_SEGMENTS_CSV),
-                    help='Output CSV file path (if not specified, uses default output directory)')
-    
-    args = parser.parse_args()
-    
-    output_path = Path(args.output)
-    output_dir = output_path.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
+    parser.add_argument('--folder_path', type=str, required=True, help='Folder path containing input CSV and where outputs will be saved')
 
-    # Run analysis and save to specific file
-    main(output_file_path=output_path, frame_data_path=Path(args.input))
+    args = parser.parse_args()
+    folder_path = Path(args.folder_path)
+
+    # Ensure folder exists
+    folder_path.mkdir(parents=True, exist_ok=True)
+
+    # Construct paths automatically
+    input_path = folder_path / Inference.FRAME_LEVEL_INTERACTIONS_CSV
+    output_path = folder_path / Inference.INTERACTION_SEGMENTS_CSV
+
+    # Run main analysis
+    main(output_file_path=output_path, frame_data_path=input_path)
+
+    # Copy current script into folder for reproducibility
+    try:
+        current_script = Path(__file__)
+        destination_script = folder_path / current_script.name
+        import shutil
+        shutil.copy(current_script, destination_script)
+        print(f"🧾 Copied script to {destination_script}")
+    except Exception as e:
+        print(f"⚠️ Could not copy script to folder: {e}")
