@@ -20,8 +20,8 @@ sys.path.append(str(src_path))
 
 from constants import DataPaths, Inference
 from config import DataConfig, InferenceConfig
+from inference.utils import load_processed_videos
 
-# Constants
 # Constants
 FPS = DataConfig.FPS # frames per second
 SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling rate)
@@ -97,18 +97,34 @@ def find_segments(video_df, column_name):
 
     return segments
 
-def get_all_analysis_data(conn):
+def get_all_analysis_data(conn, video_list: list):
     """
     Multimodal data integration at configurable frame intervals.
     
-    ADJUSTED: Uses Videos.max_frame to generate a full temporal grid (FrameGrid) 
-    at SAMPLE_RATE intervals. All detection/classification tables are LEFT JOINED 
-    onto this dense grid.
+    Parameters:
+    ----------
+    conn : sqlite3.Connection   
+        SQLite connection.
+    video_list : list
+        List of video names to include in the analysis.
     
     Returns:
         pd.DataFrame: Temporally-aligned dataset at SAMPLE_RATE intervals.
     """
-    
+     # Check if a video list was provided and is not empty
+    if video_list:
+        # Create placeholders for the IN clause (?, ?, ?)
+        placeholders = ','.join('?' for _ in video_list)
+        video_filter_clause = f"WHERE video_name IN ({placeholders})"
+        query_params = tuple(video_list)
+        
+        logging.info(f"Filtering analysis for {len(video_list)} videos.")
+    else:
+        # If no list is provided, process all videos
+        video_filter_clause = ""
+        query_params = ()
+        logging.info("No video filter list provided. Processing all videos.")
+        
     # ====================================================================
     # STEP 1A: FACE DETECTION AGGREGATION
     # ====================================================================
@@ -153,15 +169,19 @@ def get_all_analysis_data(conn):
     # ====================================================================
     
     query = f"""
-    -- RECURSIVE CTE to generate the full temporal grid for all videos
-    WITH RECURSIVE FrameGrid AS (
-        -- Anchor member: Start at frame 0 for every video
+    -- RECURSIVE CTE to generate the full temporal grid for all filtered videos
+    WITH RECURSIVE FilteredVideos AS (
+        SELECT * FROM Videos
+        {video_filter_clause} -- <-- Filter applied here
+    ), 
+    FrameGrid AS (
+        -- Anchor member: Start at frame 0 for every video in the filtered list
         SELECT
             video_id,
             video_name,
             0 AS frame_number,
             max_frame
-        FROM Videos
+        FROM FilteredVideos
         
         UNION ALL
         
@@ -172,7 +192,7 @@ def get_all_analysis_data(conn):
             fg.frame_number + {SAMPLE_RATE},
             v.max_frame
         FROM FrameGrid fg
-        JOIN Videos v ON fg.video_id = v.video_id
+        JOIN FilteredVideos v ON fg.video_id = v.video_id
         -- Termination condition: Stop when the next frame exceeds max_frame
         WHERE fg.frame_number + {SAMPLE_RATE} <= v.max_frame
     )
@@ -183,7 +203,6 @@ def get_all_analysis_data(conn):
         fg.video_name,
         
         -- PERSON DETECTION MODALITY (LEFT JOIN onto the grid)
-        -- Simplified to a single 'has_person' column
         COALESCE(pa.has_person, 0) AS has_person, 
         
         -- AUDIO CLASSIFICATION MODALITY (LEFT JOIN onto the grid)
@@ -196,7 +215,6 @@ def get_all_analysis_data(conn):
         fa.proximity,
         
         -- MULTIMODAL FUSION FLAGS
-        -- person_or_face_present is true if EITHER face OR person detection is present
         CASE 
             WHEN COALESCE(fa.has_face, 0)=1 OR COALESCE(pa.has_person, 0)=1 THEN 1 
             ELSE 0 
@@ -211,7 +229,9 @@ def get_all_analysis_data(conn):
         ON fg.frame_number = pa.frame_number AND fg.video_id = pa.video_id
     ORDER BY fg.video_id, fg.frame_number
     """
-    return pd.read_sql(query, conn)
+    
+    # Pass the parameters to pd.read_sql for secure execution
+    return pd.read_sql(query, conn, params=query_params)
 
 
 def check_audio_interaction_turn_taking(df, fps):
@@ -613,8 +633,10 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
     # ------------------------------------------------------------------
     # 🔍 Perform analysis
     # ------------------------------------------------------------------
+    processed_videos = load_processed_videos(Inference.PERSON_LOG_FILE_PATH)
+
     with sqlite3.connect(db_path) as conn:
-        all_data = get_all_analysis_data(conn)
+        all_data = get_all_analysis_data(conn, processed_videos) 
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(all_data, FPS)
         
         classification_results = all_data.apply(
