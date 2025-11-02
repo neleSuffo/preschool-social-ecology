@@ -1,12 +1,121 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import argparse
+import sys
+import re
 import seaborn as sns
+from pathlib import Path
 from constants import Evaluation, Inference
 from collections import defaultdict
 from config import InferenceConfig
 from utils import time_to_seconds
 
+def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path):
+    """
+    Plots the segment timelines (GT vs Prediction) for a specific video.
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
+        DataFrame containing predicted interaction segments.
+    ground_truth_df : pd.DataFrame
+        DataFrame containing ground truth interaction segments.
+    video_name : str
+        The specific video to plot.
+    save_path : Path
+        Path to save the generated plot.
+    """
+    # Define colors and category order
+    INTERACTION_COLORS = {
+        'Interacting': '#d62728', # Red
+        'Available': '#ff7f0e',   # Orange
+        'Alone': '#1f77b4',       # Blue
+    }
+    
+    # Filter data for the specific video
+    pred = predictions_df[predictions_df['video_name'].str.contains(video_name, case=False, na=False)].copy()
+    gt = ground_truth_df[ground_truth_df['video_name'].str.contains(video_name, case=False, na=False)].copy()
+
+    if gt.empty and pred.empty:
+        print(f"Error: No data found for video '{video_name}' in either Ground Truth or Predictions.")
+        return
+
+    # Standardize and clean time columns (assuming time conversion already ran in main/caller)
+    for df in [pred, gt]:
+        if 'start_time_min' in df.columns:
+            df['start_time_sec'] = df['start_time_min'].apply(time_to_seconds)
+            df['end_time_sec'] = df['end_time_min'].apply(time_to_seconds)
+        df['interaction_type'] = df['interaction_type'].astype(str).str.lower().str.strip()
+        df['duration_sec'] = df['end_time_sec'] - df['start_time_sec']
+        df.dropna(subset=['start_time_sec', 'end_time_sec'], inplace=True)
+        
+    if gt.empty and pred.empty:
+        print(f"Error: No valid segments found for video '{video_name}' after processing.")
+        return
+
+    # Determine plot dimensions
+    max_time = max(pred['end_time_sec'].max() if not pred.empty else 0, 
+                   gt['end_time_sec'].max() if not gt.empty else 0)
+    max_time = np.ceil(max_time / 60) * 60 # Round up to nearest minute
+    
+    fig, ax = plt.subplots(figsize=(15, 4))
+
+    # --- Plot Ground Truth (GT) on Y=1 ---
+    y_pos_gt = 1.2
+    for _, row in gt.iterrows():
+        color = INTERACTION_COLORS.get(row['interaction_type'], '#808080')
+        ax.barh(y=y_pos_gt, 
+                width=row['duration_sec'], 
+                left=row['start_time_sec'],
+                height=0.4,
+                color=color,
+                edgecolor='black',
+                alpha=0.7)
+
+    # --- Plot Predictions (PRED) on Y=0.8 ---
+    y_pos_pred = 0.8
+    for _, row in pred.iterrows():
+        color = INTERACTION_COLORS.get(row['interaction_type'], '#808080')
+        ax.barh(y=y_pos_pred, 
+                width=row['duration_sec'], 
+                left=row['start_time_sec'],
+                height=0.4,
+                color=color,
+                edgecolor='black',
+                alpha=0.7)
+
+    # --- Configuration ---
+    
+    # Y-axis labels
+    ax.set_yticks([y_pos_pred, y_pos_gt])
+    ax.set_yticklabels(['Prediction', 'Ground Truth'], fontsize=12)
+    ax.set_ylim(0.5, 1.5)
+    
+    # X-axis (Time) configuration
+    ax.set_xlabel("Time (seconds)", fontsize=12)
+    ax.set_xlim(0, max_time)
+    
+    # Title
+    ax.set_title(f"Segment Timeline Comparison for Video: {video_name}", fontsize=14)
+
+    # Custom Legend
+    import matplotlib.patches as mpatches
+    legend_patches = [
+        mpatches.Patch(color=INTERACTION_COLORS.get(cat, '#808080'), alpha=0.7, label=cat.capitalize())
+        for cat in sorted(INTERACTION_COLORS.keys())
+    ]
+    ax.legend(handles=legend_patches, loc='upper right', bbox_to_anchor=(1.0, 1.35), ncol=3, frameon=False)
+    
+    plt.grid(axis='x', linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    
+    # Save the plot
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path)
+    plt.close(fig)
+    print(f"\n✅ Plot successfully saved to: {save_path}")
+    
 def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
     """
     Wrapper function for hyperparameter tuning.
@@ -28,7 +137,6 @@ def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
         ground_truth_df['end_time_sec'] = ground_truth_df['end_time_min'].apply(time_to_seconds)
     
     # 1. Run the core second-by-second comparison
-    # This provides the base confusion matrix data
     results_by_seconds = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
 
     # 2. Calculate detailed metrics (Precision, Recall, F1, TP, FP, FN)
@@ -49,9 +157,6 @@ def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
                 'f1_score': metrics['f1_score'],
             }
             
-    # The IoU threshold is ignored because this script implements second-by-second evaluation.
-    # The original hyperparameter tuning may have used IoU-based evaluation.
-    
     return output
 
 def create_second_level_labels(segments_df, video_duration_seconds):
@@ -437,24 +542,26 @@ def calculate_detailed_metrics(results):
         }
     return detailed_metrics
 
-def main(predictions_df, ground_truth_df):
-    """
-    Main function to evaluate performance using frame-by-frame accuracy.
+def run_evaluation(predictions_path: Path):
+    """Loads data, runs evaluation, and prints/saves results."""
     
-    Parameters
-    ----------
-    predictions_df : pd.DataFrame
-        DataFrame containing predicted interaction segments.
-    ground_truth_df : pd.DataFrame
-        DataFrame containing ground truth interaction segments.
-    """
-    print("Evaluating performance using frame-by-frame accuracy...")
+    print(f"Loading predictions from: {predictions_path}")
+    try:
+        predictions_df = pd.read_csv(predictions_path)
+    except FileNotFoundError:
+        print(f"❌ Error: Predictions file not found at {predictions_path}")
+        sys.exit(1)
+        
+    ground_truth_path = Inference.GROUND_TRUTH_SEGMENTS_CSV
+    print(f"Loading ground truth from: {ground_truth_path}")
+    try:
+        # Assuming GT data still uses semicolon delimiter from user's original format
+        ground_truth_df = pd.read_csv(ground_truth_path, delimiter=';')
+    except FileNotFoundError:
+        print(f"❌ Error: Ground truth file not found at {ground_truth_path}")
+        sys.exit(1)
 
-    pred_videos = set(predictions_df['video_name'].unique())
-    gt_videos = set(ground_truth_df['video_name'].unique())
-    videos_to_evaluate = pred_videos.intersection(gt_videos)
-    print(f"Videos being evaluated (have both GT and predictions): {len(videos_to_evaluate)}")
-    
+
     # convert minute-based times in GT to seconds for consistency using function time_to_seconds
     if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
         ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
@@ -462,6 +569,7 @@ def main(predictions_df, ground_truth_df):
 
     # Evaluate performance
     results = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
+    
     # Calculate total seconds and hours analyzed
     total_seconds = results['total_seconds']
     total_hours = total_seconds / 3600
@@ -495,6 +603,41 @@ def main(predictions_df, ground_truth_df):
     
     # Save performance results to text file with detailed metrics
     save_performance_results(results, detailed_metrics, total_seconds, total_hours)
+    
+    return predictions_df, ground_truth_df
+
+def main(predictions_df, ground_truth_df):
+    """
+    Main function to evaluate performance using frame-by-frame accuracy.
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
+        DataFrame containing predicted interaction segments.
+    ground_truth_df : pd.DataFrame
+        DataFrame containing ground truth interaction segments.
+    """
+    parser = argparse.ArgumentParser(description='Segment performance evaluation and plotting utility.')
+    parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g., results/interaction_segments.csv).')
+    parser.add_argument('--plot', type=str, nargs='?', default=None, help='Video name to plot. If specified without a value, plots all videos found.')
+    
+    args = parser.parse_args()
+    
+    predictions_path = Path(args.input)
+    
+    # --- Load Data (Needs to be done once for both modes) ---
+    predictions_df, ground_truth_df = run_evaluation(predictions_path)
+
+    # --- Plotting Logic ---
+    if args.plot:
+        plot_video_name = args.plot
+        
+        if not re.match(r'.+', plot_video_name):
+                print(f"❌ Error: Invalid video name '{plot_video_name}' for plotting.")
+                sys.exit(1)
+        
+        plot_path = Evaluation.PLOT_OUTPUT_DIR / f"{plot_video_name}_segment_timeline.png"
+        plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path)
     
 if __name__ == "__main__":
     # load data
