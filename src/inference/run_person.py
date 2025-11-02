@@ -149,10 +149,10 @@ def main(video_list: List[str], frame_step: int = 10):
     # Setup processing log file
     processed_videos = load_processed_videos(LOG_FILE_PATH)
     
+    print(f"Loaded {len(processed_videos)} already processed videos from log.")
     # Filter out already processed videos
     videos_to_process = [v for v in video_list if v not in processed_videos]
-    skipped_videos = [v for v in video_list if v in processed_videos]
-    
+
     if not videos_to_process:
         logging.info("All requested videos have already been processed!")
         return
@@ -165,7 +165,7 @@ def main(video_list: List[str], frame_step: int = 10):
     model = YOLO(PersonClassification.TRAINED_WEIGHTS_PATH)
     
     # Process each video
-    for video_name in video_list:
+    for video_name in videos_to_process:
         try:
             process_video(video_name, frame_step, model, cursor, conn, process_frame_func=process_frame)
             save_processed_video(LOG_FILE_PATH, video_name)
