@@ -190,60 +190,172 @@ def merge_segments_with_small_gaps(segments_df):
     else:
         return segments_df
 
-def reclassify_available_segments(segments_df, frame_data, detection_col='has_person_or_face'):
+def reclassify_implicit_turn_taking(segments_df, frame_data):
     """
-    Reclassify 'Available' segments to 'Alone' if no person/face detection 
-    occurred in any frame within the segment's duration.
+    Reclassify 'Available' or 'Alone' segments to 'Interacting' if they contain 
+    sufficient evidence of implicit, KCHI-based turn-taking.
+
+    Criteria (Implicit Turn-Taking Character):
+    1. Segment type is 'Available' or 'Alone'.
+    2. At least 20% of the segment's sampled frames are KCHI-only (KCHI=1, CDS=0, OHS=0).
+    3. Person/Face (person_present) is detected for at least 5% of the segment's frames.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with segments (after buffering and merging).
+    frame_data : pd.DataFrame
+        Original frame-level data containing multimodal flags.
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with reclassified segments.
+    """    
+    reclassified_count = 0
+    # Use copy for safe modification
+    updated_segments_df = segments_df.copy()
+
+    # Iterate over the segments to check for reclassification
+    for index, segment in segments_df.iterrows():
+        
+        # --- Condition 1: Target Segments ---
+        if segment['interaction_type'] not in ['Available', 'Alone']:
+            continue
+        
+        video_name = segment['video_name']
+        start_frame = segment['segment_start']
+        end_frame = segment['segment_end']
+        
+        # Filter frame data for the current segment's video and frame range
+        current_video_frames = frame_data[frame_data['video_name'] == video_name]
+        segment_frames = current_video_frames[
+            (current_video_frames['frame_number'] >= start_frame) & 
+            (current_video_frames['frame_number'] <= end_frame)
+        ].copy() # Work on a copy of segment frames
+        
+        total_segment_frames = len(segment_frames)
+        if total_segment_frames == 0:
+            continue
+            
+        # --- Condition 2: KCHI-Only Density Check ---
+        # Frames must have KCHI but absolutely no CDS
+        kchi_only_count = segment_frames[
+            (segment_frames['has_kchi'] == 1) & 
+            (segment_frames['has_cds'] == 0)
+        ].shape[0]
+        
+        kchi_only_fraction = kchi_only_count / total_segment_frames
+
+        if kchi_only_fraction < InferenceConfig.KCHI_ONLY_FRACTION_THRESHOLD:
+            continue
+            
+        # --- Condition 3: Person Presence Check ---
+        # The 'person_or_face_present' column fuses face and person detection
+        person_presence_count = (segment_frames['person_or_face_present'] == 1).sum()
+        person_presence_fraction = person_presence_count / total_segment_frames
+        
+        if person_presence_fraction >= InferenceConfig.MIN_PERSON_PRESENCE_FRACTION:
+            # All conditions met: Reclassify to 'Interacting'
+            
+            # Use .loc on the updated_segments_df copy
+            updated_segments_df.loc[index, 'interaction_type'] = 'Interacting'
+            reclassified_count += 1
+            
+    print(f"   Reclassified {reclassified_count} 'Available'/'Alone' segments to 'Interacting' (Implicit Turn-Taking).")
+    return updated_segments_df
+
+def reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present'):
+    """
+    Reclassify 'Available' segments to 'Alone' only if they meet strict criteria:
+    1. No person/face detection occurred in the segment's duration.
+    2. Segment length is longer than 10 seconds.
+    3. The segment is NOT immediately preceded AND immediately succeeded by an 'Interacting' segment.
     
     Parameters
     ----------
     segments_df : pd.DataFrame
         DataFrame with final interaction segments.
     frame_data : pd.DataFrame
-        Original frame-level data.
+        Original frame-level data (used only for column existence check here).
     detection_col : str
-        The name of the column in frame_data indicating detection (1=detected, 0=not detected).
+        The name of the fused detection column (e.g., 'person_or_face_present').
         
     Returns
     -------
     pd.DataFrame
         DataFrame with reclassified segments.
-    """
-    print("\n🔄 Starting reclassification of 'Available' segments...")
-    
-    # Ensure the required column exists in frame_data
+    """    
+    # --- Check for Fused Detection Column ---
     if detection_col not in frame_data.columns:
         print(f"⚠️ Warning: Detection column '{detection_col}' not found in frame data. Skipping reclassification.")
         return segments_df
         
     reclassified_count = 0
-    # Create a copy to modify
     updated_segments_df = segments_df.copy()
 
-    # Iterate through segments that are currently 'Available'
-    available_indices = updated_segments_df[updated_segments_df['interaction_type'] == 'Available'].index
+    # Iterate over each video group to easily check neighboring segments by index
+    for video_id, video_segments in updated_segments_df.groupby('video_id'):
+        
+        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=False)
+        original_indices = video_segments['index'] # Map back to original segments_df index
+        
+        for i in range(len(video_segments)):
+            segment = video_segments.iloc[i]
+            
+            # --- Condition 1: Must be 'Available' ---
+            if segment['interaction_type'] != 'Available':
+                continue
+            
+            # --- Condition 2: Duration Check (must be > MIN_RECLASSIFY_DURATION_SEC seconds) ---
+            if segment['duration_sec'] <= InferenceConfig.MIN_RECLASSIFY_DURATION_SEC:
+                continue
 
-    for idx in available_indices:
-        segment = updated_segments_df.loc[idx]
-        video_name = segment['video_name']
-        start_frame = segment['segment_start']
-        end_frame = segment['segment_end']
-        
-        # Filter frame data for the current segment's video and frame range
-        video_frames = frame_data[frame_data['video_name'] == video_name]
-        segment_frames = video_frames[
-            (video_frames['frame_number'] >= start_frame) & 
-            (video_frames['frame_number'] <= end_frame)
-        ]
-        
-        # Check if ANY detection occurred in the segment's frames
-        # Assuming detection_col is 1 for detection, 0 for no detection
-        detection_frames = segment_frames[detection_col]
-        
-        if detection_frames.empty or detection_frames.sum() == 0:
-            # If no frames or sum is 0, then no detection occurred. Reclassify.
-            updated_segments_df.loc[idx, 'interaction_type'] = 'Alone'
-            reclassified_count += 1
+            # --- Condition 3: Boundary Check (NOT between two 'Interacting' segments) ---
+            
+            # Check previous segment
+            is_preceded_by_interacting = False
+            if i > 0:
+                prev_segment = video_segments.iloc[i-1]
+                if prev_segment['interaction_type'] == 'Interacting':
+                    is_preceded_by_interacting = True
+            
+            # Check next segment
+            is_succeeded_by_interacting = False
+            if i < len(video_segments) - 1:
+                next_segment = video_segments.iloc[i+1]
+                if next_segment['interaction_type'] == 'Interacting':
+                    is_succeeded_by_interacting = True
+
+            # Reclassify only if the segment is NOT sandwiched between two 'Interacting' segments
+            if is_preceded_by_interacting and is_succeeded_by_interacting:
+                continue # Skip reclassification if sandwiched
+
+            # --- Condition 4: No Detection Check (main criterion) ---
+            
+            video_name = segment['video_name']
+            start_frame = segment['segment_start']
+            end_frame = segment['segment_end']
+            
+            # Filter frame data for the current segment's video and frame range
+            current_video_frames = frame_data[frame_data['video_name'] == video_name]
+            segment_frames = current_video_frames[
+                (current_video_frames['frame_number'] >= start_frame) & 
+                (current_video_frames['frame_number'] <= end_frame)
+            ]
+            
+            # Check if ANY detection occurred (sum > 0)
+            detection_frames = segment_frames[detection_col]
+            
+            if detection_frames.empty or detection_frames.sum() == 0:
+                # All conditions met: no detection, long duration, and not sandwiched
+                
+                # Get the original index from the temporary DataFrame's 'index' column
+                original_idx = original_indices.iloc[i]
+                
+                # Apply reclassification to the main copy
+                updated_segments_df.loc[original_idx, 'interaction_type'] = 'Alone'
+                reclassified_count += 1
             
     print(f"   Reclassified {reclassified_count} 'Available' segments to 'Alone'.")
     return updated_segments_df
@@ -379,13 +491,16 @@ def main(output_file_path: Path, frame_data_path: Path):
                                         'segment_start', 'segment_end', 
                                         'start_time_sec', 'end_time_sec', 'duration_sec'])
 
-    # Step 4: Reclassify 'Available' segments if no detection occurred
-    segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='has_person_or_face')
+    # Step 4: Reclassify 'Available' segments to 'Alone' if no detection occurred
+    #segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
+    
+    # Step 5: Reclassify for Implicit Turn-Taking
+    segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
 
-    # Step 5: Add metadata
+    # Step 6: Add metadata
     segments_df = add_metadata_to_segments(segments_df, frame_data)
     
-    # Step 6: Generate and print summary
+    # Step 7: Generate and print summary
     print_segment_summary(segments_df)
     
     # Step 7: Save results
