@@ -357,6 +357,10 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
                 yticklabels=[label.capitalize() for label in sorted_gt_labels],
                 cbar_kws={'label': 'Number of GT Seconds'})
     plt.title('Confusion Matrix (Counts)')
+    
+    plt.xlabel('Predicted Label', fontsize=14, labelpad=10)
+    plt.ylabel('True Label (Ground Truth)', fontsize=14, labelpad=10)
+    
     plt.tight_layout()
     plt.savefig(conf_matrix_counts_path, dpi=300, bbox_inches='tight')
     plt.close()
@@ -368,6 +372,10 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
                 yticklabels=[label.capitalize() for label in sorted_gt_labels],
                 cbar_kws={'label': 'Percentage (%)'})
     plt.title('Confusion Matrix (Percentages)')
+    
+    plt.xlabel('Predicted Label', fontsize=14, labelpad=10)
+    plt.ylabel('True Label (Ground Truth)', fontsize=14, labelpad=10)
+    
     plt.tight_layout()
     plt.savefig(conf_matrix_percentages_path, dpi=300, bbox_inches='tight')
     plt.close()
