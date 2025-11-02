@@ -215,7 +215,9 @@ class InferenceConfig:
     MIN_SEGMENT_DURATION_SEC = 5 # minimum duration for a segment to be considered
     MIN_CHANGE_DURATION_SEC = 3 # minimum duration for a change to be considered
     GAP_MERGE_DURATION_SEC = 7 # duration for merging gaps for segments with same label
-
+    MIN_RECLASSIFY_DURATION_SEC = 5 # minimum duration for reclassifying 'Available' segments
+    KCHI_ONLY_FRACTION_THRESHOLD = 0.7 # Percentage of KCHI-only frames in segments available or alone for reclassification
+    MIN_PERSON_PRESENCE_FRACTION = 0.05 # At least 10% person presence in segments available or alone for reclassification
     
     # -- Hyperparameter Tuning Parameters --
     MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
