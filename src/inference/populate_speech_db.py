@@ -120,13 +120,13 @@ def aggregate_and_save_results(snippets: List[Dict], db_cursor: sqlite3.Cursor, 
                 scores[AudioConfig.VALID_RTTM_CLASSES[0]]
             ))
 
-def main(selected_videos: List[str]):
+def main(video_list: List[str]):
     """
     Main function to process RTTM data for a list of selected videos.
     
     Parameters
     ----------
-    selected_videos : List[str]
+    video_list : List[str]
         List of video stems (filenames without extension) to process.
     """
     rttm_path = Path(AudioClassification.VTC_RTTM_FILE)
@@ -137,7 +137,17 @@ def main(selected_videos: List[str]):
         return
 
     # Create a set of base file stems (without RTTM's file extensions) for quick lookup
-    selected_stems = set(selected_videos)
+    processed_videos = load_processed_videos(LOG_FILE_PATH)
+    
+    print(f"Loaded {len(processed_videos)} already processed videos from log.")
+    # Filter out already processed videos
+    videos_to_process = [v for v in video_list if v not in processed_videos]
+
+    if not videos_to_process:
+        logging.info("All requested videos have already been processed!")
+        return
+    
+    selected_stems = set(videos_to_process)
     
     # Connect to database
     conn = sqlite3.connect(DataPaths.INFERENCE_DB_PATH)
@@ -165,6 +175,7 @@ def main(selected_videos: List[str]):
             aggregate_and_save_results(snippets, cursor, video_id)
             conn.commit()
             logging.info(f"Inserted {len(snippets)} snippets for video_id {video_id} (Stem: {base_stem})")
+            save_processed_video(LOG_FILE_PATH, base_stem)
             processed_count += 1
         except Exception as e:
             logging.error(f"Error inserting snippets for {base_stem}: {e}")
