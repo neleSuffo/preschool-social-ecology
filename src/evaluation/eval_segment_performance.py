@@ -1,15 +1,23 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import argparse
 import sys
-import re
-import seaborn as sns
 from pathlib import Path
-from constants import Evaluation, Inference
 from collections import defaultdict
+import re
+
+# Add the src directory to path for imports
+src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
+sys.path.append(str(src_path))
+
+# Assuming these are available in your project structure
+from constants import Evaluation, Inference
 from config import InferenceConfig
-from utils import time_to_seconds
+from utils import time_to_seconds 
+
+# --- PLOTTING FUNCTION ---
 
 def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path):
     """
@@ -28,9 +36,9 @@ def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path
     """
     # Define colors and category order
     INTERACTION_COLORS = {
-        'Interacting': '#d62728', # Red
-        'Available': '#ff7f0e',   # Orange
-        'Alone': '#1f77b4',       # Blue
+        'interacting': '#d62728', # Red
+        'available': '#ff7f0e',   # Orange
+        'alone': '#1f77b4',       # Blue
     }
     
     # Filter data for the specific video
@@ -115,67 +123,13 @@ def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path
     plt.savefig(save_path)
     plt.close(fig)
     print(f"\n✅ Plot successfully saved to: {save_path}")
-    
-def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
-    """
-    Wrapper function for hyperparameter tuning.
-    Runs second-by-second evaluation and calculates detailed metrics, 
-    matching the expected interface of tune_hyperparameters.py.
-    
-    Parameters
-    ----------
-    predictions_df : pd.DataFrame
-        DataFrame containing predicted interaction segments.
-    ground_truth_df : pd.DataFrame
-        DataFrame containing ground truth interaction segments.
-    iou_threshold : float, optional
-        IoU threshold for evaluation (not used in second-by-second evaluation).
-    """
-    # Convert GT time columns from min:sec format to seconds if necessary
-    if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
-        ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
-        ground_truth_df['end_time_sec'] = ground_truth_df['end_time_min'].apply(time_to_seconds)
-    
-    # 1. Run the core second-by-second comparison
-    results_by_seconds = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
 
-    # 2. Calculate detailed metrics (Precision, Recall, F1, TP, FP, FN)
-    detailed_metrics = calculate_detailed_metrics(results_by_seconds)
-
-    # 3. Reformat the output to match tune_hyperparameters.py's expectation
-    output = {}
-    for class_name, metrics in detailed_metrics.items():
-        if class_name != 'macro_avg':
-            output[class_name] = {
-                # Required for overall metric calculation in tune_hyperparameters.py
-                'tp': metrics['true_positives'],
-                'fp': metrics['false_positives'],
-                'fn': metrics['false_negatives'],
-                # Included for completeness
-                'precision': metrics['precision'],
-                'recall': metrics['recall'],
-                'f1_score': metrics['f1_score'],
-            }
-            
-    return output
+# --- EVALUATION CORE FUNCTIONS (RETAINED) ---
 
 def create_second_level_labels(segments_df, video_duration_seconds):
     """
     Create a second-by-second label array for a video based on segments. 
-    Also reports the total number of seconds labeled.
-    
-    Parameters
-    ----------
-    segments_df : pd.DataFrame
-        DataFrame with segments for a single video, containing 'start_time_sec', 'end_time_sec', 'interaction_type'
-    video_duration_seconds : int
-        Total number of seconds in the video
-    
-    Returns
-    -------
-    np.array
-        Array where each index represents a second and contains the interaction type label
-        Example: ['alone', 'alone', 'interacting', ...]
+    ...
     """
     labels = np.full(video_duration_seconds, None, dtype=object)
     for _, segment in segments_df.iterrows():
@@ -185,13 +139,12 @@ def create_second_level_labels(segments_df, video_duration_seconds):
             start_sec = 0
         try:
             end_sec = int(np.round(float(segment['end_time_sec'])))
+            # Clip end_sec to prevent out-of-bounds indexing
+            end_sec = min(end_sec, video_duration_seconds - 1)
         except Exception:
             end_sec = 0
         
         interaction_type = str(segment['interaction_type']).lower()
-        
-        # Clip end_sec to prevent out-of-bounds indexing
-        end_sec = min(end_sec, video_duration_seconds - 1)
         
         # Ensure start_sec is valid
         start_sec = max(0, start_sec)
@@ -207,20 +160,7 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
     """
     Evaluates model performance by comparing second-by-second classifications,
     excluding the first and last x seconds, as defined in InferenceConfig.EXCLUSION_SECONDS.
-    Also captures the types of misclassifications (e.g., alone → interacting).
-    
-    Parameters
-    ----------
-    predictions_df : pd.DataFrame
-        DataFrame containing predicted interaction segments.
-    ground_truth_df : pd.DataFrame
-        DataFrame containing ground truth interaction segments.
-        
-    Returns
-    -------
-    dict
-        Dictionary containing overall accuracy, category-specific accuracies,
-        video-wise results, confusion matrix, interaction types, and misclassifications.
+    ...
     """    
     # Identify videos present in both predictions and ground truth
     videos_with_gt = set(ground_truth_df['video_name'].unique())
@@ -330,20 +270,48 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
 
     return results
 
+def evaluate_performance(predictions_df, ground_truth_df, iou_threshold=None):
+    """
+    Wrapper function for hyperparameter tuning.
+    Runs second-by-second evaluation and calculates detailed metrics, 
+    matching the expected interface of tune_hyperparameters.py.
+    ...
+    """
+    # Convert GT time columns from min:sec format to seconds if necessary
+    if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
+        ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
+        ground_truth_df['end_time_sec'] = ground_truth_df['end_time_min'].apply(time_to_seconds)
+    
+    # 1. Run the core second-by-second comparison
+    results_by_seconds = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
+
+    # 2. Calculate detailed metrics (Precision, Recall, F1, TP, FP, FN)
+    detailed_metrics = calculate_detailed_metrics(results_by_seconds)
+
+    # 3. Reformat the output to match tune_hyperparameters.py's expectation
+    output = {}
+    for class_name, metrics in detailed_metrics.items():
+        if class_name != 'macro_avg':
+            output[class_name] = {
+                # Required for overall metric calculation in tune_hyperparameters.py
+                'tp': metrics['true_positives'],
+                'fp': metrics['false_positives'],
+                'fn': metrics['false_negatives'],
+                # Included for completeness
+                'precision': metrics['precision'],
+                'recall': metrics['recall'],
+                'f1_score': metrics['f1_score'],
+            }
+            
+    return output
+
 def generate_confusion_matrix_plots(results):
     """
     Generate and save confusion matrix plots (absolute counts and relative percentages).
-    Only includes seconds with ground truth labels in the absolute counts matrix.
-    
-    Parameters
-    ----------
-    results : dict
-        Results dictionary containing confusion_matrix and interaction_types
+    ...
     """
     confusion_matrix = results['confusion_matrix']
     interaction_types = results['interaction_types']
-    
-    # Define consistent order for labels (interacting, available, alone, unclassified)
     preferred_order = ['interacting', 'available', 'alone']
     
     # Get ground truth labels in preferred order
@@ -357,13 +325,11 @@ def generate_confusion_matrix_plots(results):
             sorted_gt_labels.append(label)
     
     # Ensure predicted labels include ALL ground truth types (even if count is 0)
-    # This ensures symmetric confusion matrix with all GT categories as both rows and columns
-    all_pred_labels = set(interaction_types)  # Start with all GT types
+    all_pred_labels = set(interaction_types)  
 
-    # Add any additional predicted labels that appear in confusion matrix
     for gt_label in confusion_matrix:
         for pred_label in confusion_matrix[gt_label]:
-            if pred_label != 'unclassified' and pred_label is not None and str(pred_label).lower() != 'nan':  # Skip unclassified and NaN labels
+            if pred_label != 'unclassified' and pred_label is not None and str(pred_label).lower() != 'nan': 
                 all_pred_labels.add(pred_label)
 
     # Remove None/NaN from all_pred_labels
@@ -373,7 +339,6 @@ def generate_confusion_matrix_plots(results):
     for label in preferred_order:
         if label in all_pred_labels:
             sorted_pred_labels.append(label)
-    # Add any remaining predicted labels (excluding unclassified and NaN)
     for label in sorted(all_pred_labels):
         if label not in sorted_pred_labels:
             sorted_pred_labels.append(label)
@@ -383,7 +348,7 @@ def generate_confusion_matrix_plots(results):
     
     # Only include seconds with ground truth labels in absolute counts
     matrix_data = []
-    gt_counts = []  # Track total seconds with ground truth for each class
+    gt_counts = [] 
     for gt_label in sorted_gt_labels:
         if gt_label is None or str(gt_label).lower() == 'nan':
             continue
@@ -400,50 +365,34 @@ def generate_confusion_matrix_plots(results):
 
     matrix_array = np.array(matrix_data)
 
-    # Absolute count heatmap (only seconds with ground truth)
+    # Save plots to dynamic folder
+    output_folder.mkdir(parents=True, exist_ok=True)
+    conf_matrix_counts_path = output_folder / InferenceConfig.CONFUSION_MATRIX_COUNTS
+    conf_matrix_percentages_path = output_folder / InferenceConfig.CONFUSION_MATRIX_PERCENTAGES
+
+    # Save absolute matrix
     plt.figure(figsize=(10, 8))
-    sns.heatmap(matrix_array,
-                annot=True,
-                fmt='d',
-                cmap='Blues',
+    sns.heatmap(matrix_array, annot=True, fmt='d', cmap='Blues',
                 xticklabels=[label.capitalize() for label in sorted_pred_labels],
                 yticklabels=[label.capitalize() for label in sorted_gt_labels],
                 cbar_kws={'label': 'Number of GT Seconds'})
-
-    plt.title('Confusion Matrix - Second-by-Second Classification (Counts, GT Only)', fontsize=16, fontweight='bold')
-    plt.xlabel('Predicted Labels', fontsize=12, fontweight='bold')
-    plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
+    plt.title('Confusion Matrix (Counts)')
     plt.tight_layout()
-    Evaluation.CONF_MATRIX_COUNTS.parent.mkdir(parents=True, exist_ok=True)
-    # Add timestamp to filename
-    conf_matrix_counts_path = Evaluation.CONF_MATRIX_COUNTS.with_name(f"{Evaluation.CONF_MATRIX_COUNTS.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}{Evaluation.CONF_MATRIX_COUNTS.suffix}")
     plt.savefig(conf_matrix_counts_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    # Relative count heatmap (row-normalized)
-    matrix_percentages = np.zeros_like(matrix_array, dtype=float)
-    for i, row in enumerate(matrix_array):
-        row_total = row.sum()
-        if row_total > 0:
-            matrix_percentages[i] = (row / row_total) * 100
-
+    # Save percentage matrix
     plt.figure(figsize=(10, 8))
-    sns.heatmap(matrix_percentages,
-                annot=True,
-                fmt='.1f',
-                cmap='Blues',
+    sns.heatmap(matrix_percentages, annot=True, fmt='.1f', cmap='Blues',
                 xticklabels=[label.capitalize() for label in sorted_pred_labels],
                 yticklabels=[label.capitalize() for label in sorted_gt_labels],
                 cbar_kws={'label': 'Percentage (%)'})
-
-    plt.title('Confusion Matrix - Second-by-Second Classification (Percentages)', fontsize=16, fontweight='bold')
-    plt.xlabel('Predicted Labels', fontsize=12, fontweight='bold')
-    plt.ylabel('Ground Truth Labels', fontsize=12, fontweight='bold')
+    plt.title('Confusion Matrix (Percentages)')
     plt.tight_layout()
-    conf_matrix_percentages_path = Evaluation.CONF_MATRIX_PERCENTAGES.with_name(f"{Evaluation.CONF_MATRIX_PERCENTAGES.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}{Evaluation.CONF_MATRIX_PERCENTAGES.suffix}")
     plt.savefig(conf_matrix_percentages_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"✅ Confusion matrix saved: {conf_matrix_percentages_path}")
+
+    print(f"✅ Confusion matrices saved in: {output_folder}")
 
 def save_performance_results(results, detailed_metrics, total_frames, total_hours, filename=Evaluation.PERFORMANCE_RESULTS_TXT):
     """
@@ -451,7 +400,6 @@ def save_performance_results(results, detailed_metrics, total_frames, total_hour
     """
     # Add timestamp to filename
     filename.parent.mkdir(parents=True, exist_ok=True)
-    filename = filename.with_name(f"{filename.stem}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}{filename.suffix}")
     with open(filename, 'w') as f:
         # Write analysis summary
         f.write("ANALYSIS SUMMARY\n")
@@ -485,6 +433,8 @@ def save_performance_results(results, detailed_metrics, total_frames, total_hour
                 f.write(f"  False Positives: {metrics['false_positives']:,}\n")
                 f.write(f"  False Negatives: {metrics['false_negatives']:,}\n")
             f.write("\n")
+    print(f"✅ Performance results saved to: {filename}")
+
 
 def calculate_detailed_metrics(results):
     """
@@ -555,60 +505,37 @@ def run_evaluation(predictions_path: Path):
     ground_truth_path = Inference.GROUND_TRUTH_SEGMENTS_CSV
     print(f"Loading ground truth from: {ground_truth_path}")
     try:
-        # Assuming GT data still uses semicolon delimiter from user's original format
         ground_truth_df = pd.read_csv(ground_truth_path, delimiter=';')
     except FileNotFoundError:
         print(f"❌ Error: Ground truth file not found at {ground_truth_path}")
         sys.exit(1)
 
+    # --- new: define output folder based on input file ---
+    output_folder = predictions_path.parent
+    output_folder.mkdir(parents=True, exist_ok=True)
 
-    # convert minute-based times in GT to seconds for consistency using function time_to_seconds
+    # convert minute-based times in GT to seconds for consistency
     if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
         ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
         ground_truth_df['end_time_sec'] = ground_truth_df['end_time_min'].apply(time_to_seconds)
 
-    # Evaluate performance
     results = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
-    
-    # Calculate total seconds and hours analyzed
     total_seconds = results['total_seconds']
     total_hours = total_seconds / 3600
-    
-    # Calculate detailed metrics (precision, recall, F1)
     detailed_metrics = calculate_detailed_metrics(results)
-    
-    # Validation: Ensure all ground truth types are in detailed metrics
-    gt_types_set = set(results['interaction_types'])
-    metrics_types_set = set(detailed_metrics.keys()) - {'macro_avg'}
-    if gt_types_set != metrics_types_set:
-        print(f"⚠️ Warning: Mismatch between GT types and metrics types")
-        print(f"GT types: {sorted(gt_types_set)}")
-        print(f"Metrics types: {sorted(metrics_types_set)}")
 
-    # Print F1 scores to terminal
-    print("\nDETAILED F1-SCORES")
-    print("=" * 40)
-    for class_name, metrics in detailed_metrics.items():
-        if class_name == 'macro_avg':
-            continue
-        print(f"{class_name:<20} F1-score: {metrics['f1_score']:.4f} ({metrics['f1_score']*100:.2f}%)")
+    # Generate confusion matrix plots and save to output folder
+    generate_confusion_matrix_plots(results, output_folder)
 
-    if 'macro_avg' in detailed_metrics:
-        print("\nMACRO AVERAGE")
-        print("=" * 40)
-        print(f"Macro F1-score: {detailed_metrics['macro_avg']['f1_score']:.4f} ({detailed_metrics['macro_avg']['f1_score']*100:.2f}%)")
-        
-    # Generate confusion matrix plots
-    generate_confusion_matrix_plots(results)
-    
-    # Save performance results to text file with detailed metrics
-    save_performance_results(results, detailed_metrics, total_seconds, total_hours)
+    # Save performance results to output folder
+    performance_path = output_folder / InferenceConfig.PERFORMANCE_RESULTS_TXT
+    save_performance_results(results, detailed_metrics, total_seconds, total_hours, filename=performance_path)
     
     return predictions_df, ground_truth_df
 
-def main(predictions_df, ground_truth_df):
+def main_evaluation_and_plotting(predictions_df, ground_truth_df, args):
     """
-    Main function to evaluate performance using frame-by-frame accuracy.
+    Handles plotting logic if --plot argument is provided.
     
     Parameters
     ----------
@@ -616,32 +543,48 @@ def main(predictions_df, ground_truth_df):
         DataFrame containing predicted interaction segments.
     ground_truth_df : pd.DataFrame
         DataFrame containing ground truth interaction segments.
+    args: argparse.Namespace
+        Parsed command line arguments.
     """
-    parser = argparse.ArgumentParser(description='Segment performance evaluation and plotting utility.')
-    parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g., results/interaction_segments.csv).')
-    parser.add_argument('--plot', type=str, nargs='?', default=None, help='Video name to plot. If specified without a value, plots all videos found.')
     
-    args = parser.parse_args()
-    
-    predictions_path = Path(args.input)
-    
-    # --- Load Data (Needs to be done once for both modes) ---
-    predictions_df, ground_truth_df = run_evaluation(predictions_path)
-
     # --- Plotting Logic ---
     if args.plot:
         plot_video_name = args.plot
         
-        if not re.match(r'.+', plot_video_name):
-                print(f"❌ Error: Invalid video name '{plot_video_name}' for plotting.")
-                sys.exit(1)
+        # Determine the output folder: parent directory of the input CSV file
+        input_path = Path(args.input)
+        output_folder = input_path.parent
         
-        plot_path = Evaluation.PLOT_OUTPUT_DIR / f"{plot_video_name}_segment_timeline.png"
-        plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path)
-    
-if __name__ == "__main__":
-    # load data
-    predictions_df = pd.read_csv(Inference.INTERACTION_SEGMENTS_CSV)
-    ground_truth_df = pd.read_csv(Inference.GROUND_TRUTH_SEGMENTS_CSV, delimiter=';')
+        if plot_video_name == '__ALL__':
+            video_names = predictions_df['video_name'].unique()
+            print(f"Plotting all {len(video_names)} videos...")
+            for video_name in video_names:
+                # Use the input folder for plots
+                plot_path = output_folder / f"{video_name}_segment_timeline.png"
+                plot_segment_timeline(predictions_df, ground_truth_df, video_name, plot_path)
+        else:
+            # Simple check for required format parts: non-empty string
+            if not re.match(r'.+', plot_video_name):
+                 print(f"❌ Error: Invalid video name '{plot_video_name}' for plotting.")
+                 sys.exit(1)
+            
+            # Use the input folder for the plot
+            plot_path = output_folder / f"{plot_video_name}_segment_timeline.png"
+            plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path)
 
-    main(predictions_df, ground_truth_df)
+
+if __name__ == "__main__":
+    # 1. Parse arguments
+    parser = argparse.ArgumentParser(description='Segment performance evaluation and plotting utility.')
+    parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g., results/interaction_segments.csv).')
+    # Updated nargs for plotting argument to handle optional value for plotting all videos
+    parser.add_argument('--plot', type=str, nargs='?', const='__ALL__', default=None,
+                        help='Video name to plot. If specified without a value, plots all videos found.')
+    
+    args = parser.parse_args()
+    
+    # 2. Run evaluation (loads data, runs metrics, prints/saves results)
+    predictions_df, ground_truth_df = run_evaluation(Path(args.input))
+    
+    # 3. Run plotting logic if requested
+    main_evaluation_and_plotting(predictions_df, ground_truth_df, args)
