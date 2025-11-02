@@ -330,10 +330,10 @@ def classify_frames(row, results_df, included_rules=None):
     - OR Very close proximity (Rule 2)
     - OR Sustained child-directed speech present (Rule 3)
     - OR Face/Person + recent speech (Rule 4)
+    - OR KCHI + Buffered Visual (Rule 5)
     
     2. Available: Passive social presence (Tier 2)
-    - Person detected (person_present) 
-    - OR **Other-directed Speech (ohs) is present**
+    - OHS is present OR Sustained Person/Face presence is true
     
     3. ALONE: No social presence detected
     
@@ -344,18 +344,18 @@ def classify_frames(row, results_df, included_rules=None):
     results_df : pd.DataFrame
         The full DataFrame to enable window-based lookups
     included_rules : list, optional
-        List of rule numbers to include (1, 2, 3, 4). If None, uses default rules.
+        List of rule numbers to include (1, 2, 3, 4, 5). If None, uses default rules.
         
     Returns
     -------
     tuple
-        (interaction_category, rule1_active, rule2_active, rule3_active, rule4_active)
+        (interaction_category, rule1_active, rule2_active, rule3_active, rule4_active, rule5_active)
         where interaction_category is str ('Interacting', 'Available', 'Alone')
         and rule flags are boolean
     """
     # Default rules if none specified
     if included_rules is None:
-        included_rules = [1, 2, 3, 4]  # Default: all rules
+        included_rules = [1, 2, 3, 4, 5]
     
     # Calculate recent speech activity once at the beginning
     current_index = row.name
@@ -382,20 +382,37 @@ def classify_frames(row, results_df, included_rules=None):
     person_or_face_present_instant = (row['person_or_face_present'] == 1)
     has_ohs = (row['has_ohs'] == 1)
 
+    # --- Sustained Person/Face Presence for 'Available' (Tier 2 Visual Check) ---
     window_samples_person = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * FPS / SAMPLE_RATE)
     window_start_person = max(0, current_index - window_samples_person + 1)
     
-    # 1. Look back over the designated window
     window_data_person = results_df.loc[window_start_person : current_index]
     window_size = len(window_data_person)
     
-    # 2. Check if the person presence threshold is met
     if window_size > 0:
         person_count_in_window = (window_data_person['person_or_face_present'] == 1).sum()
         presence_fraction = person_count_in_window / window_size
         is_sustained_person_or_face_present = presence_fraction >= InferenceConfig.MIN_PRESENCE_FRACTION
     else:
         is_sustained_person_or_face_present = False
+
+    # --- NEW RULE 5: Buffered KCHI + Visual Presence (30 frame buffer) ---
+    BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
+    
+    is_kchi = (row['has_kchi'] == 1)
+    
+    rule5_buffered_kchi = False
+    if is_kchi:
+        # Define window indices relative to the current index
+        start_buffer = max(0, current_index - BUFFER_SAMPLES)
+        end_buffer = min(len(results_df) - 1, current_index + BUFFER_SAMPLES)
+        
+        # Check if *any* person/face detection exists in the surrounding buffer
+        if end_buffer >= start_buffer:
+            visual_in_buffer = (
+                results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1
+            ).any()
+            rule5_buffered_kchi = visual_in_buffer
     
     # Evaluate all rules and track their activation
     rule1_turn_taking = bool(row['is_audio_interaction'])
@@ -422,6 +439,9 @@ def classify_frames(row, results_df, included_rules=None):
     if 4 in included_rules and rule4_person_recent_speech:
         active_rules.append(4)
 
+    if 5 in included_rules and rule5_buffered_kchi:
+        active_rules.append(5)
+
     # Determine interaction category
     if active_rules:
         interaction_category = "Interacting"
@@ -431,7 +451,14 @@ def classify_frames(row, results_df, included_rules=None):
     else:
         interaction_category = "Alone"
     
-    return interaction_category, rule1_turn_taking, rule2_close_proximity, rule3_kcds_speaking, rule4_person_recent_speech
+    return (
+        interaction_category, 
+        rule1_turn_taking, 
+        rule2_close_proximity, 
+        rule3_kcds_speaking, 
+        rule4_person_recent_speech, 
+        rule5_buffered_kchi
+    )
 
 def classify_face_category(row):
     """
@@ -542,14 +569,15 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         Summary statistics including interaction and presence distributions
     """
     if included_rules is None:
-        included_rules = [1, 2, 3, 4]
+        included_rules = [1, 2, 3, 4, 5]
 
     # Print which rules are being used
     rule_names = {
         1: "Turn-Taking (KCHI + KCDS)",
         2: "Very Close Proximity",
         3: "KCDS Present", 
-        4: "Face/Person + Recent KCDS"
+        4: "Face/Person + Recent KCDS",
+        5: "Buffered KCHI + Visual"
     }
 
     print("🔄 Running comprehensive multimodal social interaction analysis...")
@@ -598,6 +626,7 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         all_data['rule2_close_proximity'] = [result[2] for result in classification_results]
         all_data['rule3_kcds_speaking'] = [result[3] for result in classification_results]
         all_data['rule4_person_recent_speech'] = [result[4] for result in classification_results]
+        all_data['rule5_buffered_kchi'] = [result[5] for result in classification_results] # ADDED 5
 
         # Categorization
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
@@ -610,7 +639,7 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
         # ------------------------------------------------------------------
         # 💾 Save frame-level CSV to the timestamped output folder
         # ------------------------------------------------------------------
-        file_name = FRAME_LEVEL_INTERACTIONS_CSV.stem + f"_{'_'.join(map(str, included_rules))}.csv"
+        file_name = Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem + f"_{'_'.join(map(str, included_rules))}.csv"
         csv_path = run_dir / file_name
         all_data.to_csv(csv_path, index=False)
         print(f"✅ Saved detailed frame-level analysis to {csv_path}")
@@ -619,13 +648,13 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
-    parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4],
-                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=cds-speaking, 4=adult-face-recent-speech). Default: [1, 2, 3, 4]')
+    parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4, 5],
+                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=cds-speaking, 4=adult-face-recent-speech, 5=buffered-kchi-visual). Default: [1, 2, 3, 4, 5]') # UPDATED HELP TEXT
 
     args = parser.parse_args()
     
     # Validate rule numbers
-    valid_rules = [1, 2, 3, 4]
+    valid_rules = [1, 2, 3, 4, 5]
     if not all(rule in valid_rules for rule in args.rules):
         print(f"❌ Error: Invalid rule numbers. Valid options are: {valid_rules}")
         sys.exit(1)
