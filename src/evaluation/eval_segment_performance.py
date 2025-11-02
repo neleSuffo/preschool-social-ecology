@@ -1,5 +1,6 @@
 import argparse
 import sys
+import re
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -15,6 +16,109 @@ from constants import Evaluation, Inference
 from config import InferenceConfig
 from utils import time_to_seconds
 
+def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path):
+    """
+    Plots the segment timelines (GT vs Prediction) for a specific video.
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
+        DataFrame containing predicted interaction segments.
+    ground_truth_df : pd.DataFrame
+        DataFrame containing ground truth interaction segments.
+    video_name : str
+        The specific video to plot.
+    save_path : Path
+        Path to save the generated plot.
+    """
+    # Define colors and category order
+    INTERACTION_COLORS = {
+        'interacting': '#d62728', # Red
+        'available': '#ff7f0e',   # Orange
+        'alone': '#1f77b4',       # Blue
+    }
+    
+    # Filter data for the specific video
+    pred = predictions_df[predictions_df['video_name'].str.contains(video_name, case=False, na=False)].copy()
+    gt = ground_truth_df[ground_truth_df['video_name'].str.contains(video_name, case=False, na=False)].copy()
+
+    if gt.empty and pred.empty:
+        print(f"Error: No data found for video '{video_name}' in either Ground Truth or Predictions.")
+        return
+
+    # Standardize and clean time columns (assuming time conversion already ran in main/caller)
+    for df in [pred, gt]:
+        if 'start_time_min' in df.columns:
+            df['start_time_sec'] = df['start_time_min'].apply(time_to_seconds)
+            df['end_time_sec'] = df['end_time_min'].apply(time_to_seconds)
+        df['interaction_type'] = df['interaction_type'].astype(str).str.lower().str.strip()
+        df['duration_sec'] = df['end_time_sec'] - df['start_time_sec']
+        df.dropna(subset=['start_time_sec', 'end_time_sec'], inplace=True)
+        
+    if gt.empty and pred.empty:
+        print(f"Error: No valid segments found for video '{video_name}' after processing.")
+        return
+
+    # Determine plot dimensions
+    max_time = max(pred['end_time_sec'].max() if not pred.empty else 0, 
+                   gt['end_time_sec'].max() if not gt.empty else 0)
+    max_time = np.ceil(max_time / 60) * 60 # Round up to nearest minute
+    
+    fig, ax = plt.subplots(figsize=(15, 4))
+
+    # --- Plot Ground Truth (GT) on Y=1 ---
+    y_pos_gt = 1.2
+    for _, row in gt.iterrows():
+        color = INTERACTION_COLORS.get(row['interaction_type'], '#808080')
+        ax.barh(y=y_pos_gt, 
+                width=row['duration_sec'], 
+                left=row['start_time_sec'],
+                height=0.2,
+                color=color,
+                edgecolor='black',
+                alpha=0.7)
+
+    # --- Plot Predictions (PRED) on Y=0.8 ---
+    y_pos_pred = 0.8
+    for _, row in pred.iterrows():
+        color = INTERACTION_COLORS.get(row['interaction_type'], '#808080')
+        ax.barh(y=y_pos_pred, 
+                width=row['duration_sec'], 
+                left=row['start_time_sec'],
+                height=0.2,
+                color=color,
+                edgecolor='black',
+                alpha=0.7)
+    
+    # Y-axis labels
+    ax.set_yticks([y_pos_pred, y_pos_gt])
+    ax.set_yticklabels(['Prediction', 'Ground Truth'], fontsize=12)
+    ax.set_ylim(0.5, 1.5)
+    
+    # X-axis (Time) configuration
+    ax.set_xlabel("Time (seconds)", fontsize=12)
+    ax.set_xlim(0, max_time)
+    
+    # Title
+    ax.set_title(f"Segment Timeline Comparison for Video: {video_name}", fontsize=14)
+
+    # Custom Legend
+    import matplotlib.patches as mpatches
+    legend_patches = [
+        mpatches.Patch(color=INTERACTION_COLORS.get(cat, '#808080'), alpha=0.7, label=cat.capitalize())
+        for cat in sorted(INTERACTION_COLORS.keys())
+    ]
+    ax.legend(handles=legend_patches, loc='upper right', bbox_to_anchor=(1.0, 1.35), ncol=3, frameon=False)
+    
+    plt.grid(axis='x', linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    
+    # Save the plot
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path)
+    plt.close(fig)
+    print(f"\n✅ Plot successfully saved to: {save_path}")
+    
 def create_second_level_labels(segments_df, video_duration_seconds):
     """
     Create a second-by-second label array for a video based on segments. 
@@ -349,8 +453,22 @@ def run_evaluation(predictions_path: Path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate social interaction predictions against ground truth.")
     parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g. 02_interaction_segments.csv)')
+    parser.add_argument('--plot', type=str, default=None, help='Video name to plot. If specified without a value, plots all videos found.')
 
     args = parser.parse_args()
     predictions_path = Path(args.input)
 
-    run_evaluation(predictions_path)
+    # 1. Run evaluation (loads data, runs metrics, prints/saves results)
+    predictions_df, ground_truth_df = run_evaluation(predictions_path)
+    
+    # 2. Run plotting logic if requested
+    if args.plot:
+        plot_video_name = args.plot
+        output_folder = predictions_path.parent
+
+        if not re.match(r'.+', plot_video_name):
+                print(f"❌ Error: Invalid video name '{plot_video_name}' for plotting.")
+                sys.exit(1)
+        
+        plot_path = output_folder / f"{plot_video_name}_segment_timeline.png"
+        plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path)
