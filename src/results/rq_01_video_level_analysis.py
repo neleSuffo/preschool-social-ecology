@@ -518,8 +518,21 @@ if __name__ == "__main__":
     folder_path.mkdir(parents=True, exist_ok=True)
 
     # Construct paths automatically
-    input_path = folder_path / Inference.FRAME_LEVEL_INTERACTIONS_CSV
     output_path = folder_path / Inference.INTERACTION_SEGMENTS_CSV
+    prefix = Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem
+    matching_files = list(folder_path.glob(f"{prefix}*.csv"))
+
+    if not matching_files:
+        raise FileNotFoundError(
+            f"No file starting with '{prefix}' found in {folder_path}"
+        )
+    elif len(matching_files) > 1:
+        print(f"⚠️ Multiple files found starting with '{prefix}', using the first one:")
+        for f in matching_files:
+            print(f"   - {f.name}")
+
+    input_path = matching_files[0]
+    print(f"Using input frame-level data from: {input_path}")
 
     # Run main analysis
     main(output_file_path=output_path, frame_data_path=input_path)
