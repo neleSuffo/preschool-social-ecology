@@ -198,10 +198,8 @@ class InferenceConfig:
     
     # -- Face Related Parameters --
     PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
-    FACE_DET_CONFIDENCE_THRESHOLD = 0.1 # confidence threshold for face detection
     
     # -- Person Related Parameters --
-    PERSON_DET_CONFIDENCE_THRESHOLD = 0.1 # confidence threshold for person detection
     PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
     MIN_PRESENCE_FRACTION = 0.5 # # At least 50% presencen in PERSON_AVAILABLE_WINDOW_SEC window
     PERSON_AUDIO_WINDOW_SEC = 5 # window duration for rule4_person_recent_speech
