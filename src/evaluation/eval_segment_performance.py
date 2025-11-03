@@ -16,7 +16,20 @@ from constants import Evaluation, Inference
 from config import InferenceConfig
 from utils import time_to_seconds
 
-def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path):
+def reclassify_to_binary(df: pd.DataFrame) -> pd.DataFrame:
+    """Reclassifies three-class labels to binary 'interacting' vs 'not interacting'."""
+    df_copy = df.copy()
+    # Define mapping: 'interacting' remains 'interacting', others become 'not interacting'
+    mapping = {
+        'interacting': 'interacting',
+        'available': 'not interacting',
+        'alone': 'not interacting'
+    }
+    # Ensure mapping handles lowercased strings
+    df_copy['interaction_type'] = df_copy['interaction_type'].astype(str).str.lower().str.strip().map(mapping).fillna(df_copy['interaction_type'])
+    return df_copy
+
+def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path, binary_mode=False):
     """
     Plots the segment timelines (GT vs Prediction) for a specific video.
     
@@ -30,13 +43,21 @@ def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path
         The specific video to plot.
     save_path : Path
         Path to save the generated plot.
+    binary_mode : bool
+        If True, use binary classification color mapping.
     """
-    # Define colors and category order
-    INTERACTION_COLORS = {
-        'interacting': '#d62728', # Red
-        'available': '#ff7f0e',   # Orange
-        'alone': '#1f77b4',       # Blue
-    }
+    # Define colors based on mode
+    if binary_mode:
+        INTERACTION_COLORS = {
+            'interacting': '#d62728',       # Red
+            'not interacting': '#1f77b4',   # Blue
+        }
+    else:
+        INTERACTION_COLORS = {
+            'interacting': '#d62728', # Red
+            'available': '#ff7f0e',   # Orange
+            'alone': '#1f77b4',       # Blue
+        }
     
     # Filter data for the specific video
     pred = predictions_df[predictions_df['video_name'].str.contains(video_name, case=False, na=False)].copy()
@@ -100,7 +121,8 @@ def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path
     ax.set_xlim(0, max_time)
     
     # Title
-    ax.set_title(f"Segment Timeline Comparison for Video: {video_name}", fontsize=14)
+    mode_suffix = " (Binary)" if binary_mode else ""
+    ax.set_title(f"Segment Timeline Comparison for Video: {video_name}{mode_suffix}", fontsize=14)
 
     # Custom Legend
     import matplotlib.patches as mpatches
@@ -117,7 +139,6 @@ def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path
     save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(save_path)
     plt.close(fig)
-    print(f"\n✅ Plot successfully saved to: {save_path}")
     
 def create_second_level_labels(segments_df, video_duration_seconds):
     """
@@ -162,11 +183,13 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
     
     print(f"Evaluating {len(videos_to_evaluate)} videos with both GT and Predictions...")
 
-    interaction_types = [str(t).lower() for t in ground_truth_df['interaction_type'].unique()]
+    # Determine interaction types based on the data present (will be 2 classes if run in binary mode)
+    gt_interaction_types = [str(t).lower() for t in ground_truth_df['interaction_type'].unique()]
+    
     total_seconds_all = 0
     correct_seconds_all = 0
 
-    category_stats = {category: {'total': 0, 'correct': 0} for category in interaction_types}
+    category_stats = {category: {'total': 0, 'correct': 0} for category in gt_interaction_types}
     confusion_matrix = defaultdict(lambda: defaultdict(int))
     misclassifications = defaultdict(int)
 
@@ -221,6 +244,11 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
             if gt_label is not None:
                 video_total_seconds += 1
                 total_seconds_all += 1
+                
+                # Check if category is already tracked (essential for binary mode)
+                if gt_label not in category_stats:
+                    category_stats[gt_label] = {'total': 0, 'correct': 0}
+                    
                 category_stats[gt_label]['total'] += 1
 
                 if pred_label is not None:
@@ -251,6 +279,9 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
         }
         for category, stats in category_stats.items()
     }
+    
+    # Update interaction_types to reflect the classes actually processed
+    final_interaction_types = list(category_stats.keys())
 
     results = {
         'overall_accuracy': overall_accuracy,
@@ -259,7 +290,7 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
         'category_accuracies': category_accuracies,
         'video_results': video_results,
         'confusion_matrix': confusion_matrix,
-        'interaction_types': interaction_types,
+        'interaction_types': final_interaction_types, # Use the actual categories found
         'misclassifications': misclassifications,
     }
 
@@ -310,15 +341,18 @@ def calculate_detailed_metrics(results):
             'false_positives': fp,
             'false_negatives': fn
         }
-    if detailed_metrics:
-        macro_precision = np.mean([m['precision'] for m in detailed_metrics.values()])
-        macro_recall = np.mean([m['recall'] for m in detailed_metrics.values()])
-        macro_f1 = np.mean([m['f1_score'] for m in detailed_metrics.values()])
-        detailed_metrics['macro_avg'] = {
-            'precision': macro_precision,
-            'recall': macro_recall,
-            'f1_score': macro_f1,
-        }
+    if detailed_metrics and len(detailed_metrics) > 0:
+        # Calculate macro average only over non-macro categories
+        non_macro_metrics = [m for k, m in detailed_metrics.items() if k != 'macro_avg']
+        if non_macro_metrics:
+            macro_precision = np.mean([m['precision'] for m in non_macro_metrics])
+            macro_recall = np.mean([m['recall'] for m in non_macro_metrics])
+            macro_f1 = np.mean([m['f1_score'] for m in non_macro_metrics])
+            detailed_metrics['macro_avg'] = {
+                'precision': macro_precision,
+                'recall': macro_recall,
+                'f1_score': macro_f1,
+            }
     return detailed_metrics
 
 def generate_confusion_matrix_plots(results, output_folder: Path):
@@ -326,10 +360,22 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
 
     confusion_matrix = results['confusion_matrix']
     interaction_types = results['interaction_types']
-    preferred_order = ['alone', 'available', 'interacting']
+    
+    # Determine the order based on the number of unique interaction types found
+    if len(interaction_types) == 2:
+        # Binary mode: ['not interacting', 'interacting']
+        preferred_order = ['not interacting', 'interacting']
+        plot_title_suffix = " (Binary)"
+    else:
+        # Tertiary mode: ['alone', 'available', 'interacting'] (original three)
+        preferred_order = ['alone', 'available', 'interacting']
+        plot_title_suffix = ""
 
+
+    # Filter and sort labels based on current interaction_types and preferred order
     sorted_gt_labels = [label for label in preferred_order if label in interaction_types]
-    # sorted_gt_labels backwards
+    
+    # Reverse the order for the predicted labels (X-axis) for standard visual layout
     sorted_pred_labels = sorted_gt_labels[::-1]
 
     matrix_array = np.array([
@@ -347,8 +393,9 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
 
     # --- Save plots ---
     output_folder.mkdir(parents=True, exist_ok=True)
-    conf_matrix_counts_path = output_folder / Evaluation.CONF_MATRIX_COUNTS
-    conf_matrix_percentages_path = output_folder / Evaluation.CONF_MATRIX_PERCENTAGES
+    conf_matrix_counts_path = output_folder / (Evaluation.CONF_MATRIX_COUNTS.stem + plot_title_suffix.replace(" ", "_").lower() + Evaluation.CONF_MATRIX_COUNTS.suffix)
+    conf_matrix_percentages_path = output_folder / (Evaluation.CONF_MATRIX_PERCENTAGES.stem + plot_title_suffix.replace(" ", "_").lower() + Evaluation.CONF_MATRIX_PERCENTAGES.suffix)
+
 
     # Absolute counts
     plt.figure(figsize=(10, 8))
@@ -356,7 +403,7 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
                 xticklabels=[label.capitalize() for label in sorted_pred_labels],
                 yticklabels=[label.capitalize() for label in sorted_gt_labels],
                 cbar_kws={'label': 'Number of GT Seconds'})
-    plt.title('Confusion Matrix (Counts)')
+    plt.title(f'Confusion Matrix (Counts){plot_title_suffix}')
     
     plt.xlabel('Predicted Label', fontsize=14, labelpad=10)
     plt.ylabel('True Label (Ground Truth)', fontsize=14, labelpad=10)
@@ -371,7 +418,7 @@ def generate_confusion_matrix_plots(results, output_folder: Path):
                 xticklabels=[label.capitalize() for label in sorted_pred_labels],
                 yticklabels=[label.capitalize() for label in sorted_gt_labels],
                 cbar_kws={'label': 'Percentage (%)'})
-    plt.title('Confusion Matrix (Percentages)')
+    plt.title(f'Confusion Matrix (Percentages){plot_title_suffix}')
     
     plt.xlabel('Predicted Label', fontsize=14, labelpad=10)
     plt.ylabel('True Label (Ground Truth)', fontsize=14, labelpad=10)
@@ -421,7 +468,7 @@ def save_performance_results(results, detailed_metrics, total_seconds, total_hou
             f.write(f"  False Negatives: {metrics['false_negatives']:,}\n")
             f.write("\n")
 
-def run_evaluation(predictions_path: Path):
+def run_evaluation(predictions_path: Path, binary_mode: bool):
     """Loads data, runs evaluation, and saves outputs in the same folder."""
     try:
         predictions_df = pd.read_csv(predictions_path)
@@ -435,6 +482,14 @@ def run_evaluation(predictions_path: Path):
     except FileNotFoundError:
         print(f"❌ Error: Ground truth file not found at {ground_truth_path}")
         sys.exit(1)
+
+    # --- Apply Binary Reclassification (NEW LOGIC) ---
+    if binary_mode:
+        predictions_df = reclassify_to_binary(predictions_df)
+        ground_truth_df = reclassify_to_binary(ground_truth_df)
+        print("📊 Running evaluation in BINARY mode: 'Available' and 'Alone' are mapped to 'Not Interacting'.")
+    else:
+        print("📊 Running evaluation in TERTIARY mode (Interacting, Available, Alone).")
 
     # --- Determine dynamic output folder ---
     output_folder = predictions_path.parent
@@ -454,7 +509,9 @@ def run_evaluation(predictions_path: Path):
     # Generate outputs
     generate_confusion_matrix_plots(results, output_folder)
 
-    performance_path = output_folder / Evaluation.PERFORMANCE_RESULTS_TXT
+    performance_path_suffix = "_binary" if binary_mode else ""
+    performance_path = output_folder / (Evaluation.PERFORMANCE_RESULTS_TXT.stem + performance_path_suffix + Evaluation.PERFORMANCE_RESULTS_TXT.suffix)
+    
     save_performance_results(results, detailed_metrics, total_seconds, total_hours, filename=performance_path)
     
     # Print F1-scores to console
@@ -475,12 +532,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate social interaction predictions against ground truth.")
     parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g. 02_interaction_segments.csv)')
     parser.add_argument('--plot', type=str, nargs='?', const='all', default='all', help='Video name to plot (default: all). If specified without value, all videos will be plotted.')
+    parser.add_argument('--binary', action='store_true', help='If set, combines "available" and "alone" into "not interacting" for binary classification.') # ADDED
 
     args = parser.parse_args()
     predictions_path = Path(args.input)
 
     # 1. Run evaluation (loads data, runs metrics, prints/saves results)
-    predictions_df, ground_truth_df = run_evaluation(predictions_path)
+    predictions_df, ground_truth_df = run_evaluation(predictions_path, args.binary)
     output_folder = predictions_path.parent
 
     # 2. Plotting logic
@@ -488,9 +546,11 @@ if __name__ == "__main__":
         video_names = ground_truth_df['video_name'].unique()
         print(f"\n📊 Generating plots for all {len(video_names)} videos...")
         for video_name in video_names:
-            plot_path = output_folder / f"{video_name}_segment_timeline.png"
-            plot_segment_timeline(predictions_df, ground_truth_df, video_name, plot_path)
+            plot_path = output_folder / f"{video_name}_segment_timeline{'_binary' if args.binary else ''}.png"
+            plot_segment_timeline(predictions_df, ground_truth_df, video_name, plot_path, args.binary)
+        print(f"📊 Plots generated for all videos.")
     else:
         plot_video_name = args.plot
-        plot_path = output_folder / f"{plot_video_name}_segment_timeline.png"
-        plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path)
+        plot_path = output_folder / f"{plot_video_name}_segment_timeline{'_binary' if args.binary else ''}.png"
+        plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path, args.binary)
+        print(f"📊 Plot generated for video: {plot_video_name}")
