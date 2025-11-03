@@ -3,6 +3,7 @@ import argparse
 import sys
 import sqlite3
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
 # Get the src directory (2 levels up from current notebook location)
@@ -14,6 +15,26 @@ from config import DataConfig, InferenceConfig
 
 # Constants
 FPS = DataConfig.FPS # frames per second
+
+def get_min_segment_duration(interaction_type: str) -> float:
+    """
+    Returns the minimum required segment duration (in seconds) based on the interaction type.
+    
+    This function relies on the assumption that the following constants are defined
+    in InferenceConfig:
+    - MIN_INTERACTING_SEGMENT_DURATION_SEC
+    - MIN_ALONE_SEGMENT_DURATION_SEC
+    - MIN_AVAILABLE_SEGMENT_DURATION_SEC
+    """
+    # Assuming the interaction_type is properly capitalized (e.g., 'Interacting', 'Alone')
+    type_map = {
+        'Interacting': InferenceConfig.MIN_INTERACTING_SEGMENT_DURATION_SEC,
+        'Alone': InferenceConfig.MIN_ALONE_SEGMENT_DURATION_SEC,
+        'Available': InferenceConfig.MIN_AVAILABLE_SEGMENT_DURATION_SEC,
+    }
+    # Use a default minimum (e.g., the largest) if the type is unexpected
+    default_min = getattr(InferenceConfig, 'MIN_ALONE_SEGMENT_DURATION_SEC', 15.0) 
+    return type_map.get(interaction_type, default_min)
 
 def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
@@ -60,7 +81,7 @@ def buffer_short_state_changes(states, frame_numbers):
 
 def create_segments_for_video(video_id, video_df):
     """
-    Create segments for a single video.
+    Create segments for a single video. Now respects type-specific minimum durations.
     
     Parameters
     ----------
@@ -96,14 +117,14 @@ def create_segments_for_video(video_id, video_df):
         if buffered_states[i] != current_state:
             segment_end_frame = frame_numbers[i-1]
             
-            # Only keep segments longer than minimum duration
+            required_min_duration = get_min_segment_duration(current_state)
+            
             segment_duration = (segment_end_frame - segment_start_frame) / FPS
-            if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
+            if segment_duration >= required_min_duration:
                 
                 segments.append({
                     'video_id': video_id,
                     'video_name': video_name,
-                    #'interaction_type': final_interaction_type,
                     'interaction_type': current_state,
                     'segment_start': segment_start_frame,
                     'segment_end': segment_end_frame,
@@ -117,8 +138,11 @@ def create_segments_for_video(video_id, video_df):
     
     # Handle the final segment
     segment_end_frame = frame_numbers[-1]
+    
+    required_min_duration = get_min_segment_duration(current_state)
+    
     segment_duration = (segment_end_frame - segment_start_frame) / FPS
-    if segment_duration >= InferenceConfig.MIN_SEGMENT_DURATION_SEC:
+    if segment_duration >= required_min_duration:
         
         segments.append({
             'video_id': video_id,
