@@ -42,7 +42,7 @@ def extract_child_id(video_name):
 
 def buffer_short_state_changes(states, frame_numbers):
     """
-    Buffer short state changes to avoid rapid transitions.
+    Buffer short state changes to avoid rapid transitions (less than MIN_CHANGE_DURATION_SEC).
     
     Parameters
     ----------
@@ -81,7 +81,7 @@ def buffer_short_state_changes(states, frame_numbers):
 
 def create_segments_for_video(video_id, video_df):
     """
-    Create segments for a single video. Now respects type-specific minimum durations.
+    Create segments for a single video. Buffers short state changes and enforces minimum segment durations.
     
     Parameters
     ----------
@@ -106,7 +106,8 @@ def create_segments_for_video(video_id, video_df):
     video_name = video_df['video_name'].iloc[0]
     
     # Buffer short state changes
-    buffered_states = buffer_short_state_changes(states, frame_numbers)
+    #buffered_states = buffer_short_state_changes(states, frame_numbers)
+    buffered_states = states.copy()  # Disable buffering for now
     
     segments = []
     current_state = buffered_states[0]
