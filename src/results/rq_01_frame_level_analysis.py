@@ -142,9 +142,8 @@ def get_all_analysis_data(conn, video_list: list):
     -- Filter FaceDetections to match the SAMPLE_RATE temporal grid
     WHERE 
         frame_number % ? = 0 
-        AND confidence_score >= ?        
     GROUP BY frame_number, video_id;
-    """, (SAMPLE_RATE, InferenceConfig.FACE_DET_CONFIDENCE_THRESHOLD))
+    """, (SAMPLE_RATE))
     
     # ====================================================================
     # STEP 1B: PERSON DETECTION AGGREGATION (NEW)
@@ -160,9 +159,8 @@ def get_all_analysis_data(conn, video_list: list):
     FROM PersonClassifications
     WHERE 
         frame_number % ? = 0
-        AND confidence_score >= ?
     GROUP BY frame_number, video_id;
-    """, (SAMPLE_RATE, InferenceConfig.PERSON_DET_CONFIDENCE_THRESHOLD))
+    """, (SAMPLE_RATE))
     
     # ====================================================================
     # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID
