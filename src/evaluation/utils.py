@@ -14,6 +14,7 @@ def time_to_seconds(time_str):
     try:
         parts = str(time_str).split(':')
         if len(parts) == 2:
+            # MM:SS format
             minutes, seconds = map(float, parts)
             return minutes * 60 + seconds
         else:
