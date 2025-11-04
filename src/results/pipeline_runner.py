@@ -13,7 +13,7 @@ EVALUATION_SCRIPT = Path("results/eval_segment_performance.py")
 
 def run_command(cmd, step_name):
     """Executes a subprocess command and handles errors."""
-    print(f"\n--- Starting Step: {step_name} ---")
+    print(f"\n--- Starting: {step_name} ---")
     try:
         # Run command and capture output (needed for the folder path in step 1)
         result = subprocess.run(
@@ -76,14 +76,11 @@ def main(rules=None, plot=False):
     run_command(segment_cmd, "Segment Creation")
 
     # 3. --- STEP 3: EVALUATION & PLOTTING (Uses Timestamped Folder) ---
-    # The evaluation script takes the predictions file path (02_interaction_segments.csv)
-    # which is located inside the run_folder.
-    prediction_file = run_folder / "02_interaction_segments.csv"
     
     evaluation_cmd = [
         sys.executable, 
         str(EVALUATION_SCRIPT),
-        "--predictions_file", str(prediction_file),
+        "--folder_path", str(run_folder),
     ]
     if plot:
         evaluation_cmd.append("--plot")
@@ -97,5 +94,5 @@ if __name__ == "__main__":
     parser.add_argument("--rules", type=int, nargs='+', help="Override default rule set (e.g., 1 2 3 4 5).")
     parser.add_argument("--plot", action='store_true', help="Generate plots during evaluation.")
     args = parser.parse_args()
-
+    
     main(rules=args.rules, plot=args.plot)
