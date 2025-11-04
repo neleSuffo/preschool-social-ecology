@@ -332,11 +332,9 @@ def check_audio_interaction_turn_taking(df, fps):
             window_start_frame = window['start']
             window_end_frame = window['end']
             
-            # --- CRITICAL FIX: Only mark frames within the window that have ANY audio activity ---
+            # Only mark frames within the window that have ANY audio activity ---
             audio_mask = (video_df.loc[window_start_frame : window_end_frame, 'has_kchi'] == 1) | \
-                         (video_df.loc[window_start_frame : window_end_frame, 'has_cds'] == 1) | \
-                         (video_df.loc[window_start_frame : window_end_frame, 'has_ohs'] == 1)
-
+                         (video_df.loc[window_start_frame : window_end_frame, 'has_cds'] == 1)
             # Apply the mask to mark only the non-silent frames within the established window
             video_df.loc[
                 audio_mask.index[audio_mask], # Index where audio_mask is True
