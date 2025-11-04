@@ -14,7 +14,7 @@ sys.path.append(str(src_path))
 
 from constants import Evaluation, Inference
 from config import InferenceConfig
-from utils import time_to_seconds
+from results.utils import time_to_seconds
 
 def reclassify_to_binary(df: pd.DataFrame) -> pd.DataFrame:
     """Reclassifies three-class labels to binary 'interacting' vs 'not interacting'."""
