@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from constants import AudioClassification, DataPaths, Inference
-from config import AudioConfig, DataConfig
+from config import AudioConfig, DataConfig, InferenceConfig
 from utils import get_video_id, load_processed_videos, save_processed_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -77,11 +77,16 @@ def aggregate_and_save_results(snippets: List[Dict], db_cursor: sqlite3.Cursor, 
     
     # Iterate over each classified snippet
     for snippet in snippets:
-        start_sec = snippet['start_time']
         duration = snippet['duration']
         label = snippet['label']
-        end_sec = start_sec + duration
         
+        # Apply minimum duration filter for KCDS
+        if label == "KCDS" and duration < InferenceConfig.MIN_KCDS_DURATION_SEC:
+            continue  # Skip KCDS snippets shorter than minimum duration
+        
+        start_sec = snippet['start_time']
+        end_sec = start_sec + duration
+
         # Initialize scores for all classes to 0
         scores = {cls: 0 for cls in AudioConfig.VALID_RTTM_CLASSES}
         
