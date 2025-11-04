@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image
 from ultralytics import YOLO
 from supervision import Detections
-from constants import PersonClassification  # Your paths
+from constants import PersonClassification
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
