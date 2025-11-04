@@ -491,7 +491,6 @@ def extract_misclassification_segments(predictions_df, ground_truth_df, results_
     
     # 1. Prepare second-level labels lookup
     videos_to_evaluate = predictions_df['video_name'].unique()
-    video_labels_map = {}
     
     for video in videos_to_evaluate:
         pred_video = predictions_df[predictions_df['video_name'] == video].copy()
@@ -513,10 +512,19 @@ def extract_misclassification_segments(predictions_df, ground_truth_df, results_
             gt_label = gt_labels[sec]
             pred_label = pred_labels[sec]
             
-            # Condition for misclassification
-            is_misclassified = (gt_label is not None) and (pred_label is not None) and (gt_label != pred_label)
+            # If the prediction is missing, force it to 'unclassified' for comparison
+            if pred_label is None:
+                pred_label_compare = 'unclassified'
+            else:
+                pred_label_compare = pred_label
+            
+            # Condition for misclassification: GT exists but pred is different OR unclassified
+            is_misclassified = (gt_label is not None) and (gt_label != pred_label_compare)
             
             if is_misclassified:
+                # Store the actual prediction value (None or the class name)
+                actual_pred_output = pred_label if pred_label is not None else 'unclassified'
+
                 # Start a new segment or extend the current one
                 if current_segment is None:
                     # Start new segment
@@ -525,10 +533,10 @@ def extract_misclassification_segments(predictions_df, ground_truth_df, results_
                         'start_sec': sec,
                         'end_sec': sec,
                         'gt_label': gt_label,
-                        'pred_label': pred_label
+                        'pred_label': actual_pred_output
                     }
                 elif (current_segment['gt_label'] == gt_label and 
-                      current_segment['pred_label'] == pred_label):
+                      current_segment['pred_label'] == actual_pred_output):
                     # Extend current segment
                     current_segment['end_sec'] = sec
                 else:
@@ -539,7 +547,7 @@ def extract_misclassification_segments(predictions_df, ground_truth_df, results_
                         'start_sec': sec,
                         'end_sec': sec,
                         'gt_label': gt_label,
-                        'pred_label': pred_label
+                        'pred_label': actual_pred_output
                     }
             else:
                 # Finalize current segment if it was active
@@ -645,14 +653,14 @@ def run_evaluation(predictions_path: Path, binary_mode: bool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate social interaction predictions against ground truth.")
-    parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g. 02_interaction_segments.csv)')
+    parser.add_argument('--folder_path', type=str, required=True, help='Path to the folder containing the predictions CSV file (e.g. 02_interaction_segments.csv)')
     parser.add_argument('--plot', nargs='?', const='all', default=None, help=('If omitted: no plotting.\n' 
                                                                               'If specified without value: plots all videos.\n' 
                                                                               'If a video name is given: plots only that video.'))
     parser.add_argument('--binary', action='store_true', help='If set, combines "available" and "alone" into "not interacting" for binary classification.')
 
     args = parser.parse_args()
-    predictions_path = Path(args.input)
+    predictions_path = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV
 
     # 1. Run evaluation (loads data, runs metrics, prints/saves results)
     predictions_df, ground_truth_df = run_evaluation(predictions_path, args.binary)
