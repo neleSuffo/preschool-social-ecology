@@ -231,16 +231,16 @@ def get_all_analysis_data(conn, video_list: list):
 
 def check_audio_interaction_turn_taking(df, fps):
     """
-    Identifies continuous audio interaction bouts based on segment merging.
+    Identifies continuous audio interaction bouts where KCHI and CDS segments 
+    are linked by a small gap (<= MAX_TURN_TAKING_GAP_SEC).
     
-    An interaction bout consists of KCHI and KCDS segments where the gap 
-    between any two adjacent segments (regardless of type) is 
-    less than or equal to MAX_TURN_TAKING_GAP_SEC.
+    Crucially, it prevents merging segments of the same type across any gap 
+    and filters out non-dual speaker windows.
     
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain ['video_id', 'frame_number', 'has_kchi', 'has_cds']
+        Must contain ['video_id', 'frame_number', 'has_kchi', 'has_cds', 'has_ohs']
     fps : int
         Frames per second (used for gap calculation)
     
@@ -263,61 +263,83 @@ def check_audio_interaction_turn_taking(df, fps):
         video_df.set_index('frame_number', inplace=True) 
         video_df['is_audio_interaction'] = False
         
-        # Identify KCHI and KCDS segments and combine them
+        # Identify KCHI and KCDS segments and combine them (only speech, no silence included yet)
         kchi_segments = find_segments(video_df, 'has_kchi')
         kcds_segments = find_segments(video_df, 'has_cds')
         all_segments = sorted(kchi_segments + kcds_segments, key=lambda x: x['start'])
         
         if not all_segments:
-            temp = video_df.reset_index()
-            all_results.append(temp[['frame_number', 'is_audio_interaction']])
+            video_df.reset_index(inplace=True)
+            all_results.append(video_df[['frame_number', 'is_audio_interaction']])
             continue
             
         interaction_windows = []
-
-        # 2. GAP-BASED MERGING (more permissive)
-        # Merge adjacent segments if the gap between them is <= MAX_GAP_FRAMES.
-        current_segment = all_segments[0]
-        current_window_start = current_segment['start']
-        current_window_end = current_segment['end']
-        segments_in_window = [current_segment]
+        
+        # --- PHASE 2: Merge Segments and Filter for Dual Speakers ---
+        current_window = {
+            'start': all_segments[0]['start'],
+            'end': all_segments[0]['end'],
+            'types': {all_segments[0]['type']}
+        }
 
         for seg in all_segments[1:]:
-            gap = seg['start'] - current_window_end
-            if gap <= MAX_GAP_FRAMES:
-                # extend the current window
-                current_window_end = seg['end']
-                segments_in_window.append(seg)
-            else:
-                # finalize current window if it contains both speaker types
-                types_in_window = {s['type'] for s in segments_in_window}
-                if 'kchi' in types_in_window and 'cds' in types_in_window:
-                    interaction_windows.append({
-                        'start': current_window_start,
-                        'end': current_window_end,
-                        'segments': list(segments_in_window)
-                    })
-                # start a new window
-                current_window_start = seg['start']
-                current_window_end = seg['end']
-                segments_in_window = [seg]
+            is_same_type = seg['type'] in current_window['types']
+            gap = seg['start'] - current_window['end']
+            
+            if is_same_type:
+                # To prevent merging identical segments across gaps larger than allowed
+                if gap > (InferenceConfig.MAX_SAME_SPEAKER_GAP_SEC * fps):
+                    # Finalize current window (it's not turn-taking if it's only one speaker type)
+                    if 'kchi' in current_window['types'] and 'cds' in current_window['types']:
+                        interaction_windows.append(current_window)
+                    
+                    # Start a new window with the current segment
+                    current_window = {
+                        'start': seg['start'],
+                        'end': seg['end'],
+                        'types': {seg['type']}
+                    }
+                else:
+                    # Gap is small enough: extend the current window
+                    current_window['end'] = seg['end']
+                    current_window['types'].add(seg['type'])
 
-        # finalize last window
-        types_in_window = {s['type'] for s in segments_in_window}
-        if 'kchi' in types_in_window and 'cds' in types_in_window:
-            interaction_windows.append({
-                'start': current_window_start,
-                'end': current_window_end,
-                'segments': list(segments_in_window)
-            })
 
-        logging.debug(f"Video {video_id} - all_segments: {all_segments}")
-        logging.debug(f"Video {video_id} - interaction_windows: {interaction_windows}")
+            else: # Segments are of DIFFERENT types
+                if gap <= MAX_GAP_FRAMES:
+                    # Bridge the small gap and extend the window
+                    current_window['end'] = seg['end']
+                    current_window['types'].add(seg['type'])
+                else:
+                    # Gap is too long: Finalize the current window and check structural validity
+                    if 'kchi' in current_window['types'] and 'cds' in current_window['types']:
+                        interaction_windows.append(current_window)
+                    
+                    # Start a new window with the current segment
+                    current_window = {
+                        'start': seg['start'],
+                        'end': seg['end'],
+                        'types': {seg['type']}
+                    }
+
+        # Finalize the last window after the loop ends
+        if 'kchi' in current_window['types'] and 'cds' in current_window['types']:
+            interaction_windows.append(current_window)
+
 
         # 4. Final Marking on the DataFrame
         for window in interaction_windows:
+            window_start_frame = window['start']
+            window_end_frame = window['end']
+            
+            # --- CRITICAL FIX: Only mark frames within the window that have ANY audio activity ---
+            audio_mask = (video_df.loc[window_start_frame : window_end_frame, 'has_kchi'] == 1) | \
+                         (video_df.loc[window_start_frame : window_end_frame, 'has_cds'] == 1) | \
+                         (video_df.loc[window_start_frame : window_end_frame, 'has_ohs'] == 1)
+
+            # Apply the mask to mark only the non-silent frames within the established window
             video_df.loc[
-                window['start'] : window['end'], 
+                audio_mask.index[audio_mask], # Index where audio_mask is True
                 'is_audio_interaction'
             ] = True
         
