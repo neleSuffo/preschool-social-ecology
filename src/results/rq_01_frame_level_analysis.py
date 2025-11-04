@@ -111,7 +111,10 @@ def get_all_analysis_data(conn, video_list: list):
     Returns:
         pd.DataFrame: Temporally-aligned dataset at SAMPLE_RATE intervals.
     """
-     # Check if a video list was provided and is not empty
+    # Ensure video list elements are str
+    video_list = [str(v) for v in video_list]
+    
+    # Check if a video list was provided and is not empty
     if video_list:
         # Create placeholders for the IN clause (?, ?, ?)
         placeholders = ','.join('?' for _ in video_list)
@@ -132,18 +135,14 @@ def get_all_analysis_data(conn, video_list: list):
     
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS FaceAgg AS
-    SELECT 
+    SELECT DISTINCT
         frame_number, 
         video_id, 
         proximity,
         1 AS has_face
-        
     FROM FaceDetections
-    -- Filter FaceDetections to match the SAMPLE_RATE temporal grid
-    WHERE 
-        frame_number % ? = 0 
-    GROUP BY frame_number, video_id;
-    """, (SAMPLE_RATE))
+    WHERE frame_number % ? = 0;
+    """, (SAMPLE_RATE,))
     
     # ====================================================================
     # STEP 1B: PERSON DETECTION AGGREGATION (NEW)
@@ -152,15 +151,13 @@ def get_all_analysis_data(conn, video_list: list):
     
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS PersonAgg AS
-    SELECT 
+    SELECT DISTINCT
         frame_number, 
         video_id, 
         1 AS has_person
     FROM PersonClassifications
-    WHERE 
-        frame_number % ? = 0
-    GROUP BY frame_number, video_id;
-    """, (SAMPLE_RATE))
+    WHERE frame_number % ? = 0;
+    """, (SAMPLE_RATE,))
     
     # ====================================================================
     # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID
@@ -170,7 +167,7 @@ def get_all_analysis_data(conn, video_list: list):
     -- RECURSIVE CTE to generate the full temporal grid for all filtered videos
     WITH RECURSIVE FilteredVideos AS (
         SELECT * FROM Videos
-        {video_filter_clause} -- <-- Filter applied here
+        {video_filter_clause}
     ), 
     FrameGrid AS (
         -- Anchor member: Start at frame 0 for every video in the filtered list
