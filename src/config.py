@@ -215,6 +215,7 @@ class InferenceConfig:
     MIN_AVAILABLE_SEGMENT_DURATION_SEC = 3 # minimum duration for an available segment
     GAP_MERGE_DURATION_SEC = 10 # duration for merging gaps for segments with same label
     MIN_ALONE_SANDWICH_DURATION_SEC = 4 # minimum duration for alone segments sandwiched between interacting segments
+    MIN_INTERACTING_SANDWICH_DURATION_SEC = 4 # minimum duration for interacting segments sandwiched between alone segments
     MIN_RECLASSIFY_DURATION_SEC = 5 # minimum duration for reclassifying 'Available' segments
     KCHI_ONLY_FRACTION_THRESHOLD = 0.7 # Percentage of KCHI-only frames in segments available or alone for reclassification
     MIN_PERSON_PRESENCE_FRACTION = 0.05 # At least 10% person presence in segments available or alone for reclassification
