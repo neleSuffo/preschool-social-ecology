@@ -186,13 +186,9 @@ def merge_segments_with_small_gaps(segments_df):
         for i in range(1, len(video_segments)):
             next_segment = video_segments.iloc[i]
             
-            # Calculate gap between current segment end and next segment start
-            gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
-            # If same interaction type and gap is less than the configured duration, merge
-            if (current_segment['interaction_type'] == next_segment['interaction_type'] and 
-                gap_duration < InferenceConfig.GAP_MERGE_DURATION_SEC):
-                
-                # Extend current segment to include the next one
+            # Check if the segments are of the same interaction type
+            if current_segment['interaction_type'] == next_segment['interaction_type']:
+                # If yes, merge them by extending the end time                
                 current_segment['segment_end'] = next_segment['segment_end']
                 current_segment['end_time_sec'] = next_segment['end_time_sec']
                 current_segment['duration_sec'] = (
@@ -205,7 +201,7 @@ def merge_segments_with_small_gaps(segments_df):
                 merged_segments.append(current_segment.to_dict())
                 current_segment = next_segment.copy()
         
-        # Don't forget the last segment
+        # Add the last segment
         merged_segments.append(current_segment.to_dict())
     
     if merged_segments:
@@ -345,6 +341,64 @@ def reclassify_sandwiched_alone_segments(segments_df):
                 reclassified_count += 1
 
     print(f"   Reclassified {reclassified_count} short 'Alone' segments to 'Available' (Sandwiching Rule).")
+    return updated_segments_df
+
+def reclassify_sandwiched_interacting_segments(segments_df):
+    """
+    Reclassifies 'Interacting' segments shorter than 
+    InferenceConfig.MIN_INTERACTING_SANDWICH_DURATION_SEC to 'Available' 
+    if they are sandwiched between two Alone segments.
+
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with segments after initial creation and merging.
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with reclassified segments.
+    """    
+    reclassified_count = 0
+    updated_segments_df = segments_df.copy()
+
+    # Iterate over each video group to easily check neighboring segments by index
+    for video_id, video_segments in updated_segments_df.groupby('video_id'):
+        
+        # Reset index to allow for clean positional indexing (i-1, i, i+1)
+        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=False)
+        original_indices = video_segments['index'] # Map back to original segments_df index
+        
+        # Iterate from the second segment (index 1) to the second-to-last segment (index len-2)
+        for i in range(1, len(video_segments) - 1):
+            segment = video_segments.iloc[i]
+            
+            # --- Condition 1: Must be 'Interacting' ---
+            if segment['interaction_type'] != 'Interacting':
+                continue
+            
+            # --- Condition 2: Duration Check (must be shorter than threshold) ---
+            if segment['duration_sec'] >= InferenceConfig.MIN_INTERACTING_SANDWICH_DURATION_SEC:
+                continue
+
+            # --- Condition 3: Must be Sandwiched between two 'Alone' segments ---
+            prev_segment = video_segments.iloc[i-1]
+            next_segment = video_segments.iloc[i+1]
+            
+            is_sandwiched = (
+                prev_segment['interaction_type'] == 'Alone' and
+                next_segment['interaction_type'] == 'Alone'
+            )
+            
+            if is_sandwiched:
+                # All conditions met: Reclassify 'Interacting' to 'Available'
+                original_idx = original_indices.iloc[i]
+                
+                # Apply reclassification to the main copy
+                updated_segments_df.loc[original_idx, 'interaction_type'] = 'Available'
+                reclassified_count += 1
+
+    print(f"   Reclassified {reclassified_count} short 'Interacting' segments to 'Available' (Sandwiching Rule).")
     return updated_segments_df
 
 def reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present'):
@@ -573,10 +627,13 @@ def main(output_file_path: Path, frame_data_path: Path):
                                         'segment_start', 'segment_end', 
                                         'start_time_sec', 'end_time_sec', 'duration_sec'])
 
-    # Step 4: Reclassify short, sandwiched 'Alone' segments to 'Available' (NEW)
+    # Step 4a: Reclassify short, sandwiched 'Alone' segments between Alone segments to 'Available'
     segments_df = reclassify_sandwiched_alone_segments(segments_df)
     
-    # Step 4: Reclassify 'Available' segments to 'Alone' if no detection occurred
+    # Step 4b: Reclassify short, sandwiched Interacting segments between Alone segments to 'Available'
+    segments_df = reclassify_sandwiched_interacting_segments(segments_df)
+    
+    # Step 4c: Reclassify 'Available' segments to 'Alone' if no detection occurred
     #segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
     
     # Step 5: Reclassify for Implicit Turn-Taking
