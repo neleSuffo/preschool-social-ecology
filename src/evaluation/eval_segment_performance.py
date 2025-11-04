@@ -468,6 +468,97 @@ def save_performance_results(results, detailed_metrics, total_seconds, total_hou
             f.write(f"  False Negatives: {metrics['false_negatives']:,}\n")
             f.write("\n")
 
+def extract_misclassification_segments(predictions_df, ground_truth_df, results_by_seconds):
+    """
+    Extracts and consolidates continuous misclassified seconds into segments.
+    
+    Parameters
+    ----------
+    predictions_df : pd.DataFrame
+        DataFrame containing predicted interaction segments.
+    ground_truth_df : pd.DataFrame
+        DataFrame containing ground truth interaction segments.
+    results_by_seconds : dict
+        Results dictionary from evaluate_performance_by_seconds function.
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing misclassified segments with columns:
+        ['video_name', 'start_sec', 'end_sec', 'gt_label', 'pred_label', 'duration_sec']
+    """
+    misclassified_segments = []
+    
+    # 1. Prepare second-level labels lookup
+    videos_to_evaluate = predictions_df['video_name'].unique()
+    video_labels_map = {}
+    
+    for video in videos_to_evaluate:
+        pred_video = predictions_df[predictions_df['video_name'] == video].copy()
+        gt_video = ground_truth_df[ground_truth_df['video_name'] == video].copy()
+        
+        max_end_gt = gt_video['end_time_sec'].max() if not gt_video.empty else 0
+        video_duration_seconds = int(max_end_gt) + 1
+        
+        # Skip exclusion seconds to match evaluation window
+        start_sec = InferenceConfig.EXCLUSION_SECONDS
+        end_sec = video_duration_seconds - InferenceConfig.EXCLUSION_SECONDS
+        
+        pred_labels = create_second_level_labels(pred_video, video_duration_seconds)
+        gt_labels = create_second_level_labels(gt_video, video_duration_seconds)
+        
+        current_segment = None
+        
+        for sec in range(start_sec, end_sec):
+            gt_label = gt_labels[sec]
+            pred_label = pred_labels[sec]
+            
+            # Condition for misclassification
+            is_misclassified = (gt_label is not None) and (pred_label is not None) and (gt_label != pred_label)
+            
+            if is_misclassified:
+                # Start a new segment or extend the current one
+                if current_segment is None:
+                    # Start new segment
+                    current_segment = {
+                        'video_name': video,
+                        'start_sec': sec,
+                        'end_sec': sec,
+                        'gt_label': gt_label,
+                        'pred_label': pred_label
+                    }
+                elif (current_segment['gt_label'] == gt_label and 
+                      current_segment['pred_label'] == pred_label):
+                    # Extend current segment
+                    current_segment['end_sec'] = sec
+                else:
+                    # Finalize previous segment and start a new one
+                    misclassified_segments.append(current_segment)
+                    current_segment = {
+                        'video_name': video,
+                        'start_sec': sec,
+                        'end_sec': sec,
+                        'gt_label': gt_label,
+                        'pred_label': pred_label
+                    }
+            else:
+                # Finalize current segment if it was active
+                if current_segment is not None:
+                    misclassified_segments.append(current_segment)
+                    current_segment = None
+        
+        # Finalize the last segment of the video
+        if current_segment is not None:
+            misclassified_segments.append(current_segment)
+            
+    # 2. Convert to DataFrame and calculate duration
+    if misclassified_segments:
+        df_miss = pd.DataFrame(misclassified_segments)
+        df_miss['duration_sec'] = df_miss['end_sec'] - df_miss['start_sec'] + 1
+        return df_miss
+    
+    return pd.DataFrame()
+
 def run_evaluation(predictions_path: Path, binary_mode: bool):
     """Loads data, runs evaluation, and saves outputs in the same folder."""
     try:
@@ -483,7 +574,20 @@ def run_evaluation(predictions_path: Path, binary_mode: bool):
         print(f"❌ Error: Ground truth file not found at {ground_truth_path}")
         sys.exit(1)
 
-    # --- Apply Binary Reclassification (NEW LOGIC) ---
+    # --- Clean up GT DataFrame for potential malformed columns ---
+    # Drop columns that are completely empty and have default Pandas names (Unnamed: X)
+    ground_truth_df = ground_truth_df.loc[:, ~ground_truth_df.columns.str.contains('^Unnamed')]
+    ground_truth_df.dropna(axis=1, how='all', inplace=True)
+    
+    # Ensure all column headers are stripped of whitespace
+    ground_truth_df.columns = ground_truth_df.columns.str.strip()
+    
+    # Apply global string strip on data to eliminate invisible chars that prevent matching/parsing
+    for col in ground_truth_df.columns:
+        if ground_truth_df[col].dtype == 'object':
+            ground_truth_df[col] = ground_truth_df[col].str.strip()
+            
+    # --- Apply Binary Reclassification ---
     if binary_mode:
         predictions_df = reclassify_to_binary(predictions_df)
         ground_truth_df = reclassify_to_binary(ground_truth_df)
@@ -506,6 +610,17 @@ def run_evaluation(predictions_path: Path, binary_mode: bool):
     total_hours = total_seconds / 3600
     detailed_metrics = calculate_detailed_metrics(results)
 
+    # --- Misclassification Analysis ---
+    df_misclassified = extract_misclassification_segments(predictions_df, ground_truth_df, results)
+    misclassified_path_suffix = "_binary" if binary_mode else ""
+    misclassified_path = output_folder / f"misclassified_segments{misclassified_path_suffix}.csv"
+    
+    if not df_misclassified.empty:
+        df_misclassified.to_csv(misclassified_path, index=False)
+        print(f"✅ Misclassified segments saved to: {misclassified_path}")
+    else:
+        print("✅ No misclassified segments found (or all metrics are zero).")
+        
     # Generate outputs
     generate_confusion_matrix_plots(results, output_folder)
 
@@ -531,8 +646,10 @@ def run_evaluation(predictions_path: Path, binary_mode: bool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate social interaction predictions against ground truth.")
     parser.add_argument('--input', type=str, required=True, help='Path to the predictions CSV file (e.g. 02_interaction_segments.csv)')
-    parser.add_argument('--plot', type=str, nargs='?', const='all', default='all', help='Video name to plot (default: all). If specified without value, all videos will be plotted.')
-    parser.add_argument('--binary', action='store_true', help='If set, combines "available" and "alone" into "not interacting" for binary classification.') # ADDED
+    parser.add_argument('--plot', nargs='?', const='all', default=None, help=('If omitted: no plotting.\n' 
+                                                                              'If specified without value: plots all videos.\n' 
+                                                                              'If a video name is given: plots only that video.'))
+    parser.add_argument('--binary', action='store_true', help='If set, combines "available" and "alone" into "not interacting" for binary classification.')
 
     args = parser.parse_args()
     predictions_path = Path(args.input)
@@ -542,15 +659,21 @@ if __name__ == "__main__":
     output_folder = predictions_path.parent
 
     # 2. Plotting logic
-    if args.plot.lower() == 'all':
+    if args.plot and args.plot.lower() == 'all':
         video_names = ground_truth_df['video_name'].unique()
         print(f"\n📊 Generating plots for all {len(video_names)} videos...")
+
         for video_name in video_names:
             plot_path = output_folder / f"{video_name}_segment_timeline{'_binary' if args.binary else ''}.png"
             plot_segment_timeline(predictions_df, ground_truth_df, video_name, plot_path, args.binary)
-        print(f"📊 Plots generated for all videos.")
-    else:
+
+        print("✅ All plots generated.")
+
+    elif args.plot:
         plot_video_name = args.plot
-        plot_path = output_folder / f"{plot_video_name}_segment_timeline{'_binary' if args.binary else ''}.png"
-        plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path, args.binary)
-        print(f"📊 Plot generated for video: {plot_video_name}")
+        if plot_video_name not in ground_truth_df['video_name'].unique():
+            print(f"⚠️  Video name '{plot_video_name}' not found in ground truth — skipping plot.")
+        else:
+            plot_path = output_folder / f"{plot_video_name}_segment_timeline{'_binary' if args.binary else ''}.png"
+            plot_segment_timeline(predictions_df, ground_truth_df, plot_video_name, plot_path, args.binary)
+            print(f"✅ Plot generated for video: {plot_video_name}")
