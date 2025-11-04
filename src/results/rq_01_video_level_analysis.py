@@ -552,6 +552,65 @@ def add_metadata_to_segments(segments_df, frame_data):
     
     return segments_df
 
+def fill_gaps_between_segments(segments_df):
+    """
+    Final step: Extends the end time of every segment to meet the start time of the 
+    subsequent segment within the same video, ensuring a continuous timeline.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with segments
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with gaps filled
+    """
+    filled_segments = []
+    
+    for video_id, video_segments in segments_df.groupby('video_id'):
+        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=True)
+        
+        if len(video_segments) <= 1:
+            filled_segments.extend(video_segments.to_dict('records'))
+            continue
+            
+        # Iterate up to the second-to-last segment
+        for i in range(len(video_segments) - 1):
+            current_segment = video_segments.iloc[i].copy()
+            next_segment = video_segments.iloc[i+1]
+            
+            gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
+            
+            if gap_duration > 0:
+                # The gap exists. Extend the current segment's end time to the next segment's start time.
+                
+                # Use next segment's start frame to calculate the new end frame
+                # The end frame of the current segment becomes one frame *before* the start frame of the next.
+                # Since frames are spaced by 1/FPS (or SAMPLE_RATE/FPS), we use the next segment's start time.
+                
+                new_end_sec = next_segment['start_time_sec']
+                new_end_frame = next_segment['segment_start'] - 1 
+                
+                current_segment['segment_end'] = new_end_frame
+                current_segment['end_time_sec'] = new_end_sec
+                current_segment['duration_sec'] = new_end_sec - current_segment['start_time_sec']
+            
+            filled_segments.append(current_segment.to_dict())
+        
+        # Add the absolute last segment of the video (it has no 'next_segment' to extend into)
+        filled_segments.append(video_segments.iloc[-1].to_dict())
+        
+    if filled_segments:
+        result_df = pd.DataFrame(filled_segments)
+        # Ensure duration is correctly calculated after frame manipulation
+        result_df['duration_sec'] = result_df['end_time_sec'] - result_df['start_time_sec']
+        print("   Final step: All gaps closed to create continuous timeline.")
+        return result_df
+    else:
+        return segments_df
+    
 def print_segment_summary(segments_df):
     """
     Print summary statistics for the created segments.
@@ -639,13 +698,16 @@ def main(output_file_path: Path, frame_data_path: Path):
     # Step 5: Reclassify for Implicit Turn-Taking
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
 
-    # Step 6: Add metadata
+    # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
+    segments_df = fill_gaps_between_segments(segments_df)
+    
+    # Step 7: Add metadata
     segments_df = add_metadata_to_segments(segments_df, frame_data)
     
-    # Step 7: Generate and print summary
+    # Step 8: Generate and print summary
     print_segment_summary(segments_df)
     
-    # Step 7: Save results
+    # Step 9: Save results
     segments_df.to_csv(output_file_path, index=False)
     print(f"✅ Saved {len(segments_df)} interaction segments to {output_file_path}")
 
