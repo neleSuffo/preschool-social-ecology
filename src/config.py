@@ -206,7 +206,8 @@ class InferenceConfig:
     KCHI_PERSON_BUFFER_FRAMES = 10 # number of frames to look back and forward for KCHI + visual presence
 
     # -- Audio Related Parameters --
-    MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
+    MIN_KCDS_DURATION_SEC = 1 # minimum duration of KCDS to consider for analysis
+    MAX_TURN_TAKING_GAP_SEC = 3 # maximum gap duration for turn-taking analysis
     SUSTAINED_KCDS_SEC = 2 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
 
     # -- Segment Merging Parameters --
