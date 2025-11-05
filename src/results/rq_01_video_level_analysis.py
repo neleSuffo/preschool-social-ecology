@@ -40,45 +40,6 @@ def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
     return match.group(1) if match else None
 
-def buffer_short_state_changes(states, frame_numbers):
-    """
-    Buffer short state changes to avoid rapid transitions (less than MIN_CHANGE_DURATION_SEC).
-    
-    Parameters
-    ----------
-    states : np.array
-        Array of interaction states
-    frame_numbers : np.array
-        Array of frame numbers
-        
-    Returns
-    -------
-    np.array
-        Buffered states with short changes smoothed out
-    """
-    buffered_states = states.copy()
-    i = 0
-    while i < len(buffered_states) - 1:
-        current_state = buffered_states[i]
-        j = i + 1
-        # Find the end of the current run of states
-        while j < len(buffered_states) and buffered_states[j] == current_state:
-            j += 1
-        
-        # The length of the current run of states
-        run_duration = (frame_numbers[j-1] - frame_numbers[i]) / FPS
-        
-        # If the run is short and not at the beginning/end, merge it
-        if run_duration < InferenceConfig.MIN_CHANGE_DURATION_SEC and i > 0 and j < len(buffered_states):
-            # Replace the short run with the previous state
-            buffered_states[i:j] = buffered_states[i-1]
-            # Reset i to re-evaluate from the previous point
-            i = 0
-        else:
-            i = j
-    
-    return buffered_states
-
 def create_segments_for_video(video_id, video_df):
     """
     Create segments for a single video. Buffers short state changes and enforces minimum segment durations.
@@ -106,7 +67,6 @@ def create_segments_for_video(video_id, video_df):
     video_name = video_df['video_name'].iloc[0]
     
     # Buffer short state changes
-    #buffered_states = buffer_short_state_changes(states, frame_numbers)
     buffered_states = states.copy()  # Disable buffering for now
     
     segments = []
@@ -693,7 +653,7 @@ def main(output_file_path: Path, frame_data_path: Path):
     segments_df = reclassify_sandwiched_interacting_segments(segments_df)
     
     # Step 4c: Reclassify 'Available' segments to 'Alone' if no detection occurred
-    #segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
+    segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
     
     # Step 5: Reclassify for Implicit Turn-Taking
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
