@@ -88,36 +88,17 @@ def run_pipeline_for_combo(hyperparameters, combo_dir):
     original_config = {}
     
     # List of all hyperparams (tuned + required fixed)
-    all_params = {}
-    all_params.update(hyperparameters)
-    
-    # Assuming fixed parameters are needed by the analysis scripts:
-    all_params.update({
-        'PROXIMITY_THRESHOLD': 0.5,
-        'PERSON_AVAILABLE_WINDOW_SEC': 10,
-        'MIN_PRESENCE_FRACTION': 0.5,
-        'KCHI_PERSON_BUFFER_FRAMES': 30,
-        'MAX_SAME_SPEAKER_GAP_SEC': 2,
-        'MIN_KCDS_DURATION_SEC': 1,
-        'MAX_TURN_TAKING_GAP_SEC': 4,
-        'SUSTAINED_KCDS_SEC': 1,
-        'GAP_MERGE_DURATION_SEC': 8,
-        'MIN_RECLASSIFY_DURATION_SEC': 4,
-        'MIN_RECLASSIFY_DURATION_SEC': 5,
-        'KCHI_ONLY_FRACTION_THRESHOLD': 0.7,
-        'MIN_PERSON_PRESENCE_FRACTION': 0.1,
-        })
+    all_params = hyperparameters
 
     try:
         # 1. Temporarily override InferenceConfig attributes
-        for key, value in all_params.items():
+        for key, value in all_params.items(): # Iterate only over tuned params
             if hasattr(InferenceConfig, key):
                 original_config[key] = getattr(InferenceConfig, key)
                 setattr(InferenceConfig, key, value)
             else:
-                # Add the missing attribute if it's new (e.g., KCHI_PERSON_BUFFER_FRAMES)
                 setattr(InferenceConfig, key, value)
-
+                
         # Assuming all rules are active for consistency in tuning
         rules = [1, 2, 3, 5]
         rule_suffix = "_1_2_3_5"
