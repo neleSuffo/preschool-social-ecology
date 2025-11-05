@@ -648,8 +648,7 @@ def run_evaluation(predictions_path: Path, binary_mode: bool):
         print("\n--- Overall Macro Average ---")
         print(f"Macro Average: F1-Score = {detailed_metrics['macro_avg']['f1_score']:.4f}")
 
-    return predictions_df, ground_truth_df
-
+    return predictions_df, ground_truth_df, detailed_metrics
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate social interaction predictions against ground truth.")
@@ -663,7 +662,7 @@ if __name__ == "__main__":
     predictions_path = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV
 
     # 1. Run evaluation (loads data, runs metrics, prints/saves results)
-    predictions_df, ground_truth_df = run_evaluation(predictions_path, args.binary)
+    predictions_df, ground_truth_df, _ = run_evaluation(predictions_path, args.binary)
     output_folder = predictions_path.parent
 
     # 2. Plotting logic
