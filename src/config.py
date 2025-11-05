@@ -202,7 +202,7 @@ class InferenceConfig:
     # -- Person Related Parameters --
     PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
     MIN_PRESENCE_FRACTION = 0.5 # # At least 50% presencen in PERSON_AVAILABLE_WINDOW_SEC window
-    PERSON_AUDIO_WINDOW_SEC = 5 # window duration for rule4_person_recent_speech
+    PERSON_AUDIO_WINDOW_SEC = 2 # window duration for rule4_person_recent_speech
     KCHI_PERSON_BUFFER_FRAMES = 10 # number of frames to look back and forward for KCHI + visual presence
 
     # -- Audio Related Parameters --
