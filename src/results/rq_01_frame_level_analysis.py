@@ -574,7 +574,7 @@ def merge_age_information(df):
         print("Proceeding without age information")
         return df
 
-def main(db_path: Path, output_dir: Path, included_rules: list = None):
+def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included_rules: list = None):
     """
     Main analysis function that orchestrates multimodal social interaction analysis.
     
@@ -621,10 +621,13 @@ def main(db_path: Path, output_dir: Path, included_rules: list = None):
     # ------------------------------------------------------------------
     # 🕒 Create timestamped output folder inside base output directory
     # ------------------------------------------------------------------
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = output_dir / f"interaction_analysis_{timestamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    print(f"📁 Created output folder: {run_dir}")
+    if hyperparameter_tuning:
+        run_dir = output_dir
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = output_dir / f"interaction_analysis_{timestamp}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        print(f"📁 Created output folder: {run_dir}")
 
     # ------------------------------------------------------------------
     # 💾 Save current InferenceConfig snapshot as JSON
