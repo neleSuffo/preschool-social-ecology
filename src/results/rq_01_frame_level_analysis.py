@@ -699,4 +699,4 @@ if __name__ == "__main__":
         print(f"❌ Error: Invalid rule numbers. Valid options are: {valid_rules}")
         sys.exit(1)
 
-    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=Inference.BASE_OUTPUT_DIR, included_rules=args.rules)
+    main(db_path=Path(DataPaths.INFERENCE_DB_PATH), output_dir=Inference.BASE_OUTPUT_DIR, included_rules=args.rules, hyperparameter_tuning=False)
