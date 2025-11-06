@@ -36,29 +36,42 @@ class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""
     
     # Define the hyperparameter search space 
-    HYPERPARAMETER_RANGES = {
-    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.5, 0.75, 1, 1.25, 1.5],
-    'MIN_ALONE_SEGMENT_DURATION_SEC': [4, 5, 6, 7],
-    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4, 5, 6, 7],
-    'PROXIMITY_THRESHOLD': [0.75, 0.8, 0.85],
-    'PERSON_AVAILABLE_WINDOW_SEC': [7, 8, 9, 10, 11],
-    'MIN_PRESENCE_FRACTION': [0.35, 0.4, 0.45, 0.5],
-    'KCHI_PERSON_BUFFER_FRAMES': [10, 11, 12, 13],
-    'MAX_SAME_SPEAKER_GAP_SEC': [1.5, 2, 2.5, 3],
-    'MIN_KCDS_DURATION_SEC': [1.5, 2, 2.5, 3],
-    'MAX_TURN_TAKING_GAP_SEC': [5, 6, 7, 8],
-    'SUSTAINED_KCDS_SEC': [0.75, 1, 1.25, 1.5],
-    'GAP_MERGE_DURATION_SEC': [9, 10, 11],
-    'MIN_RECLASSIFY_DURATION_SEC': [4, 5, 6],
-    'KCHI_ONLY_FRACTION_THRESHOLD': [0.7, 0.75, 0.8],
-    'MIN_PERSON_PRESENCE_FRACTION': [0.01, 0.03, 0.05, 0.07]
+    HYPERPARAMETER_RANGES= {
+    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.75, 1, 1.25],  # Centered on best: 1
+    'MIN_ALONE_SEGMENT_DURATION_SEC': [4, 5, 6],              # Centered on best: 5
+    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4, 5, 6],          # Centered on best: 5
+    'MIN_KCDS_DURATION_SEC': [1.5, 2, 2.5],                   # Centered on best: 2
+    'MIN_RECLASSIFY_DURATION_SEC': [4, 5, 6],                 # Centered on best: 5
+    'SUSTAINED_KCDS_SEC': [0.75, 1, 1.25],                    # Centered on best: 1
+    'PROXIMITY_THRESHOLD': [0.75, 0.8, 0.85],                # Centered on best: 0.8
+    'PERSON_AVAILABLE_WINDOW_SEC': [8, 9, 10],               # Centered on best: 9
+    'MIN_PRESENCE_FRACTION': [0.35, 0.4, 0.45],              # Centered on best: 0.4
+    'KCHI_PERSON_BUFFER_FRAMES': [10, 11, 12],               # Centered on best: 11
+    'MAX_SAME_SPEAKER_GAP_SEC': [1.5, 2, 2.5],               # Centered on best: 2
+    'MAX_TURN_TAKING_GAP_SEC': [5, 6, 7],                    # Centered on best: 6
+    'GAP_MERGE_DURATION_SEC': [9, 10, 11],                   # Centered on best: 10
+    'KCHI_ONLY_FRACTION_THRESHOLD': [0.75, 0.8, 0.85],       # Centered on best: 0.8
+    'MIN_PERSON_PRESENCE_FRACTION': [0.03, 0.05, 0.07]       # Centered on best: 0.05
 }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
     """
     Generate combinations of hyperparameters to test.
+    
+    Parameters
+    ----------
+    max_combinations : int, optional
+        Maximum number of combinations to generate. If None, generates all combinations.
+        Use this to limit computational cost.
+    random_sample : bool
+        If True and max_combinations is set, randomly sample combinations.
+        If False, use systematic sampling.
+        
+    Returns
+    -------
+    list of dict
+        List of hyperparameter dictionaries to test
     """
-    # ... (omitting hyperparameter generation logic, which is unchanged) ...
     param_names = list(HyperparameterConfig.HYPERPARAMETER_RANGES.keys())
     param_values = list(HyperparameterConfig.HYPERPARAMETER_RANGES.values())
     all_combinations = list(product(*param_values))
@@ -204,6 +217,7 @@ def main(max_combinations=None):
     max_combinations : int or None
         Maximum number of hyperparameter combinations to test. If None, tests all valid combinations.
     """        
+    print(f"Running Hyperparameter Tuning Pipeline for {max_combinations} combinations")
     # Setup output directories
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_base_dir = Path(f"{Evaluation.HYPERPARAMETER_OUTPUT_DIR}_{timestamp}")
