@@ -197,29 +197,29 @@ class InferenceConfig:
     SAMPLE_RATE = 10 # every n-th frame is processed
     
     # -- Face Related Parameters --
-    PROXIMITY_THRESHOLD = 0.7 # face proximity so that frame is counted as interaction
+    PROXIMITY_THRESHOLD = 0.8 # face proximity so that frame is counted as interaction
     
     # -- Person Related Parameters --
-    PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for person available analysis
-    MIN_PRESENCE_FRACTION = 0.5 # # At least 50% presencen in PERSON_AVAILABLE_WINDOW_SEC window
+    PERSON_AVAILABLE_WINDOW_SEC = 9 # window duration for person available analysis
+    MIN_PRESENCE_FRACTION = 0.4 # # At least 50% presencen in PERSON_AVAILABLE_WINDOW_SEC window
     PERSON_AUDIO_WINDOW_SEC = 2 # window duration for rule4_person_recent_speech
-    KCHI_PERSON_BUFFER_FRAMES = 10 # number of frames to look back and forward for KCHI + visual presence
+    KCHI_PERSON_BUFFER_FRAMES = 11 # number of frames to look back and forward for KCHI + visual presence
 
     # -- Audio Related Parameters --
-    MAX_SAME_SPEAKER_GAP_SEC = 1 # maximum gap duration to consider same speaker segment
-    MIN_KCDS_DURATION_SEC = 1 # minimum duration of KCDS to consider for analysis
-    MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
-    SUSTAINED_KCDS_SEC = 2 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
+    MAX_SAME_SPEAKER_GAP_SEC = 2 # maximum gap duration to consider same speaker segment
+    MIN_KCDS_DURATION_SEC = 2 # minimum duration of KCDS to consider for analysis
+    MAX_TURN_TAKING_GAP_SEC = 6 # maximum gap duration for turn-taking analysis
+    SUSTAINED_KCDS_SEC = 1 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
 
     # -- Segment Merging Parameters --
     MIN_INTERACTING_SEGMENT_DURATION_SEC = 1 # minimum duration for a interacting segment
-    MIN_ALONE_SEGMENT_DURATION_SEC = 4 # minimum duration for an alone segment
-    MIN_AVAILABLE_SEGMENT_DURATION_SEC = 3 # minimum duration for an available segment
+    MIN_ALONE_SEGMENT_DURATION_SEC = 5 # minimum duration for an alone segment
+    MIN_AVAILABLE_SEGMENT_DURATION_SEC = 5 # minimum duration for an available segment
     GAP_MERGE_DURATION_SEC = 10 # duration for merging gaps for segments with same label
     MIN_ALONE_SANDWICH_DURATION_SEC = 4 # minimum duration for alone segments sandwiched between interacting segments
     MIN_INTERACTING_SANDWICH_DURATION_SEC = 4 # minimum duration for interacting segments sandwiched between alone segments
     MIN_RECLASSIFY_DURATION_SEC = 5 # minimum duration for reclassifying 'Available' segments
-    KCHI_ONLY_FRACTION_THRESHOLD = 0.7 # Percentage of KCHI-only frames in segments available or alone for reclassification
+    KCHI_ONLY_FRACTION_THRESHOLD = 0.8 # Percentage of KCHI-only frames in segments available or alone for reclassification
     MIN_PERSON_PRESENCE_FRACTION = 0.05 # At least 10% person presence in segments available or alone for reclassification
     
     # -- Hyperparameter Tuning Parameters --
