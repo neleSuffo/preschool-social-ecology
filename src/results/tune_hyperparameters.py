@@ -37,20 +37,22 @@ class HyperparameterConfig:
     
     # Define the hyperparameter search space 
     HYPERPARAMETER_RANGES = {
-        'PROXIMITY_THRESHOLD': [0.6, 0.7, 0.8],
-        'PERSON_AVAILABLE_WINDOW_SEC': [9, 10, 11],
-        'MIN_PRESENCE_FRACTION': [0.4, 0.5, 0.6],
-        'KCHI_PERSON_BUFFER_FRAMES': [9, 10, 11],
-        'MAX_SAME_SPEAKER_GAP_SEC': [0.5, 1, 2],
-        'MIN_KCDS_DURATION_SEC': [0.5, 1, 2],
-        'MAX_TURN_TAKING_GAP_SEC': [4, 5, 6],
-        'SUSTAINED_KCDS_SEC': [1, 2, 3],
-        'GAP_MERGE_DURATION_SEC': [8, 10, 12],
-        'MIN_RECLASSIFY_DURATION_SEC': [4, 5, 6],
-        'MIN_RECLASSIFY_DURATION_SEC': [4, 5, 6],
-        'KCHI_ONLY_FRACTION_THRESHOLD': [0.6, 0.7, 0.8],
-        'MIN_PERSON_PRESENCE_FRACTION': [0.05, 0.1, 0.2],
-    }
+    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.5, 0.75, 1, 1.25, 1.5],
+    'MIN_ALONE_SEGMENT_DURATION_SEC': [4, 5, 6, 7],
+    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4, 5, 6, 7],
+    'PROXIMITY_THRESHOLD': [0.75, 0.8, 0.85],
+    'PERSON_AVAILABLE_WINDOW_SEC': [7, 8, 9, 10, 11],
+    'MIN_PRESENCE_FRACTION': [0.35, 0.4, 0.45, 0.5],
+    'KCHI_PERSON_BUFFER_FRAMES': [10, 11, 12, 13],
+    'MAX_SAME_SPEAKER_GAP_SEC': [1.5, 2, 2.5, 3],
+    'MIN_KCDS_DURATION_SEC': [1.5, 2, 2.5, 3],
+    'MAX_TURN_TAKING_GAP_SEC': [5, 6, 7, 8],
+    'SUSTAINED_KCDS_SEC': [0.75, 1, 1.25, 1.5],
+    'GAP_MERGE_DURATION_SEC': [9, 10, 11],
+    'MIN_RECLASSIFY_DURATION_SEC': [4, 5, 6],
+    'KCHI_ONLY_FRACTION_THRESHOLD': [0.7, 0.75, 0.8],
+    'MIN_PERSON_PRESENCE_FRACTION': [0.01, 0.03, 0.05, 0.07]
+}
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
     """
@@ -203,7 +205,8 @@ def main(max_combinations=None):
         Maximum number of hyperparameter combinations to test. If None, tests all valid combinations.
     """        
     # Setup output directories
-    output_base_dir = Evaluation.HYPERPARAMETER_OUTPUT_DIR
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_base_dir = Path(f"{Evaluation.HYPERPARAMETER_OUTPUT_DIR}_{timestamp}")
     output_base_dir.mkdir(exist_ok=True, parents=True)
     
     # Generate hyperparameter combinations
