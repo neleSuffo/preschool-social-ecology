@@ -71,7 +71,7 @@ class FaceDetection:
     
     PREDICTIONS_JSON_PATH = Path(OUTPUT_DIR/"yolo12l_20251023_144724/yolo12l_validation_20251026_153856/predictions.json")
     RETRAIN_FALSE_POSITIVES_PATH = Path(BasePaths.DATA_DIR/"face_det_input/false_positive_frames.txt")
-    DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_face_det_20251023_144007.txt")
+    DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_face_det_20251026_155901.txt")
 
 class Proximity:
     REFERENCE_VALUES = {"child_ref_close": 458185,
