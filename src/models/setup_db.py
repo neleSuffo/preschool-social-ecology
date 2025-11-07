@@ -170,9 +170,15 @@ def add_annotations_to_db(
             row = box.attrib
             outside = int(row["outside"]) # 0 if the object is inside the frame, 1 if it is outside
             original_frame = int(row["frame"])
-            # Only apply offset for DataConfig.SHIFTED_VIDEO if original_frame >= SHIFTED_VIDEO_THRESHOLD
-            if task_name in DataConfig.SHIFTED_VIDEO and original_frame >= DataConfig.SHIFTED_VIDEO_THRESHOLD:
-                adjusted_frame = original_frame + DataConfig.SHIFTED_VIDEO_OFFSET
+            
+            exception_map = DataConfig.SHIFTED_VIDEOS_OFFSETS
+            # Only apply offset if the video is in the exception map
+            if task_name in exception_map:
+                start_frame, shift = exception_map[task_name]
+                if original_frame >= start_frame:
+                    adjusted_frame = original_frame + shift
+                else:
+                    adjusted_frame = original_frame
             else:
                 adjusted_frame = original_frame
             frame_id_padded = f'{adjusted_frame:06}'
