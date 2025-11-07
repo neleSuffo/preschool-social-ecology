@@ -12,6 +12,8 @@ def parse_args():
                       help=f'Path to YOLO data config file (default: {FaceDetection.DATA_CONFIG_PATH})')
     parser.add_argument('--iou', type=float, default=0.7,
                         help='IoU threshold for evaluation (default: 0.7)')
+    parser.add_argument('--visualize', action='store_true', default=False,
+                        help='Visualize detection results (default: False)')
     return parser.parse_args()
 
 def main():
@@ -33,6 +35,7 @@ def main():
         project=output_dir,
         name=folder_name,
         iou=args.iou,
+        visualize=args.visualize,
     )
 
     # Extract precision and recall
