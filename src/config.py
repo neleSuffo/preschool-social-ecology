@@ -24,7 +24,13 @@ class DataConfig:
     VALID_EXTENSIONS = [".jpg", ".PNG"]
     CUT_VIDEO = ['quantex_at_home_id255237_2022_05_08_04']
     CUT_VIDEO_OFFSET = 7123 #add offset to frame number for this video
-    SHIFTED_VIDEOS_OFFSETS = {'quantex_at_home_id257578_2021_05_16_01': (6118, -2)} #annotations are shifted by two frames from frame 6118 on
+    SHIFTED_VIDEOS_OFFSETS = {'quantex_at_home_id257511_2021_07_13_01': (20424, -6), # annotations are shifted by six frames from frame 20430 on
+                              'quantex_at_home_id257573_2021_04_02_01': (28, -2), #annotations are shifted by two frames from frame 28 on
+                              'quantex_at_home_id257578_2021_05_12_04': (28, -2), #annotations are shifted by two frames from frame 28 on
+                              'quantex_at_home_id257578_2021_05_12_05': (28, -2),
+                              'quantex_at_home_id257578_2021_05_12_06': (28, -2),
+                              'quantex_at_home_id257578_2021_05_16_01': (28, -2)} #annotations are shifted by two frames from frame 28 on
+    
 
 class LabelMapping:
     """Mappings for labels, IDs, and supercategories."""
