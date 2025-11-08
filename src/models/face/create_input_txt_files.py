@@ -1236,6 +1236,117 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
         else:
             f.write("Overlap found: No\n")
 
+def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ids: List[str], val_ids: List[str], test_ids: List[str], mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Creates fresh train/val/test splits using fixed, pre-defined child IDs.
+    Applies standard negative sampling ratio to train/val and uses ALL sampled negatives for test.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with image data and annotations   
+    negative_candidates : Dict[str, List[Tuple[str, str]]]
+        Dictionary of potential negative frame candidates per video
+    train_ids : List[str]   
+        List of child IDs for training set
+    val_ids : List[str]
+        List of child IDs for validation set
+    test_ids : List[str]    
+        List of child IDs for test set
+    mode : str
+        Mode for the retraining process ('face-only' or 'age-binary')
+        
+    Returns
+    -------
+    Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]
+        - List of child IDs for training set
+        - List of child IDs for validation set
+        - List of child IDs for test set
+        - DataFrame for training set
+        - DataFrame for validation set
+        - DataFrame for test set
+    """
+    logging.info("Executing fresh sampling and DF creation using fixed IDs.")
+
+    def get_child_id_from_filename(filename: str) -> str:
+        match = re.search(r'id(\d+)_', filename)
+        if match:
+            return 'id' + match.group(1)
+        return None
+
+    def get_child_id_from_video_name(video_name):
+        match = re.search(r'id(\d+)', video_name)
+        return 'id' + match.group(1) if match else None
+
+    # Helper for creating negative dataframes
+    class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
+    def create_neg_df(sampled_neg_list, child_id_getter, class_cols):
+        entries = []
+        for image_path, image_id in sampled_neg_list:
+            filename = Path(image_path).stem
+            entries.append({
+                "filename": filename,
+                "id": image_id,
+                "has_annotation": False,
+                "child_id": child_id_getter(filename),
+                **{col: 0 for col in class_cols}
+            })
+        return pd.DataFrame(entries)
+
+    random.seed(DataConfig.RANDOM_SEED)
+
+    # 1. Initial split of POSITIVE/ANNOTATED images based on fixed IDs
+    train_df_pos = df[df["child_id"].isin(train_ids) & (df["has_annotation"] == True)].copy()
+    val_df_pos = df[df["child_id"].isin(val_ids) & (df["has_annotation"] == True)].copy()
+
+    # 2. Compile negative pools for Train, Val, and Test
+    train_negative_candidates = []
+    val_negative_candidates = []
+    test_negative_candidates = []
+    
+    for video_name, candidates in negative_candidates.items():
+        child_id = get_child_id_from_video_name(video_name)
+        if child_id in train_ids:
+            train_negative_candidates.extend(candidates)
+        elif child_id in val_ids:
+            val_negative_candidates.extend(candidates)
+        elif child_id in test_ids:
+            test_negative_candidates.extend(candidates)
+
+    # 3. Apply standard negative sampling ratio to Train and Val sets
+    # TRAIN NEGATIVE SAMPLING
+    num_train_pos = len(train_df_pos)
+    target_train_neg = int(num_train_pos * FaceConfig.NEGATIVE_SAMPLING_RATIO)
+    sampled_train_neg = random.sample(train_negative_candidates, target_train_neg) if len(train_negative_candidates) >= target_train_neg else train_negative_candidates
+    train_neg_df = create_neg_df(sampled_train_neg, get_child_id_from_filename, class_columns)
+    
+    # VAL NEGATIVE SAMPLING
+    num_val_pos = len(val_df_pos)
+    target_val_neg = int(num_val_pos * FaceConfig.NEGATIVE_SAMPLING_RATIO)
+    sampled_val_neg = random.sample(val_negative_candidates, target_val_neg) if len(val_negative_candidates) >= target_val_neg else val_negative_candidates
+    val_neg_df = create_neg_df(sampled_val_neg, get_child_id_from_filename, class_columns)
+    
+    # TEST NEGATIVE SAMPLING (Take all candidates to reflect real-world distribution)
+    test_neg_df = create_neg_df(test_negative_candidates, get_child_id_from_filename, class_columns)
+    
+    # 4. Finalize Train and Val DataFrames
+    train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
+    val_df = pd.concat([val_df_pos, val_neg_df], ignore_index=True)
+
+    # 5. Finalize Test DataFrames (sampled positives + all sampled negatives)
+    test_sampled_frames = get_sampled_frames_for_children(test_ids, FaceDetection.IMAGES_INPUT_DIR)
+    test_df_pos_sampled = df[df['filename'].isin(test_sampled_frames) & df["child_id"].isin(test_ids)].copy()
+    
+    # Combine sampled positives and sampled negatives
+    test_df_final = pd.concat([test_df_pos_sampled, test_neg_df[~test_neg_df['filename'].isin(test_df_pos_sampled['filename'])]], ignore_index=True)
+
+    return (train_df['filename'].tolist(), 
+            val_df['filename'].tolist(), 
+            test_df_final['filename'].tolist(),
+            train_df, 
+            val_df, 
+            test_df_final)
+    
 def split_data(annotation_folder: Path, mode: str = "face-only", data_distribution_file: Path = None, hard_neg_file: Path = None):
     """
     This function prepares the dataset for face detection YOLO training by splitting the images into train, val, and test sets.
@@ -1254,7 +1365,7 @@ def split_data(annotation_folder: Path, mode: str = "face-only", data_distributi
     logging.info(f"Starting dataset preparation for face detection in mode: {mode}")
 
     # --- 1. Determine Output Directory ---
-    if data_distribution_file:
+    if data_distribution_file and hard_neg_file:
         input_dir = FaceDetection.INPUT_DIR.parent / (FaceDetection.INPUT_DIR.name + "_retrain")
         original_input_dir = FaceDetection.INPUT_DIR
     else:
@@ -1283,7 +1394,7 @@ def split_data(annotation_folder: Path, mode: str = "face-only", data_distributi
             return
         
         # --- 4. Select Splitting Strategy ---
-        if data_distribution_file:
+        if data_distribution_file and hard_neg_file:
             # RETRAIN MODE: Load fixed IDs, use HNM sampling, and COPY Val/Test
             id_data = parse_retrain_file(data_distribution_file)
             train, val, test, df_train, df_val, df_test = retrain_split_by_child_id(
@@ -1313,6 +1424,17 @@ def split_data(annotation_folder: Path, mode: str = "face-only", data_distributi
             
             # We only need to move the new Training set files
             splits_to_move = [("train", train)]
+            
+        elif data_distribution_file:
+            logging.info("Mode: Creating NEW split using FIXED ID distribution from file.")
+            id_data = parse_retrain_file(data_distribution_file)
+
+            train, val, test, df_train, df_val, df_test = fixed_id_split_logic(
+                df, negative_candidates, id_data['train_ids'], id_data['val_ids'], id_data['test_ids'], mode
+            )
+            
+            # All splits must be moved freshly in this mode
+            splits_to_move = [("train", train), ("val", val), ("test", test)]
         else:
             splits_to_move = []
             train, val, test, df_train, df_val, df_test = split_by_child_id(df, negative_candidates, len(positive_images), annotation_folder, mode)
@@ -1395,9 +1517,11 @@ def main():
                        help='Fetch and save annotations from database (default: False)')
     parser.add_argument('--retrain', action='store_true', default=False,
                        help='Activate retrain mode using fixed IDs and hard negative files defined in FaceConfig.')
+    parser.add_argument('--fixed-split-file', action='store_true', default=False,
+                       help='Use fixed split file for data splitting.')
     args = parser.parse_args()
     
-    data_distribution_file = FaceDetection.DATA_DISTRIBUTION_PATH if args.retrain else None
+    data_distribution_file = FaceDetection.DATA_DISTRIBUTION_PATH if args.retrain or args.fixed_split_file else None
     hard_neg_file = FaceDetection.RETRAIN_FALSE_POSITIVES_PATH if args.retrain else None
     is_retrain_mode = args.retrain
 
@@ -1415,8 +1539,8 @@ def main():
         
         split_data(FaceDetection.LABELS_INPUT_DIR, 
                    mode=args.mode,
-                   data_distribution_file=data_distribution_file, # Will be Path or None
-                   hard_neg_file=hard_neg_file)                 # Will be Path or None
+                   data_distribution_file=data_distribution_file,
+                   hard_neg_file=hard_neg_file)
                                    
     except Exception as e:
         logging.error(f"Failed: {e}")
