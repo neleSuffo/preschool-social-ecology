@@ -31,27 +31,26 @@ from results.eval_segment_performance import run_evaluation
 from results.rq_01_frame_level_analysis import main as frame_analysis_main
 from results.rq_01_video_level_analysis import main as segment_analysis_main
 
-
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""
     
-    # Define the hyperparameter search space 
-    HYPERPARAMETER_RANGES= {
-    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.75, 1, 1.25],  # Centered on best: 1
-    'MIN_ALONE_SEGMENT_DURATION_SEC': [4, 5, 6],              # Centered on best: 5
-    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4, 5, 6],          # Centered on best: 5
-    'MIN_KCDS_DURATION_SEC': [1.5, 2, 2.5],                   # Centered on best: 2
-    'MIN_RECLASSIFY_DURATION_SEC': [4, 5, 6],                 # Centered on best: 5
-    'SUSTAINED_KCDS_SEC': [0.75, 1, 1.25],                    # Centered on best: 1
-    'PROXIMITY_THRESHOLD': [0.75, 0.8, 0.85],                # Centered on best: 0.8
-    'PERSON_AVAILABLE_WINDOW_SEC': [8, 9, 10],               # Centered on best: 9
-    'MIN_PRESENCE_FRACTION': [0.35, 0.4, 0.45],              # Centered on best: 0.4
-    'KCHI_PERSON_BUFFER_FRAMES': [10, 11, 12],               # Centered on best: 11
-    'MAX_SAME_SPEAKER_GAP_SEC': [1.5, 2, 2.5],               # Centered on best: 2
-    'MAX_TURN_TAKING_GAP_SEC': [5, 6, 7],                    # Centered on best: 6
-    'GAP_MERGE_DURATION_SEC': [9, 10, 11],                   # Centered on best: 10
-    'KCHI_ONLY_FRACTION_THRESHOLD': [0.75, 0.8, 0.85],       # Centered on best: 0.8
-    'MIN_PERSON_PRESENCE_FRACTION': [0.03, 0.05, 0.07]       # Centered on best: 0.05
+    HYPERPARAMETER_RANGES = {
+    # Duration/Segment Parameters
+    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.6, 0.7, 0.75],
+    'MIN_ALONE_SEGMENT_DURATION_SEC': [4.5, 5, 5.5],
+    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [3.5, 4, 4.5],
+    'MIN_KCDS_DURATION_SEC': [1.25, 1.5, 1.75],
+    'MIN_RECLASSIFY_DURATION_SEC': [4.5, 5, 5.5],
+    'SUSTAINED_KCDS_SEC': [0.9, 1, 1.1],
+    'PROXIMITY_THRESHOLD': [0.78, 0.8, 0.82],
+    'PERSON_AVAILABLE_WINDOW_SEC': [9, 10, 11],
+    'MIN_PRESENCE_FRACTION': [0.38, 0.4, 0.42],
+    'KCHI_PERSON_BUFFER_FRAMES': [10, 11, 12],
+    'MAX_SAME_SPEAKER_GAP_SEC': [1.75, 2, 2.25],
+    'MAX_TURN_TAKING_GAP_SEC': [4.5, 5, 5.5],
+    'GAP_MERGE_DURATION_SEC': [10, 11, 12],
+    'KCHI_ONLY_FRACTION_THRESHOLD': [0.7, 0.75, 0.8],
+    'MIN_PERSON_PRESENCE_FRACTION': [0.04, 0.05, 0.06]
 }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
