@@ -1471,10 +1471,10 @@ def split_data(annotation_folder: Path, mode: str = "person-only", data_distribu
         logging.error(f"Error processing person detection: {str(e)}")
         raise
     
-    logging.info(f"Completed dataset preparation for face detection in mode: {mode}")
+    logging.info(f"Completed dataset preparation for person detection in mode: {mode}")
 
 def generate_false_positive_list():
-    with open(FaceDetection.PREDICTIONS_JSON_PATH, "r") as f:
+    with open(PersonClassification.PREDICTIONS_JSON_PATH, "r") as f:
         pred = json.load(f)
         
     # collect image_ids where category_id == 1
@@ -1489,7 +1489,7 @@ def generate_false_positive_list():
         
         
     # get gt files
-    gt_train_dir = FaceDetection.INPUT_DIR/ "labels/train"
+    gt_train_dir = PersonClassification.INPUT_DIR/ "labels/train"
     
     gt_frames = []
 
@@ -1506,7 +1506,7 @@ def generate_false_positive_list():
     # now from the two lists gt_files , pred_frames give me the list of images that are in pred but not in gt
     false_positive_frames = [f for f in pred_frames if f not in gt_frames]
 
-    with open(FaceDetection.RETRAIN_FALSE_POSITIVES_PATH, "w") as f:
+    with open(PersonClassification.RETRAIN_FALSE_POSITIVES_PATH, "w") as f:
         for item in false_positive_frames:
             f.write(f"{item}\n")
     logging.info(f"Saved {len(false_positive_frames)} false positive frames to {PersonClassification.RETRAIN_FALSE_POSITIVES_PATH}")
@@ -1517,7 +1517,7 @@ def generate_false_positive_list():
 
 def main():
     parser = argparse.ArgumentParser(description='Create input files for person detection YOLO training')
-    parser.add_argument('--mode', choices=["face-only", "age-binary"], default="face-only",
+    parser.add_argument('--mode', choices=["person-only", "age-binary"], default="person-only",
                        help='Select the detection mode')
     parser.add_argument('--fetch-annotations', action='store_true',
                        help='Fetch and save annotations from database (default: False)')
