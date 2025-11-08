@@ -1,6 +1,6 @@
 
 train: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/train
-val: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/test
+val: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/val
 test: /home/nele_pauline_suffo/ProcessedData/face_det_input/images/test
 
 
