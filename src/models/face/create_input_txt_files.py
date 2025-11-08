@@ -560,6 +560,67 @@ def get_all_frames_for_children(child_ids: List[str], image_folder: Path) -> Lis
     
     return all_frames
 
+def get_sampled_frames_for_children(child_ids: List[str], image_folder: Path) -> List[str]:
+    """
+    Get all sampled frames (positive and negative) for specified child IDs from all their videos,
+    respecting the SHIFTED_VIDEOS_OFFSETS configuration.
+    
+    Parameters
+    ----------
+    child_ids : List[str]
+        List of child IDs to get sampled frames for
+    image_folder : Path
+        Path to the image folder
+        
+    Returns
+    -------
+    List[str]
+        List of image file stems (filenames without extension) that are sampled.
+    """
+    DEFAULT_OFFSET = 0
+    sampled_frames = []
+    
+    for child_id in child_ids:
+        for video_folder in image_folder.iterdir():
+            if video_folder.is_dir() and child_id in video_folder.name:
+                video_name = video_folder.name
+                exception_map = DataConfig.SHIFTED_VIDEOS_OFFSETS
+                
+                for frame in video_folder.iterdir():
+                    if frame.is_file() and frame.suffix.lower() in DataConfig.VALID_EXTENSIONS:
+                        stem = frame.stem
+                        parts = stem.split("_")
+                        
+                        frame_number = -1
+                        if len(parts) >= 9:
+                            try:
+                                frame_number = int(parts[-1])
+                            except ValueError:
+                                continue 
+
+                        is_sampled_frame = False
+                        
+                        if video_name in exception_map:
+                            start_frame, shift = exception_map[video_name]
+                            
+                            if frame_number < start_frame:
+                                if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
+                                    is_sampled_frame = True
+                            else:
+                                # Rule 2: From the exception start onward, use the shifted modulo rule
+                                if (frame_number - start_frame) % DataConfig.FPS == DEFAULT_OFFSET:
+                                    is_sampled_frame = True
+                                
+                        else:
+                            # Default rule for all other videos: multiples of DataConfig.FPS
+                            if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
+                                is_sampled_frame = True
+                        
+                        if is_sampled_frame:
+                            sampled_frames.append(stem)
+    
+    return sampled_frames
+
 # =======================================================
 # Retrain Split Function (Uses Fixed IDs and HNM List)
 # =======================================================
@@ -698,18 +759,22 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
         return pd.DataFrame(entries)
 
     train_neg_df = create_neg_df(sampled_train_neg, get_child_id_from_filename, class_columns)
-    
-    # Final Train DataFrame: Positives + HNM/Soft Negatives
-    train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
-    
+       
     # For Val/Test, we return all filenames that belong to their IDs,
     # but the actual file movement will copy the existing directories.
     val_df_all_frames = df[df["child_id"].isin(val_ids)].copy()
     test_df_all_frames = df[df["child_id"].isin(test_ids)].copy()
-
-    # The returned lists are now only for the files we MUST move (Train) or files that exist (Val/Test).
-    return (train_df['filename'].tolist(), val_df_all_frames['filename'].tolist(), test_df_all_frames['filename'].tolist(),
-            train_df, val_df_all_frames, test_df_all_frames)
+    
+    # The test set must consist of ALL sampled frames for the test children,
+    # regardless of whether they were annotated (positive) or clean sampled (negative).
+    
+    test_sampled_frames = get_sampled_frames_for_children(test_ids, FaceDetection.IMAGES_INPUT_DIR)
+    test_df = df[df['filename'].isin(test_sampled_frames) & df["child_id"].isin(test_ids)].copy()
+    # Add any sampled negatives that weren't in the original POSITIVE-only DF to ensure all sampled negatives are included
+    test_df_final = pd.concat([test_df, test_neg_df[~test_neg_df['filename'].isin(test_df['filename'])]], ignore_index=True)
+    
+    return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df_final['filename'].tolist(),
+                train_df, val_df, test_df_final)
     
 def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, labels_input_dir: Path = None, mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -936,10 +1001,17 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
     # 2e. Finalize Train and Val DataFrames
     train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
     val_df = pd.concat([val_df_pos, val_neg_df], ignore_index=True)
-    test_df = pd.concat([test_df_pos, test_neg_df], ignore_index=True)
-
-    return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df['filename'].tolist(),
-                train_df, val_df, test_df)
+    
+    # The test set must consist of ALL sampled frames for the test children,
+    # regardless of whether they were annotated (positive) or clean sampled (negative).
+    
+    test_sampled_frames = get_sampled_frames_for_children(test_ids, FaceDetection.IMAGES_INPUT_DIR)
+    test_df = df[df['filename'].isin(test_sampled_frames) & df["child_id"].isin(test_ids)].copy()
+    # Add any sampled negatives that weren't in the original POSITIVE-only DF to ensure all sampled negatives are included
+    test_df_final = pd.concat([test_df, test_neg_df[~test_neg_df['filename'].isin(test_df['filename'])]], ignore_index=True)
+    
+    return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df_final['filename'].tolist(),
+                train_df, val_df, test_df_final)
 
 def move_images(image_names: list, 
                 split_type: str, 
