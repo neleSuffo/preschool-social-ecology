@@ -759,22 +759,43 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
         return pd.DataFrame(entries)
 
     train_neg_df = create_neg_df(sampled_train_neg, get_child_id_from_filename, class_columns)
-       
+    
+    # Final Train DataFrame: Positives + HNM/Soft Negatives
+    train_df = pd.concat([train_df_pos, train_neg_df], ignore_index=True)
+
     # For Val/Test, we return all filenames that belong to their IDs,
     # but the actual file movement will copy the existing directories.
     val_df_all_frames = df[df["child_id"].isin(val_ids)].copy()
     test_df_all_frames = df[df["child_id"].isin(test_ids)].copy()
     
-    # The test set must consist of ALL sampled frames for the test children,
-    # regardless of whether they were annotated (positive) or clean sampled (negative).
+    # 1. Compile ALL sampled negative candidates belonging to the Test IDs
+    test_negative_candidates = []
+    for video_name, candidates in negative_candidates.items():
+        child_id = get_child_id_from_video_name(video_name)
+        if child_id in test_ids:
+            test_negative_candidates.extend(candidates)
+            
+    # 2. Create the DataFrame for test negatives (needed for test_df_final)
+    test_neg_df = create_neg_df(test_negative_candidates, get_child_id_from_filename, class_columns)
     
+    # 3. Build the final Test DataFrame (Positives + ALL Sampled Negatives)
     test_sampled_frames = get_sampled_frames_for_children(test_ids, FaceDetection.IMAGES_INPUT_DIR)
+    
+    # Filter the overall DF (positives only) to include only sampled positive frames for test
     test_df = df[df['filename'].isin(test_sampled_frames) & df["child_id"].isin(test_ids)].copy()
-    # Add any sampled negatives that weren't in the original POSITIVE-only DF to ensure all sampled negatives are included
+    
+    # Add any sampled negatives that weren't in the original POSITIVE-only DF (i.e., the clean negatives)
     test_df_final = pd.concat([test_df, test_neg_df[~test_neg_df['filename'].isin(test_df['filename'])]], ignore_index=True)
     
-    return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df_final['filename'].tolist(),
-                train_df, val_df, test_df_final)
+    # ------------------------------------------------------------------
+    
+    # The returned lists are now only for the files we MUST move (Train) or files that exist (Val/Test).
+    return (train_df['filename'].tolist(), 
+            val_df_all_frames['filename'].tolist(), 
+            test_df_final['filename'].tolist(),
+            train_df, 
+            val_df_all_frames, 
+            test_df_final)
     
 def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = FaceConfig.TRAIN_SPLIT_RATIO, labels_input_dir: Path = None, mode: str = "face-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
