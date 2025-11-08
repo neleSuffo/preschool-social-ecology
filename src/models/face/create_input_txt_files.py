@@ -1278,6 +1278,9 @@ def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[T
         match = re.search(r'id(\d+)', video_name)
         return 'id' + match.group(1) if match else None
 
+    df['child_id'] = df['filename'].apply(get_child_id_from_filename)
+    df.dropna(subset=['child_id'], inplace=True)
+    
     # Helper for creating negative dataframes
     class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
     def create_neg_df(sampled_neg_list, child_id_getter, class_cols):
