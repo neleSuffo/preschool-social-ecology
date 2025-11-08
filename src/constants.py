@@ -64,7 +64,7 @@ class PersonClassification:
 class FaceDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
-    TRAINED_WEIGHTS_PATH = Path(OUTPUT_DIR/"yolo12l_20251026_011719/weights/best.pt")
+    TRAINED_WEIGHTS_PATH = Path(OUTPUT_DIR/"yolo12l_20251108_200945/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
