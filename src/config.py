@@ -106,6 +106,7 @@ class PersonConfig:
     DATABASE_CATEGORY_IDS = [1, 2]
     TARGET_LABELS_AGE_BINARY = ['child', 'adult']
     TARGET_LABELS_PERSON_ONLY = ['person']
+    TARGET_LABELS_CLS = ['0_no_person', '1_person']
     NEGATIVE_SAMPLING_RATIO = 1 #100% negative samples compared to positive samples in train and val splits
 
     MIN_IDS_PER_SPLIT = 2
