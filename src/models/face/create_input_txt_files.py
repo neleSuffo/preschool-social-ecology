@@ -319,6 +319,8 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
         if video_path.exists() and video_path.is_dir():
             
             exception_map = DataConfig.SHIFTED_VIDEOS_OFFSETS
+            # Get the frame interval for this video (default is DataConfig.FPS)
+            frame_interval = DataConfig.NON_STANDARD_FRAME_STEPS.get(video_name, DataConfig.FPS)
             
             # Iterate through all frames in the video folder
             for frame in video_path.iterdir():
@@ -343,17 +345,18 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
                         
                         if frame_number < start_frame:
                             # Rule 1: Before the exception start, use standard sampling
-                            if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
+                            if frame_number % frame_interval == DEFAULT_OFFSET:
                                 is_sampled_frame = True
                         else:
                             # Rule 2: From the exception start onward, use the shifted modulo rule
-                            # Sampling is shifted to start at start_frame and then every DataConfig.FPS frames
-                            if (frame_number - start_frame) % DataConfig.FPS == DEFAULT_OFFSET:
+                            # Sampling is shifted to start at start_frame and then every frame_interval frames
+                            if (frame_number - start_frame) % frame_interval == DEFAULT_OFFSET:
                                 is_sampled_frame = True
                             
                     else:
-                        # Default rule for all other videos: multiples of DataConfig.FPS
-                        if frame_number % DataConfig.FPS == DEFAULT_OFFSET:
+                        # Default rule for all other videos: multiples of frame_interval
+                        # This assumes DEFAULT_OFFSET = 0 and the step size is constant.
+                        if frame_number % frame_interval == DEFAULT_OFFSET:
                             is_sampled_frame = True
                     
                     # A. If this frame has a valid annotation, include it as a positive
