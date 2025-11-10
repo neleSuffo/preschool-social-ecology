@@ -30,6 +30,7 @@ class DataConfig:
                               'quantex_at_home_id257578_2021_05_12_05': (28, -2),
                               'quantex_at_home_id257578_2021_05_12_06': (28, -2),
                               'quantex_at_home_id257578_2021_05_16_01': (28, -2)} #annotations are shifted by two frames from frame 28 on
+    NON_STANDARD_FRAME_STEPS = {'quantex_at_home_id258704_2022_05_15_01': 34} # Interval is 34 frames, not 30
     
 
 class LabelMapping:
