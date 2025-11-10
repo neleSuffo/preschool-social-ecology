@@ -17,12 +17,34 @@ from datetime import datetime
 
 from pandera import parser
 
-from constants import DataPaths, BasePaths, PersonClassification
+from constants import DataPaths, BasePaths, PersonDetection, PersonClassification
 from config import PersonConfig, DataConfig
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# --- Utility to get the correct constants object ---
+def get_data_constants(data_type: str):
+    """
+    Returns the correct constants object based on the data_type flag.
+    
+    Parameters
+    ----------
+    data_type : str
+        Type of data processing ("detection" or "classification")
+
+    Returns
+    -------
+    Type
+        Corresponding constants object for the specified data type.
+    """
+    if data_type == "detection":
+        return PersonDetection
+    elif data_type == "classification":
+        return PersonClassification
+    else:
+        raise ValueError(f"Unknown data type: {data_type}. Must be 'detection' or 'classification'.")
+    
 def parse_retrain_file(retrain_file: Path) -> Dict[str, List[str]]:
     """
     Parses the ID Distribution section from the statistics file.
@@ -152,9 +174,8 @@ def convert_to_yolo_format(width: int, height: int, bbox: List[float]) -> Tuple[
 def write_annotations(file_path: Path, lines: List[str]) -> None:
     file_path.write_text("".join(lines))
 
-def save_annotations(annotations: List[Tuple], output_dir: Path = None, mode: str = "person-only") -> None:
-    """Convert annotations to YOLO format and save them in parallel.
-    
+def save_annotations(annotations: List[Tuple], output_dir: Path = None, mode: str = "person-only", data_type: str = "detection") -> None:
+    """    
     Parameters
     ----------
     annotations : List[Tuple]
@@ -163,79 +184,86 @@ def save_annotations(annotations: List[Tuple], output_dir: Path = None, mode: st
         Directory to save annotation files
     mode : str
         Detection mode to use for saving annotations (default: "person-only")
+    data_type : str
+        Type of data being processed (default: "detection")
     """
+    CONSTANTS = get_data_constants(data_type)
+    
     if output_dir is None:
-        output_dir = PersonClassification.LABELS_INPUT_DIR
+        output_dir = CONSTANTS.LABELS_INPUT_DIR
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    files = defaultdict(list)
+    files = defaultdict(set)
     processed, skipped = 0, 0
 
+    if mode == "person-only":
+        mode_config = PersonConfig.AGE_GROUP_TO_CLASS_ID_PERSON_ONLY
+    elif mode == "age-binary":
+        mode_config = PersonConfig.AGE_GROUP_TO_CLASS_ID_AGE_BINARY
+    else:
+        logging.error(f"Unknown mode: {mode}")
+        return
+
     for _, bbox_json, img_name, age in annotations:
-        # img_name comes from database and should be the image filename without extension
-        # Example: quantex_at_home_id255237_2022_05_08_04_000240 -> quantex_at_home_id255237_2022_05_08_04
+        
+        class_id = mode_config.get(age, 99)
+        
+        if class_id == 99:
+            logging.warning(f"Unknown age group '{age}' for {img_name}")
+            skipped += 1
+            continue
+
+        if data_type == "classification":
+            # Classification output: Only class ID needed.
+            files[img_name].add(f"{class_id}\n")
+            processed += 1
+            continue
+            
+        # --- DETECTION (YOLO) MODE LOGIC BELOW ---
+        
         img_name_parts = img_name.split("_")
         if len(img_name_parts) < 9:
-            logging.warning(f"Invalid image name format: {img_name} (expected at least 9 parts)")
+            logging.warning(f"Invalid image name format: {img_name}")
             skipped += 1
             continue
 
         video_folder_name = "_".join(img_name.split("_")[:-1])
-        
         img_path = None
         for ext in DataConfig.VALID_EXTENSIONS:
-            potential_path = PersonClassification.IMAGES_INPUT_DIR / video_folder_name / f"{img_name}{ext}"
+            # Use the correct constant for images folder
+            potential_path = CONSTANTS.IMAGES_INPUT_DIR / video_folder_name / f"{img_name}{ext}"
             if potential_path.exists():
                 img_path = potential_path
                 break
         
         if img_path is None:
-            logging.warning(f"Image not found: {img_name} in folder {video_folder_name}")
-            logging.debug(f"Searched paths: {[PersonClassification.IMAGES_INPUT_DIR / video_folder_name / f'{img_name}{ext}' for ext in DataConfig.VALID_EXTENSIONS]}")
+            logging.debug(f"Image not found: {img_name}")
             skipped += 1
             continue
 
         try:
             img = cv2.imread(str(img_path))
             if img is None:
-                logging.warning(f"Failed to load image: {img_path}")
                 skipped += 1
                 continue
             
             height, width = img.shape[:2]
-            
             bbox = json.loads(bbox_json)
-            yolo_bbox = convert_to_yolo_format(width, height, bbox)
+            yolo_bbox = convert_to_yolo_format(width, height, bbox) 
             
-            if mode == "person-only":
-                class_id = PersonConfig.AGE_GROUP_TO_CLASS_ID_PERSON_ONLY.get(age, 99)
-            elif mode == "age-binary":
-                class_id = PersonConfig.AGE_GROUP_TO_CLASS_ID_AGE_BINARY.get(age, 99)
-            else:
-                logging.error(f"Unknown detection mode: {mode}")
-                skipped += 1
-                continue
-            # Skip invalid class IDs
-            if class_id == 99:
-                logging.warning(f"Unknown age group '{age}' for {img_name}")
-                skipped += 1
-                continue
-
-            # Write the dynamically determined class_id (0 for all persons in 'person-only')
-            files[img_name].append(f"{class_id} " + " ".join(map(str, yolo_bbox)) + "\n")
+            files[img_name].add(f"{class_id} " + " ".join(map(str, yolo_bbox)) + "\n")
             processed += 1
         except Exception as e:
             logging.error(f"Error processing {img_path}: {e}")
             skipped += 1
 
-    # Save annotation files in parallel
     with ThreadPoolExecutor(max_workers=4) as executor:
         for img_name, lines in files.items():
             output_file = output_dir / f"{img_name}.txt"
-            executor.submit(write_annotations, output_file, lines)
+            executor.submit(write_annotations, output_file, list(lines))
 
-    logging.info(f"Processed {processed}, skipped {skipped}")
+    logging.info(f"Processed {processed} labels for {len(files)} image files, skipped {skipped}")
 
 def fetch_noisy_frames() -> List[str]:
     """
@@ -265,7 +293,7 @@ def fetch_noisy_frames() -> List[str]:
 
     return results
 
-def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = PersonClassification.IMAGES_INPUT_DIR) -> Tuple[List[Tuple[str, str]], Dict[str, List[Tuple[str, str]]]]:
+def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path) -> Tuple[List[Tuple[str, str]], Dict[str, List[Tuple[str, str]]]]:
     """
     Returns ALL annotated (positive) frames and ALL potential clean negative frame candidates (sampled by frame offset).
     
@@ -371,7 +399,7 @@ def get_total_number_of_annotated_frames(label_path: Path, image_folder: Path = 
     # Return positive images list and the dict of negative candidates
     return positive_images, dict(video_negative_candidates)
 
-def get_class_distribution(total_images: list, annotation_folder: Path, mode: str) -> pd.DataFrame:
+def get_class_distribution(total_images: list, annotation_folder: Path, mode: str, data_type: str) -> pd.DataFrame:
     """
     Reads label files and groups images based on their class distribution for the given detection mode.
 
@@ -445,84 +473,6 @@ def get_class_distribution(total_images: list, annotation_folder: Path, mode: st
     df = pd.DataFrame(image_class_mapping)
     
     return df
-
-def get_first_n_minutes_frames(child_ids: List[str], image_folder: Path, minutes: int) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
-    """
-    Get frames from the first N minutes of recordings for specified child IDs.
-    Filters based on actual frame numbers, not just file count.
-    Splits them between training (first 80%) and validation (remaining 20%).
-
-    Parameters
-    ----------
-    child_ids : List[str]
-        List of child IDs to get frames for
-    image_folder : Path
-        Path to the image folder
-    minutes : int
-        Number of minutes from the beginning to extract
-        
-    Returns
-    -------
-    Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]
-        Two lists of tuples: (train_frames, val_frames) containing (image_path, image_id)
-    """
-    train_frames = []
-    val_frames = []
-    
-    # Calculate the maximum frame number for N minutes
-    max_frame_number = minutes * 60 * DataConfig.FPS  # e.g., 5 * 60 * 30 = 9000
-    
-    # Calculate frame number splits (80% for training, 20% for validation)
-    train_frame_max = int(max_frame_number * 0.8)  # e.g., frame 7200 for 4 minutes
-    val_frame_max = max_frame_number  # e.g., frame 9000 for 5 minutes total
-    
-    for child_id in child_ids:
-        child_train_frames = []
-        child_val_frames = []
-        
-        # Find all video folders for this child
-        for video_folder in sorted(image_folder.iterdir()):
-            if video_folder.is_dir() and child_id in video_folder.name:
-                # Get all frames from this video folder and filter by frame number
-                video_frames = []
-                for frame in video_folder.iterdir():
-                    if frame.is_file() and frame.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-                        # Extract frame number from filename
-                        # Example: quantex_at_home_id255237_2022_05_08_04_000240.jpg -> frame 240
-                        parts = frame.stem.split("_")
-                        if len(parts) >= 9:
-                            try:
-                                frame_number = int(parts[-1])  # Last part should be frame number
-                                
-                                # Only include frames within the first N minutes
-                                if frame_number <= max_frame_number:
-                                    video_frames.append((frame, frame_number))
-                            except ValueError:
-                                logging.warning(f"Could not extract frame number from {frame.name}")
-                                continue
-                
-                # Sort by frame number to ensure chronological order
-                video_frames.sort(key=lambda x: x[1])
-                
-                # Assign frames based on frame number thresholds
-                for frame_path, frame_number in video_frames:
-                    # Extract image ID
-                    parts = frame_path.name.split("_")
-                    if len(parts) > 3 and parts[3].startswith('id'):
-                        image_id = parts[3].replace("id", "")
-                    else:
-                        image_id = frame_path.stem
-                    
-                    # Assign to training (first 80% of time) or validation (remaining 20%)
-                    if frame_number <= train_frame_max:
-                        child_train_frames.append((str(frame_path.resolve()), image_id))
-                    elif frame_number <= val_frame_max:
-                        child_val_frames.append((str(frame_path.resolve()), image_id))
-        
-        train_frames.extend(child_train_frames)
-        val_frames.extend(child_val_frames)
-        
-    return train_frames, val_frames
 
 def get_all_frames_for_children(child_ids: List[str], image_folder: Path) -> List[Tuple[str, str]]:
     """
@@ -625,7 +575,7 @@ def get_sampled_frames_for_children(child_ids: List[str], image_folder: Path) ->
 # Retrain Split Function (Uses Fixed IDs and HNM List)
 # =======================================================
 
-def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ids: List[str], val_ids: List[str], test_ids: List[str], hard_neg_file: Path, labels_input_dir: Path = None, mode: str = "person-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ids: List[str], val_ids: List[str], test_ids: List[str], hard_neg_file: Path, labels_input_dir: Path = None, mode: str = "person-only", data_type: str = "detection") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:   
     """
     Splits data using FIXED child IDs loaded from a file, incorporates Hard Negatives 
     into the training set, and samples the remaining negative frames. 
@@ -649,6 +599,8 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
         Path to the labels input directory
     mode : str
         Mode for the retraining process ("person-only" or "age-binary")
+    data_type : str
+        Type of data being processed (default: "detection")
         
     Returns
     -------
@@ -662,8 +614,10 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
     """
     logging.info("Running RETRAIN mode with fixed ID distribution.")
 
+    CONSTANTS = get_data_constants(data_type)
+
     if labels_input_dir is None:
-        labels_input_dir = PersonClassification.LABELS_INPUT_DIR
+        labels_input_dir = CONSTANTS.LABELS_INPUT_DIR
 
     # --- Infer Detection Mode and Get Correct Mapping ---
     if mode == "person-only":
@@ -708,7 +662,7 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
     hard_negatives = []
     soft_negatives = []
 
-   # Filter negative candidates into Hard (in file) and Soft (not in file)
+    # Filter negative candidates into Hard (in file) and Soft (not in file)
     for video_name, candidates in negative_candidates.items():
         child_id = get_child_id_from_video_name(video_name)
         
@@ -779,8 +733,7 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
     test_neg_df = create_neg_df(test_negative_candidates, get_child_id_from_filename, class_columns)
     
     # 3. Build the final Test DataFrame (Positives + ALL Sampled Negatives)
-    test_sampled_frames = get_sampled_frames_for_children(test_ids, PersonClassification.IMAGES_INPUT_DIR)
-    
+    test_sampled_frames = get_sampled_frames_for_children(test_ids, CONSTANTS.IMAGES_INPUT_DIR)
     # Filter the overall DF (positives only) to include only sampled positive frames for test
     test_df = df[df['filename'].isin(test_sampled_frames) & df["child_id"].isin(test_ids)].copy()
     
@@ -797,7 +750,7 @@ def retrain_split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, L
             val_df_all_frames, 
             test_df_final)
 
-def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = PersonConfig.TRAIN_SPLIT_RATIO, labels_input_dir: Path = None, mode: str = "person-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ratio: float = PersonConfig.TRAIN_SPLIT_RATIO, labels_input_dir: Path = None, mode: str = "person-only", data_type: str = "detection") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Splits the DataFrame into training, validation, and test sets using child IDs as the unit, while balancing class distributions.
 
@@ -812,13 +765,14 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
     train_ratio : float
         Ratio for training split
     labels_input_dir : Path
-        Path to labels directory (if None, uses default PersonClassification.LABELS_INPUT_DIR)
+        Path to labels directory
     mode : str
         Detection mode to use for splitting ('person-only' or 'age-binary')
     """
+    CONSTANTS = get_data_constants(data_type)
     # Define minimum number of person images required in the test set as fixed percentage of positive images
     if labels_input_dir is None:
-        labels_input_dir = PersonClassification.LABELS_INPUT_DIR
+        labels_input_dir = CONSTANTS.LABELS_INPUT_DIR
 
     if 'filename' not in df.columns:
         logging.error(f"'filename' column not found in DataFrame. Available columns: {df.columns.tolist()}")
@@ -1025,8 +979,8 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
     
     # The test set must consist of ALL sampled frames for the test children,
     # regardless of whether they were annotated (positive) or clean sampled (negative).
-    
-    test_sampled_frames = get_sampled_frames_for_children(test_ids, PersonClassification.IMAGES_INPUT_DIR)
+
+    test_sampled_frames = get_sampled_frames_for_children(test_ids, CONSTANTS.IMAGES_INPUT_DIR)
     test_df = df[df['filename'].isin(test_sampled_frames) & df["child_id"].isin(test_ids)].copy()
     # Add any sampled negatives that weren't in the original POSITIVE-only DF to ensure all sampled negatives are included
     test_df_final = pd.concat([test_df, test_neg_df[~test_neg_df['filename'].isin(test_df['filename'])]], ignore_index=True)
@@ -1036,82 +990,119 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
 
 def move_images(image_names: list, 
                 split_type: str, 
-                label_path: Path,
-                input_dir: Path = None,
-                n_workers: int = 4) -> Tuple[int, int]:
+                label_path: Path, 
+                input_dir: Path, 
+                n_workers: int = 4, 
+                data_type: str = "detection",
+                df_split: pd.DataFrame = None) -> Tuple[int, int]:
     """
-    Move images and their corresponding labels to the specified split directory for person detection.
-    Uses multithreading for faster processing.
+    Move images and their corresponding labels/folders for person data.
     
     Parameters
     ----------
-    image_names: list
-        List of image names to process
+    images_names: list
+        List of image file stems (filenames without extension) to move.
     split_type: str
-        Split type (train, val, or test)
+        "train", "val", or "test"
     label_path: Path
-        Path to label directory
-    input_dir: Path
-        Custom input directory (if None, uses default PersonClassification.INPUT_DIR)
+        Path to the directory containing label files.
+    input_dir: Path, optional
+        Base input directory. If None, uses default from constants.
     n_workers: int
-        Number of worker threads for parallel processing
-        
-    Returns
-    -------
-    Tuple[int, int]
-        Number of successful and failed moves
+        Number of parallel workers to use.
+    data_type: str
+        "detection" or "classification"
+    df_split: pd.DataFrame, optional
+        DataFrame containing 'filename', 'has_annotation', and class columns for the current split.
+        Required for classification to determine the target class subdirectory.
     """
+    CONSTANTS = get_data_constants(data_type)
+
     if not image_names:
-        logging.info(f"No images to move for person detection {split_type}")
+        logging.info(f"No images to move for person data {split_type}")
         return (0, 0)
 
-    # Use custom input_dir if provided, otherwise use default
-    if input_dir is None:
-        input_dir = PersonClassification.INPUT_DIR
-
-    image_dst_dir = input_dir / "images" / split_type
-    label_dst_dir = input_dir / "labels" / split_type
+    image_src_root = CONSTANTS.IMAGES_INPUT_DIR
     
-    image_dst_dir.mkdir(parents=True, exist_ok=True)
-    label_dst_dir.mkdir(parents=True, exist_ok=True)
+    # --- Classification Mode Setup ---
+    if data_type == "classification":
+        # Check if we have the DataFrame needed to map filenames to classes
+        if df_split is None or df_split.empty:
+             logging.error("DataFrame is required for classification to determine image class!")
+             return (0, len(image_names))
+
+        # Determine class column dynamically (e.g., 'person' or 'child'/'adult')
+        # Assuming binary: 0=No Person, 1=Person Present (has_annotation=True)
+        class_map = {
+            True: PersonConfig.TARGET_LABELS_CLS[1],
+            False: PersonConfig.TARGET_LABELS_CLS[0]
+        }
+        
+        # Create a mapping from filename to the target class folder name (e.g., 'image_0001' -> '1_Person_Present')
+        file_to_class_folder = {}
+        for index, row in df_split.iterrows():
+            # You might need to adjust '0_No_Person_Class' based on your PersonConfig setup.
+            is_present = row['has_annotation']
+            file_to_class_folder[row['filename']] = class_map[is_present]
+
+
+    # --- Setup Destination Directories ---
+    image_dst_base_dir = input_dir / "images" / split_type
+    
+    if data_type == "detection":
+        label_dst_dir = input_dir / "labels" / split_type
+        label_dst_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        # Ensure the main split directory exists for classification, labels are folders inside it
+        image_dst_base_dir.mkdir(parents=True, exist_ok=True)
+
 
     def process_single_image(image_name: str) -> bool:
-        """Process a single image and its label."""
+        """Process a single image and move it to the final location."""
         try:
-
-            # Handle person detection cases - get video folder from image name
             image_parts = image_name.split("_")
             if len(image_parts) < 9:
-                logging.debug(f"Invalid image name format: {image_name}")
                 return False
             
-            # from quantex_at_home_id255237_2022_05_08_04_000240.jpg to quantex_at_home_id255237_2022_05_08_04
             image_folder = "_".join(image_parts[:8])
-            
-            # Try to find image with any valid extension
             image_src = None
+            
             for ext in DataConfig.VALID_EXTENSIONS:
-                potential_path = PersonClassification.IMAGES_INPUT_DIR / image_folder / f"{image_name}{ext}"
+                potential_path = image_src_root / image_folder / f"{image_name}{ext}"
                 if potential_path.exists():
                     image_src = potential_path
                     break
             
             if image_src is None:
-                logging.debug(f"Image not found with any valid extension: {image_name}")
                 return False
             
-            label_src = label_path / f"{image_name}.txt"
-            # Keep original extension in destination
-            image_dst = image_dst_dir / f"{image_name}{image_src.suffix}"
-            label_dst = label_dst_dir / f"{image_name}.txt"
+            # --- 1. Determine Image Destination ---
+            if data_type == "classification":
+                class_folder_name = file_to_class_folder.get(image_name)
+                if not class_folder_name:
+                    logging.warning(f"Classification class not found for {image_name}")
+                    return False
 
-            # Handle label file
-            if not label_src.exists():
-                label_dst.touch()
-            else:
-                shutil.copy2(label_src, label_dst)
+                # Destination is [base_dir]/[split]/[class_folder]/[image_file]
+                final_image_dst_dir = image_dst_base_dir / class_folder_name
+                final_image_dst_dir.mkdir(parents=True, exist_ok=True)
+                image_dst = final_image_dst_dir / f"{image_name}{image_src.suffix}"
+                
+            else: # Detection Mode
+                # Destination is [base_dir]/[split]/[image_file]
+                image_dst = image_dst_base_dir / f"{image_name}{image_src.suffix}"
+                image_dst_base_dir.mkdir(parents=True, exist_ok=True) # Ensure split dir exists
+                
+                # --- 2. Handle Label File (Detection Only) ---
+                label_src = label_path / f"{image_name}.txt"
+                label_dst = label_dst_dir / f"{image_name}.txt"
+                
+                if not label_src.exists():
+                    label_dst.touch()
+                else:
+                    shutil.copy2(label_src, label_dst)
 
-            # Handle image file
+            # --- 3. Move Image ---
             shutil.copy2(image_src, image_dst)
             return True
 
@@ -1119,14 +1110,15 @@ def move_images(image_names: list,
             logging.error(f"Error processing {image_name}: {str(e)}")
             return False
 
-    # Process images in parallel with progress bar
+    # Process images in parallel
     successful = failed = 0
+    # (Parallel executor logic remains the same)
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         futures = [executor.submit(process_single_image, img) for img in image_names]
         
         from concurrent.futures import as_completed
         from tqdm import tqdm
-        with tqdm(total=len(image_names), desc=f"Moving {split_type} images") as pbar:
+        with tqdm(total=len(image_names), desc=f"Moving {split_type} {data_type} files") as pbar:
             for future in as_completed(futures):
                 if future.result():
                     successful += 1
@@ -1134,11 +1126,10 @@ def move_images(image_names: list,
                     failed += 1
                 pbar.update(1)
 
-    # Log results
     logging.info(f"\nCompleted moving {split_type} images:")    
     return successful, failed
     
-def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, mode: str = "person-only"):
+def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, mode: str = "person-only", data_type: str = "detection"):
     """
     Generates a statistics file with dataset split information, including percentages.
     
@@ -1160,7 +1151,9 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
         List of test child IDs.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_path = BasePaths.LOGGING_DIR / f"split_distribution_person_det_{timestamp}.txt"
+    
+    log_type = "cls" if data_type == "classification" else "det"
+    file_path = BasePaths.LOGGING_DIR / f"split_distribution_person_{log_type}_{timestamp}.txt"
     
     class_columns = [col for col in df.columns if col not in ['filename', 'id', 'has_annotation', 'child_id']]
     
@@ -1239,7 +1232,7 @@ def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: p
         else:
             f.write("Overlap found: No\n")
 
-def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ids: List[str], val_ids: List[str], test_ids: List[str], mode: str = "person-only") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[Tuple[str, str]]], train_ids: List[str], val_ids: List[str], test_ids: List[str], mode: str = "person-only", data_type: str = "detection") -> Tuple[List[str], List[str], List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Creates fresh train/val/test splits using fixed, pre-defined child IDs.
     Applies standard negative sampling ratio to train/val and uses ALL sampled negatives for test.
@@ -1258,6 +1251,8 @@ def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[T
         List of child IDs for test set
     mode : str
         Mode for the retraining process ('person-only' or 'age-binary')
+    data_type : str
+        Type of data being processed (default: "detection")
         
     Returns
     -------
@@ -1270,6 +1265,8 @@ def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[T
         - DataFrame for test set
     """
     logging.info("Executing fresh sampling and DF creation using fixed IDs.")
+
+    CONSTANTS = get_data_constants(data_type)
 
     def get_child_id_from_filename(filename: str) -> str:
         match = re.search(r'id(\d+)_', filename)
@@ -1353,7 +1350,7 @@ def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[T
             val_df, 
             test_df_final)
 
-def split_data(annotation_folder: Path, mode: str = "person-only", data_distribution_file: Path = None, hard_neg_file: Path = None):
+def split_data(annotation_folder: Path, mode: str = "person-only", data_distribution_file: Path = None, hard_neg_file: Path = None, data_type: str = "detection"):
     """
     This function prepares the dataset for person detection YOLO training by splitting the images into train, val, and test sets.
 
@@ -1370,18 +1367,21 @@ def split_data(annotation_folder: Path, mode: str = "person-only", data_distribu
     """
     logging.info(f"Starting dataset preparation for person detection in mode: {mode}")
 
+    CONSTANTS = get_data_constants(data_type)
+
     # --- 1. Determine Output Directory ---
-    if data_distribution_file:
-        input_dir = PersonClassification.INPUT_DIR.parent / (PersonClassification.INPUT_DIR.name + "_retrain")
-        original_input_dir = PersonClassification.INPUT_DIR
+    if data_distribution_file and hard_neg_file:
+        input_dir = CONSTANTS.INPUT_DIR.parent / (CONSTANTS.INPUT_DIR.name + "_retrain")
+        original_input_dir = CONSTANTS.INPUT_DIR
     else:
-        input_dir = PersonClassification.INPUT_DIR
-    
+        input_dir = CONSTANTS.INPUT_DIR
+
     try:
         # --- 2. Get All Positive Images and Negative Candidates ---
-        positive_images, negative_candidates = get_total_number_of_annotated_frames(annotation_folder)
+        positive_images, negative_candidates = get_total_number_of_annotated_frames(annotation_folder, image_folder=CONSTANTS.IMAGES_INPUT_DIR)        
         
         # save negative candidates for debugging
+        log_type = "cls" if data_type == "classification" else "det"
         neg_cand_file = BasePaths.LOGGING_DIR / f"negative_candidates_person_det_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         with open(neg_cand_file, 'w') as f:
             for child_id, frames in negative_candidates.items():
@@ -1393,7 +1393,7 @@ def split_data(annotation_folder: Path, mode: str = "person-only", data_distribu
             return
         
         # --- 3. Get initial DataFrame from POSITIVE images ---
-        df = get_class_distribution(positive_images, annotation_folder, mode)
+        df = get_class_distribution(positive_images, annotation_folder, mode, data_type)
         
         if df.empty:
             logging.error("DataFrame is empty. Check class distribution function.")
@@ -1401,11 +1401,11 @@ def split_data(annotation_folder: Path, mode: str = "person-only", data_distribu
         
         # --- 4. Select Splitting Strategy ---
         if data_distribution_file and hard_neg_file:
-            # RETRAIN MODE: Load fixed IDs, use HNM sampling, and COPY Val/Test
+            # Load fixed IDs, use HNM sampling, and COPY Val/Test
             id_data = parse_retrain_file(data_distribution_file)
             train, val, test, df_train, df_val, df_test = retrain_split_by_child_id(
                 df, negative_candidates, id_data['train_ids'], id_data['val_ids'], id_data['test_ids'],
-                            hard_neg_file, mode)
+                            hard_neg_file, mode, data_type)
             
             logging.info("Copying original fixed Val and Test directories to the retrain folder...")
             for split_name in ["val", "test"]:
@@ -1432,18 +1432,19 @@ def split_data(annotation_folder: Path, mode: str = "person-only", data_distribu
             splits_to_move = [("train", train)]
             
         elif data_distribution_file:
-            logging.info("Mode: Creating NEW split using FIXED ID distribution from file.")
+            logging.info("Mode: Creating new split using FIXED ID distribution from file.")
             id_data = parse_retrain_file(data_distribution_file)
 
             train, val, test, df_train, df_val, df_test = fixed_id_split_logic(
-                df, negative_candidates, id_data['train_ids'], id_data['val_ids'], id_data['test_ids'], mode
+                df, negative_candidates, id_data['train_ids'], id_data['val_ids'], id_data['test_ids'], mode, data_type
             )
             
             # All splits must be moved freshly in this mode
             splits_to_move = [("train", train), ("val", val), ("test", test)]
         else:
+            # Standard splitting logic
             splits_to_move = []
-            train, val, test, df_train, df_val, df_test = split_by_child_id(df, negative_candidates, len(positive_images), annotation_folder, mode)
+            train, val, test, df_train, df_val, df_test = split_by_child_id(df, negative_candidates, len(positive_images), annotation_folder, mode, data_type)
             splits_to_move = [("train", train), ("val", val), ("test", test)]
 
         # Get the IDs for logging
@@ -1452,16 +1453,25 @@ def split_data(annotation_folder: Path, mode: str = "person-only", data_distribu
         test_ids = df_test['child_id'].unique().tolist() if 'child_id' in df_test.columns else []
 
         # --- 5. Generate Statistics and Move Files ---
-        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids, mode=mode)
+        generate_statistics_file(df, df_train, df_val, df_test, train_ids, val_ids, test_ids, mode=mode, data_type=data_type)        
         
-        for split_name, split_set in splits_to_move:
+        # Prepare splits for iteration (name, filename list, corresponding dataframe)
+        splits_to_process = [
+            ("train", train, df_train), 
+            ("val", val, df_val), 
+            ("test", test, df_test)
+        ]
+        
+        for split_name, split_set, df_split in splits_to_process:
             if split_set:
                 successful, failed = move_images(
                     image_names=split_set,
                     split_type=split_name,
                     label_path=annotation_folder,
                     input_dir=input_dir,
-                    n_workers=4
+                    n_workers=4,
+                    data_type=data_type,
+                    df_split=df_split
                 )
                 logging.info(f"{split_name}: Moved {successful}, Failed {failed}")
             else:
@@ -1473,8 +1483,12 @@ def split_data(annotation_folder: Path, mode: str = "person-only", data_distribu
     
     logging.info(f"Completed dataset preparation for person detection in mode: {mode}")
 
-def generate_false_positive_list():
-    with open(PersonClassification.PREDICTIONS_JSON_PATH, "r") as f:
+def generate_false_positive_list(data_type: str = "detection"):
+    """
+    Generate a list of false positive frames based on model predictions and ground truth annotations.
+    """
+    CONSTANTS = get_data_constants(data_type)
+    with open(CONSTANTS.PREDICTIONS_JSON_PATH, "r") as f:
         pred = json.load(f)
         
     # collect image_ids where category_id == 1
@@ -1489,7 +1503,7 @@ def generate_false_positive_list():
         
         
     # get gt files
-    gt_train_dir = PersonClassification.INPUT_DIR/ "labels/train"
+    gt_train_dir = CONSTANTS.INPUT_DIR / "labels/train"
     
     gt_frames = []
 
@@ -1506,10 +1520,10 @@ def generate_false_positive_list():
     # now from the two lists gt_files , pred_frames give me the list of images that are in pred but not in gt
     false_positive_frames = [f for f in pred_frames if f not in gt_frames]
 
-    with open(PersonClassification.RETRAIN_FALSE_POSITIVES_PATH, "w") as f:
+    with open(CONSTANTS.RETRAIN_FALSE_POSITIVES_PATH, "w") as f:
         for item in false_positive_frames:
             f.write(f"{item}\n")
-    logging.info(f"Saved {len(false_positive_frames)} false positive frames to {PersonClassification.RETRAIN_FALSE_POSITIVES_PATH}")
+    logging.info(f"Saved {len(false_positive_frames)} false positive frames to {CONSTANTS.RETRAIN_FALSE_POSITIVES_PATH}")
 
 # ==============================
 # Main
@@ -1519,6 +1533,8 @@ def main():
     parser = argparse.ArgumentParser(description='Create input files for person detection YOLO training')
     parser.add_argument('--mode', choices=["person-only", "age-binary"], default="person-only",
                        help='Select the detection mode')
+    parser.add_argument('--type', choices=["detection", "classification"], default="detection",
+                       help='Select the output data format type (detection for YOLO, classification for single class ID)')
     parser.add_argument('--fetch-annotations', action='store_true',
                        help='Fetch and save annotations from database (default: False)')
     parser.add_argument('--retrain', action='store_true', default=False,
@@ -1526,27 +1542,30 @@ def main():
     parser.add_argument('--fixed-split-file', action='store_true', default=False,
                        help='Use fixed split file for data splitting.')
     args = parser.parse_args()
-    
-    data_distribution_file = PersonClassification.DATA_DISTRIBUTION_PATH if args.retrain or args.fixed_split_file else None
-    hard_neg_file = PersonClassification.RETRAIN_FALSE_POSITIVES_PATH if args.retrain else None
+
+    CONSTANTS = get_data_constants(args.type)
+
+    data_distribution_file = CONSTANTS.DATA_DISTRIBUTION_PATH if args.retrain or args.fixed_split_file else None
+    hard_neg_file = CONSTANTS.RETRAIN_FALSE_POSITIVES_PATH if args.retrain else None
     is_retrain_mode = args.retrain
 
     if is_retrain_mode:
         logging.info("Retrain mode activated. Using fixed IDs and hard negative files from config.")
             
         # Generate false positive list first
-        generate_false_positive_list()  
+        generate_false_positive_list(args.type)  
     try:            
         if args.fetch_annotations:
             # Output annotations to the correct location (standard or retrain folder)
-            labels_output_dir = PersonClassification.LABELS_INPUT_DIR
+            labels_output_dir = CONSTANTS.LABELS_INPUT_DIR
             anns = fetch_all_annotations(PersonConfig.DATABASE_CATEGORY_IDS)
-            save_annotations(anns, output_dir=labels_output_dir, mode=args.mode)
-
-        split_data(PersonClassification.LABELS_INPUT_DIR,
+            save_annotations(anns, output_dir=labels_output_dir, mode=args.mode, data_type=args.type)
+        
+        split_data(CONSTANTS.LABELS_INPUT_DIR,
                    mode=args.mode,
                    data_distribution_file=data_distribution_file,
-                   hard_neg_file=hard_neg_file)
+                   hard_neg_file=hard_neg_file,
+                   data_type=args.type)
                                    
     except Exception as e:
         logging.error(f"Failed: {e}")
