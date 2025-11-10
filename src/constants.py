@@ -49,18 +49,23 @@ class Vocalizations:
 
 class PersonClassification:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/yolo12l_20251029_204358/weights/best.pt')
-    #TRAINED_WEIGHTS_PATH = Path("/home/nele_pauline_suffo/models/yolo8n_person.pt")
     EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_extraction_progress.txt")
     MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_missing_frames.txt")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
-    DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/person/dataset.yaml")
-    TRAIN_CSV_PATH = Path(INPUT_DIR/"train.csv")
-    VAL_CSV_PATH = Path(INPUT_DIR/"val.csv")
-    TEST_CSV_PATH = Path(INPUT_DIR/"test.csv")
 
+class PersonDetection:
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_detection/yolo12l_20251029_204358/weights/best.pt')
+    EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_det_extraction_progress.txt")
+    MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_det_missing_frames.txt")
+    LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_det_labels")
+    IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
+    INPUT_DIR = Path(BasePaths.DATA_DIR/"person_det_input")
+    OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_detection/")
+    DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/person/dataset.yaml")
+    
 class FaceDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
