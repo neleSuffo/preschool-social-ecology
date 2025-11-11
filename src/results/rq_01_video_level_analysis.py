@@ -604,6 +604,103 @@ def print_segment_summary(segments_df):
     else:
         print("\n📊 No segments created")
 
+def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present'):
+    """
+    Reclassify 'Alone' segments to 'Available' if they contain sufficient evidence
+    of partner presence (visual or audio) that exceeds defined thresholds.
+    
+    CRITERIA FOR RECLASSIFICATION (Alone -> Available):
+    1. Segment type must be 'Alone'.
+    2. Segment length must be longer than MIN_RECLASSIFY_DURATION_SEC (to avoid short noise).
+    3. Person/Face detection (person_or_face_present) must occur for > 5% of segment frames.
+    4. OR Partner audio (has_cds OR has_ohs) must occur for > 5% of segment frames.
+    
+    Parameters
+    ----------
+    segments_df : pd.DataFrame
+        DataFrame with final interaction segments.
+    frame_data : pd.DataFrame
+        Original frame-level data.
+    detection_col : str
+        The name of the fused detection column.
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with reclassified segments.
+    """        
+    # Ensure necessary columns exist
+    required_cols = [detection_col, 'has_cds', 'has_ohs']
+    if not all(col in frame_data.columns for col in required_cols):
+        print(f"⚠️ Warning: Required frame columns {required_cols} not found. Skipping alone reclassification.")
+        return segments_df
+        
+    reclassified_count = 0
+    updated_segments_df = segments_df.copy()
+
+    for video_id, video_segments in updated_segments_df.groupby('video_id'):
+        
+        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=False)
+        original_indices = video_segments['index'] # Map back to original segments_df index
+        
+        for i in range(len(video_segments)):
+            segment = video_segments.iloc[i]
+            
+            # --- Condition 1: Must be 'Alone' ---
+            if segment['interaction_type'] != 'Alone':
+                continue
+            
+            # --- Condition 2: Duration Check (must be > MIN_RECLASSIFY_DURATION_SEC seconds) ---
+            #if segment['duration_sec'] <= InferenceConfig.MIN_RECLASSIFY_DURATION_SEC:
+            #    continue
+
+            # --- Extract Segment Frames ---
+            video_name = segment['video_name']
+            start_frame = segment['segment_start']
+            end_frame = segment['segment_end']
+            
+            current_video_frames = frame_data[frame_data['video_name'] == video_name]
+            segment_frames = current_video_frames[
+                (current_video_frames['frame_number'] >= start_frame) & 
+                (current_video_frames['frame_number'] <= end_frame)
+            ]
+            
+            total_frames = len(segment_frames)
+            if total_frames == 0:
+                continue
+                
+            # --- Condition 3: Visual Presence Check (> 5%) ---
+            person_count = (segment_frames[detection_col] == 1).sum()
+            visual_fraction = person_count / total_frames
+            
+            # --- Condition 4: Partner Audio Check (> 5%) ---
+            partner_audio_count = (
+                (segment_frames['has_cds'] == 1) | 
+                (segment_frames['has_ohs'] == 1)
+            ).sum()
+            audio_fraction = partner_audio_count / total_frames
+            
+            # --- Reclassification Logic (OR condition) ---
+            
+            should_reclassify = False
+            
+            if visual_fraction > InferenceConfig.ALONE_RECLASSIFY_VISUAL_THRESHOLD:
+                print(f"   [Alone->Available] Segment {segment['start_time_sec']:.1f}s: Visual frac {visual_fraction:.2f} > {InferenceConfig.ALONE_RECLASSIFY_VISUAL_THRESHOLD}")
+                should_reclassify = True
+
+            if audio_fraction > InferenceConfig.ALONE_RECLASSIFY_AUDIO_THRESHOLD:
+                print(f"   [Alone->Available] Segment {segment['start_time_sec']:.1f}s: Audio frac {audio_fraction:.2f} > {InferenceConfig.ALONE_RECLASSIFY_AUDIO_THRESHOLD}")
+                should_reclassify = True
+
+            if should_reclassify:
+                # Get the original index and apply reclassification
+                original_idx = original_indices.iloc[i]
+                updated_segments_df.loc[original_idx, 'interaction_type'] = 'Available'
+                reclassified_count += 1
+            
+    print(f"   Reclassified {reclassified_count} 'Alone' segments to 'Available' (High Presence Rule).")
+    return updated_segments_df
+
 def main(output_file_path: Path, frame_data_path: Path):
     """
     Main entry point for video-level segment analysis.
@@ -654,6 +751,8 @@ def main(output_file_path: Path, frame_data_path: Path):
     
     # Step 4c: Reclassify 'Available' segments to 'Alone' if no detection occurred
     segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
+    
+    segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
     
     # Step 5: Reclassify for Implicit Turn-Taking
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
