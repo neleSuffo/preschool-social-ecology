@@ -48,13 +48,14 @@ class Vocalizations:
     OTH_OUTPUT_FILE = ALICE_OUTPUT_DIR / "OTH_output_utterances.txt"
 
 class PersonClassification:
-    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/yolo12l_20251029_204358/weights/best.pt')
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_classification/yolo12l_cls_20251110_210415/weights/best.pt')
     EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_extraction_progress.txt")
     MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"person_cls_missing_frames.txt")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
+    DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_person_cls_20251110_114134.txt")
 
 class PersonDetection:
     TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'person_detection/yolo12l_20251029_204358/weights/best.pt')
@@ -65,7 +66,7 @@ class PersonDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"person_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_detection/")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/person/dataset.yaml")
-    
+
 class FaceDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
