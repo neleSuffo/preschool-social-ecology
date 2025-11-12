@@ -55,6 +55,7 @@ class PersonClassification:
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
     INPUT_DIR = Path(BasePaths.DATA_DIR/"person_cls_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_classification/")
+    
     DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_person_cls_20251110_114134.txt")
 
 class PersonDetection:
@@ -66,6 +67,8 @@ class PersonDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"person_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"person_detection/")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/person/dataset.yaml")
+
+    DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_person_det_20251029_202741.txt")
 
 class FaceDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
