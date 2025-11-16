@@ -140,36 +140,6 @@ def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path
     plt.savefig(save_path)
     plt.close(fig)
     
-def create_second_level_labels(segments_df, video_duration_seconds):
-    """
-    Create a second-by-second label array for a video based on segments. 
-    ...
-    """
-    labels = np.full(video_duration_seconds, None, dtype=object)
-    for _, segment in segments_df.iterrows():
-        try:
-            start_sec = int(np.round(float(segment['start_time_sec'])))
-        except Exception:
-            start_sec = 0
-        try:
-            end_sec = int(np.round(float(segment['end_time_sec'])))
-            # Clip end_sec to prevent out-of-bounds indexing
-            end_sec = min(end_sec, video_duration_seconds - 1)
-        except Exception:
-            end_sec = 0
-        
-        interaction_type = str(segment['interaction_type']).lower()
-        
-        # Ensure start_sec is valid
-        start_sec = max(0, start_sec)
-
-        # Check for valid segment duration after rounding
-        # assign interaction type to the range of seconds
-        if start_sec <= end_sec: 
-            labels[start_sec:end_sec + 1] = interaction_type
-           
-    return labels
-
 def evaluate_performance_by_seconds(predictions_df, ground_truth_df):
     """
     Evaluates model performance by comparing second-by-second classifications,
