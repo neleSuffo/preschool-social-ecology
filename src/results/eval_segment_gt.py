@@ -78,7 +78,97 @@ def process_annotation_file(file_path: Path) -> dict:
     
     return video_data
 
-def compute_second_wise_kappa(annotator1_file: Path, annotator2_file: Path) -> float:
+def plot_kappa_comparison(df1: pd.DataFrame, df2: pd.DataFrame, video_name: str, common_duration: int, output_path: Path):
+    """
+    Plots the segment timelines for two annotators for a specific video 
+    up to the common duration.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import seaborn as sns
+    
+    # Define colors based on your typical categories + a color for unannotated/gaps
+    INTERACTION_COLORS = {
+        'interacting': '#d62728',  # Red
+        'available': '#ff7f0e',    # Orange
+        'alone': '#1f77b4',        # Blue
+        'unannotated': '#cccccc'   # Grey for gaps/disagreed end
+    }
+    
+    # Ensure both DFs have the 'duration_sec' column for plotting
+    for i, df in enumerate([df1, df2]):
+        if 'duration_sec' not in df.columns:
+            # Recalculate duration if needed (based on your cleaning steps)
+            df['duration_sec'] = df['end_time_sec'] - df['start_time_sec']
+
+    fig, ax = plt.subplots(figsize=(15, 3))
+
+    # --- Plot Annotator 1 (GT1) on Y=1.2 ---
+    y_pos_1 = 1.2
+    for _, row in df1.iterrows():
+        # Only plot segments that START before the common duration boundary
+        if row['start_time_sec'] < common_duration:
+            start = row['start_time_sec']
+            end = min(row['end_time_sec'], common_duration)
+            duration = end - start
+            
+            color = INTERACTION_COLORS.get(row['interaction_type'], '#808080')
+            ax.barh(y=y_pos_1, 
+                    width=duration, 
+                    left=start,
+                    height=0.2,
+                    color=color,
+                    edgecolor='black',
+                    alpha=0.7)
+
+    # --- Plot Annotator 2 (GT2) on Y=0.8 ---
+    y_pos_2 = 0.8
+    for _, row in df2.iterrows():
+        # Only plot segments that START before the common duration boundary
+        if row['start_time_sec'] < common_duration:
+            start = row['start_time_sec']
+            end = min(row['end_time_sec'], common_duration)
+            duration = end - start
+            
+            color = INTERACTION_COLORS.get(row['interaction_type'], '#808080')
+            ax.barh(y=y_pos_2, 
+                    width=duration, 
+                    left=start,
+                    height=0.2,
+                    color=color,
+                    edgecolor='black',
+                    alpha=0.7)
+    
+    # Y-axis labels
+    ax.set_yticks([y_pos_2, y_pos_1])
+    ax.set_yticklabels(['Annotator 2', 'Annotator 1'], fontsize=10)
+    ax.set_ylim(0.5, 1.5)
+    
+    # X-axis (Time) configuration
+    max_time = np.ceil(common_duration / 60) * 60 # Round up to nearest minute boundary
+    ax.set_xlabel("Time (seconds)", fontsize=12)
+    ax.set_xlim(0, max_time if max_time > 0 else 60)
+    
+    # Title
+    ax.set_title(f"Inter-Rater Comparison: {video_name}", fontsize=12)
+
+    # Custom Legend
+    legend_patches = [
+        mpatches.Patch(color=INTERACTION_COLORS.get(cat, '#808080'), alpha=0.7, label=cat.capitalize())
+        for cat in sorted(INTERACTION_COLORS.keys()) if cat != 'unannotated'
+    ]
+    ax.legend(handles=legend_patches, loc='upper right', bbox_to_anchor=(1.0, 1.35), ncol=3, frameon=False, fontsize=9)
+    
+    plt.grid(axis='x', linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    
+    # Save the plot
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close(fig)
+    print(f"🖼️ Plot saved for {video_name} to {output_path}")
+    
+def compute_second_wise_kappa(annotator1_file: Path, annotator2_file: Path, video_plot_list: list = None, output_folder: Path = None) -> float:
     """
     Computes second-wise Cohen's Kappa between two annotator files.
     
@@ -98,56 +188,89 @@ def compute_second_wise_kappa(annotator1_file: Path, annotator2_file: Path) -> f
     annots_data1 = process_annotation_file(annotator1_file)
     annots_data2 = process_annotation_file(annotator2_file)
 
-    # Find common videos
     common_videos = set(annots_data1.keys()) & set(annots_data2.keys())
     
     if not common_videos:
         print("❌ Error: No common video names found between the two files. Cannot compute reliability.")
         return 0.0
 
-    print(f"Found {len(common_videos)} videos in common for reliability check.")
+    print(f"Found {len(common_videos)} videos in common for reliability check: {', '.join(sorted(common_videos))}")
 
-    ratings_a = []
-    ratings_b = []
+    ratings_a_aggr = []
+    ratings_b_aggr = []
 
     for video_name in common_videos:
         df1 = annots_data1[video_name]
         df2 = annots_data2[video_name]
         
-        # Determine the maximum duration across both annotators for alignment
-        max_duration = max(df1['end_time_sec'].max(), df2['end_time_sec'].max())
-        video_duration_seconds = int(max_duration) + 1
-
-        # Use the imported utility to create second-level arrays
+        # 1. Calculate common maximum duration
+        max_end_a = df1['end_time_sec'].max() if not df1.empty else 0
+        max_end_b = df2['end_time_sec'].max() if not df2.empty else 0
+        common_max_duration = min(max_end_a, max_end_b)
+        video_duration_seconds = int(common_max_duration)
+        
+        if video_duration_seconds <= 0:
+            print(f"⚠️ Warning: Video {video_name} has zero or negative common duration, skipping.")
+            continue
+        
+        # Create second-level arrays (constrained by common_max_duration)
         labels_a_raw = create_second_level_labels(df1, video_duration_seconds)
         labels_b_raw = create_second_level_labels(df2, video_duration_seconds)
-
-        # Convert the NumPy arrays (which contain None for unannotated) to lists 
-        # using the UNANNOTATED_LABEL placeholder for Kappa computation.
-        labels_a = [str(x) if x is not None else UNANNOTATED_LABEL for x in labels_a_raw]
-        labels_b = [str(x) if x is not None else UNANNOTATED_LABEL for x in labels_b_raw]
         
-        # We only consider seconds where at least one annotator has a label, or 
-        # where the max duration dictates the end of the video. 
-        # In this second-wise alignment, we take ALL seconds up to max_duration.
-        ratings_a.extend(labels_a)
-        ratings_b.extend(labels_b)
+        min_len = len(labels_a_raw) 
+        
+        ratings_a_video = []
+        ratings_b_video = []
 
-    # Ensure arrays are the same length before calculating Kappa
-    if len(ratings_a) != len(ratings_b):
-        print("⚠️ Warning: Rating arrays are misaligned. Skipping calculation.")
+        # Filter for mutual Ground Truth (Non-None)
+        for sec in range(min_len): 
+            label_a = labels_a_raw[sec]
+            label_b = labels_b_raw[sec]
+            
+            if label_a is not None and label_b is not None:
+                ratings_a_video.append(str(label_a).lower())
+                ratings_b_video.append(str(label_b).lower())
+
+        ratings_a_aggr.extend(ratings_a_video)
+        ratings_b_aggr.extend(ratings_b_video)
+
+        # --- PLOTTING LOGIC ---
+        if video_plot_list is not None and output_folder and (video_name in video_plot_list or 'all' in video_plot_list):
+            plot_path = output_folder / f"{video_name}_irr.png"
+            plot_kappa_comparison(df1, df2, video_name, video_duration_seconds, plot_path)
+            
+    if len(ratings_a_aggr) == 0:
+        print("⚠️ Warning: Zero seconds found with mutual ground truth. Kappa is 0.0.")
         return 0.0
-
-    print(f"Total seconds evaluated: {len(ratings_a):,}")
+        
+    print(f"Total seconds evaluated (mutual agreement only): {len(ratings_a_aggr):,}")
     
-    # Compute Cohen's Kappa on the aggregated second-wise ratings
-    kappa = cohen_kappa_score(ratings_a, ratings_b)
+    kappa = cohen_kappa_score(ratings_a_aggr, ratings_b_aggr)
     
     return kappa
 
 if __name__ == "__main__":
-    kappa_score = compute_second_wise_kappa(Evaluation.GT_1_FILE_PATH, Evaluation.GT_2_FILE_PATH)
+    parser = argparse.ArgumentParser(description="Compute second-wise Inter-Rater Reliability (Cohen's Kappa).")
+    parser.add_argument('--plot', nargs='*', default=[], help='List of video names to plot (e.g., video1 video2) or use "all" to plot all videos.')
+    
+    args = parser.parse_args()
 
+# Define your actual paths (replace with your setup)
+    ANNOTATOR_1_FILE = Evaluation.GT_1_FILE_PATH
+    ANNOTATOR_2_FILE = Evaluation.GT_2_FILE_PATH
+    OUTPUT_FOLDER = ANNOTATOR_1_FILE.parent / "irr_results" # Example output path
+
+    if not ANNOTATOR_1_FILE.exists() or not ANNOTATOR_2_FILE.exists():
+        print("❌ Error: One or both annotation files not found.")
+        sys.exit(1)
+
+    kappa_score = compute_second_wise_kappa(
+        ANNOTATOR_1_FILE, 
+        ANNOTATOR_2_FILE, 
+        video_plot_list=args.plot, 
+        output_folder=OUTPUT_FOLDER
+    )
+    
     print("\n--- Inter-Rater Reliability Result ---")
     print(f"Cohen's Kappa Score: **{kappa_score:.4f}**")
     
