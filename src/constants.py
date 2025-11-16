@@ -100,7 +100,6 @@ class Inference:
     PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
     SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
-    GROUND_TRUTH_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments_gt.csv"
     FRAME_LEVEL_INTERACTIONS_CSV = Path("01_frame_level_social_interactions.csv")
     INTERACTION_SEGMENTS_CSV = Path("01_interaction_segments.csv")
     UTTERANCE_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_utterance_segments.csv"
@@ -118,3 +117,6 @@ class Evaluation:
     PERFORMANCE_RESULTS_TXT = Path("performance_results.txt")
     RULE_ABLATION_SUMMARY_CSV = BASE_OUTPUT_DIR / "rule_ablation_summary.csv"
     RULE_ABLATION_PLOT = BASE_OUTPUT_DIR/ "rule_ablation_plot.png"
+    GROUND_TRUTH_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments_gt.csv"
+    GT_1_FILE_PATH = BASE_OUTPUT_DIR / "interaction_segments_lotta.csv"
+    GT_2_FILE_PATH = BASE_OUTPUT_DIR / "interaction_segments_clara.csv"
