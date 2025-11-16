@@ -1,5 +1,56 @@
 import re
 import pandas as pd
+import numpy as np
+
+def create_second_level_labels(segments_df: pd.DataFrame, video_duration_seconds: int) -> np.ndarray:
+    """
+    Creates a second-by-second label array for a video based on segments. 
+    
+    Parameters:
+    - segments_df: DataFrame with 'start_time_sec', 'end_time_sec', and 'interaction_type'.
+    - video_duration_seconds: The total length of the video in seconds.
+    
+    Returns:
+    - A numpy array where each index corresponds to a second and the value is the label, 
+      or None if unclassified.
+    """
+    labels = np.full(video_duration_seconds, None, dtype=object)
+    
+    # Ensure time columns exist and are numeric
+    if 'start_time_sec' not in segments_df.columns or 'end_time_sec' not in segments_df.columns:
+        if 'start_time_min' in segments_df.columns and 'end_time_min' in segments_df.columns:
+             segments_df['start_time_sec'] = segments_df['start_time_min'].apply(time_to_seconds)
+             segments_df['end_time_sec'] = segments_df['end_time_min'].apply(time_to_seconds)
+        else:
+            # Cannot process without time in seconds
+            return labels
+
+    for _, segment in segments_df.iterrows():
+        try:
+            # Use floating point conversion then rounding for robustness
+            start_sec = int(np.round(float(segment['start_time_sec'])))
+        except Exception:
+            start_sec = 0
+            
+        try:
+            end_sec = int(np.round(float(segment['end_time_sec'])))
+            # Clip end_sec to prevent out-of-bounds indexing
+            # Note: We are using [start, end) second interval in the IRR script, 
+            # but the original script logic used [start, end] seconds, 
+            # so we maintain that original logic here for compatibility: labels[start:end + 1]
+            end_sec = min(end_sec, video_duration_seconds - 1)
+        except Exception:
+            # If end_sec is invalid, the segment is effectively 0 duration
+            end_sec = start_sec
+
+        interaction_type = str(segment['interaction_type']).lower()
+        start_sec = max(0, start_sec)
+
+        # Assign interaction type to the range of seconds (inclusive start and end second index)
+        if start_sec <= end_sec: 
+            labels[start_sec:end_sec + 1] = interaction_type
+           
+    return labels
 
 def time_to_seconds(time_str):
     """Converts MM:SS or float seconds string to float seconds.
@@ -20,6 +71,10 @@ def time_to_seconds(time_str):
             # MM:SS format
             minutes, seconds = map(float, parts)
             return minutes * 60 + seconds
+        elif len(parts) == 3:
+            # HH:MM:SS format
+            hours, minutes, seconds = map(float, parts)
+            return hours * 3600 + minutes * 60 + seconds
         else:
             return float(time_str)
     except:
