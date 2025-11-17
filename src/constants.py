@@ -73,7 +73,7 @@ class PersonDetection:
 class FaceDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
-    TRAINED_WEIGHTS_PATH = Path(OUTPUT_DIR/"yolo12l_20251108_200945/weights/best.pt")
+    TRAINED_WEIGHTS_PATH = Path(OUTPUT_DIR/"yolo12l_20251111_133740/weights/best.pt")
     DATA_CONFIG_PATH = Path(BasePaths.HOME_DIR/"src/models/face/dataset.yaml")
     LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_labels")
     IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
@@ -120,3 +120,6 @@ class Evaluation:
     GROUND_TRUTH_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_interaction_segments_gt.csv"
     GT_1_FILE_PATH = BASE_OUTPUT_DIR / "interaction_segments_lotta.csv"
     GT_2_FILE_PATH = BASE_OUTPUT_DIR / "interaction_segments_clara.csv"
+    GT_1_SECONDWISE_FILE_PATH = BASE_OUTPUT_DIR / "gt_ann1_secondwise.csv"
+    GT_2_SECONDWISE_FILE_PATH = BASE_OUTPUT_DIR / "gt_ann2_secondwise.csv"
+    PRED_SECONDWISE_FILE_PATH = BASE_OUTPUT_DIR / "pred_secondwise.csv"
