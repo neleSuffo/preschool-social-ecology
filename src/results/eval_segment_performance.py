@@ -14,8 +14,56 @@ sys.path.append(str(src_path))
 
 from constants import Evaluation, Inference
 from config import InferenceConfig
-from results.utils import time_to_seconds
+from results.utils import time_to_seconds, create_second_level_labels
 
+# Define a label for unclassified/unannotated time for saving purposes
+UNCLASSIFIED_LABEL = 'unclassified'
+
+def save_second_wise_labels(df: pd.DataFrame, output_folder: Path, filename: str):
+    """
+    Generates second-wise labels for all videos in the DataFrame and saves them to a CSV file.
+    """
+    all_second_wise_data = []
+
+    # Ensure time columns are converted to seconds if not already
+    if 'start_time_sec' not in df.columns:
+        if 'start_time_min' in df.columns:
+            df['start_time_sec'] = df['start_time_min'].apply(time_to_seconds)
+            df['end_time_sec'] = df['end_time_min'].apply(time_to_seconds)
+        else:
+            print(f"⚠️ Warning: Cannot generate second-wise labels for {filename}, time columns missing.")
+            return
+
+    for video_name in df['video_name'].unique():
+        video_df = df[df['video_name'] == video_name].copy()
+        
+        # Determine duration based on max end time
+        max_end = video_df['end_time_sec'].max() if not video_df.empty else 0
+        video_duration_seconds = int(max_end) + 1
+        
+        if video_duration_seconds <= 1:
+            continue
+        
+        # Create second-level array using the imported utility
+        labels_raw = create_second_level_labels(video_df, video_duration_seconds)
+        
+        # Convert NumPy array to list of dictionaries for the final DataFrame
+        for sec in range(video_duration_seconds):
+            label = labels_raw[sec]
+            
+            all_second_wise_data.append({
+                'video_name': video_name,
+                'second': sec,
+                # Use UNCLASSIFIED_LABEL for None/missing time points
+                'interaction_type': str(label).lower() if label is not None else UNCLASSIFIED_LABEL
+            })
+
+    if all_second_wise_data:
+        df_out = pd.DataFrame(all_second_wise_data)
+        output_path = output_folder / filename
+        df_out.to_csv(output_path, index=False)
+        print(f"✅ Second-wise data saved to: {output_path}")
+        
 def reclassify_to_binary(df: pd.DataFrame) -> pd.DataFrame:
     """Reclassifies three-class labels to binary 'interacting' vs 'not interacting'."""
     df_copy = df.copy()
@@ -537,15 +585,17 @@ def extract_misclassification_segments(predictions_df, ground_truth_df, results_
     
     return pd.DataFrame()
 
-def run_evaluation(predictions_path: Path, binary_mode: bool):
+def run_evaluation(predictions_path: Path, binary_mode: bool, output_folder: Path):
     """Loads data, runs evaluation, and saves outputs in the same folder."""
+    output_folder.mkdir(parents=True, exist_ok=True)
+
     try:
         predictions_df = pd.read_csv(predictions_path)
     except FileNotFoundError:
         print(f"❌ Error: Predictions file not found at {predictions_path}")
         sys.exit(1)
 
-    ground_truth_path = Inference.GROUND_TRUTH_SEGMENTS_CSV
+    ground_truth_path = Evaluation.GROUND_TRUTH_SEGMENTS_CSV
     try:
         ground_truth_df = pd.read_csv(ground_truth_path, delimiter=';')
     except FileNotFoundError:
@@ -573,15 +623,31 @@ def run_evaluation(predictions_path: Path, binary_mode: bool):
     else:
         print("📊 Running evaluation in TERTIARY mode (Interacting, Available, Alone).")
 
-    # --- Determine dynamic output folder ---
-    output_folder = predictions_path.parent
-    output_folder.mkdir(parents=True, exist_ok=True)
-
     # Convert ground truth times to seconds
     if 'start_time_min' in ground_truth_df.columns and 'end_time_min' in ground_truth_df.columns:
         ground_truth_df['start_time_sec'] = ground_truth_df['start_time_min'].apply(time_to_seconds)
         ground_truth_df['end_time_sec'] = ground_truth_df['end_time_min'].apply(time_to_seconds)
 
+    if 'start_time_min' in predictions_df.columns and 'end_time_min' in predictions_df.columns:
+            predictions_df['start_time_sec'] = predictions_df['start_time_min'].apply(time_to_seconds)
+            predictions_df['end_time_sec'] = predictions_df['end_time_min'].apply(time_to_seconds)
+    
+    binary_suffix = "_binary" if binary_mode else ""
+    
+    # Sa
+    save_second_wise_labels(
+        predictions_df.copy(), 
+        Evaluation.BASE_OUTPUT_DIR, 
+        f"pred_secondwise{binary_suffix}.csv"
+    )
+    
+    # 2. Save Ground Truth
+    save_second_wise_labels(
+        ground_truth_df.copy(), 
+        Evaluation.BASE_OUTPUT_DIR, 
+        f"gt_secondwise{binary_suffix}.csv"
+    )
+    
     # Evaluate
     results = evaluate_performance_by_seconds(predictions_df, ground_truth_df)
     total_seconds = results['total_seconds']
@@ -632,8 +698,9 @@ if __name__ == "__main__":
     predictions_path = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV
 
     # 1. Run evaluation (loads data, runs metrics, prints/saves results)
-    predictions_df, ground_truth_df, _ = run_evaluation(predictions_path, args.binary)
     output_folder = predictions_path.parent
+    predictions_df, ground_truth_df, _ = run_evaluation(predictions_path, args.binary, output_folder)
+    
 
     # 2. Plotting logic
     if args.plot and args.plot.lower() == 'all':
