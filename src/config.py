@@ -223,7 +223,7 @@ class InferenceConfig:
     MIN_INTERACTING_SEGMENT_DURATION_SEC = 0.7 # minimum duration for a interacting segment
     MIN_ALONE_SEGMENT_DURATION_SEC = 5 # minimum duration for an alone segment
     MIN_AVAILABLE_SEGMENT_DURATION_SEC = 4 # minimum duration for an available segment
-    GAP_MERGE_DURATION_SEC = 10 # duration for merging gaps for segments with same label
+    GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps for segments with same label
     MIN_ALONE_SANDWICH_DURATION_SEC = 4 # minimum duration for alone segments sandwiched between interacting segments
     MIN_INTERACTING_SANDWICH_DURATION_SEC = 4 # minimum duration for interacting segments sandwiched between alone segments
     MIN_RECLASSIFY_DURATION_SEC = 5 # minimum duration for reclassifying 'Available' segments
@@ -232,6 +232,8 @@ class InferenceConfig:
     KCHI_ONLY_FRACTION_THRESHOLD = 0.75 # Percentage of KCHI-only frames in segments available or alone for reclassification
     MIN_PERSON_PRESENCE_FRACTION = 0.04 # At least 4% person presence in segments available or alone for reclassification
     
+    ROBUST_ALONE_WINDOW_SEC = 10  # Time window for sustained 'Alone' check (e.g., 7.5 seconds)
+    MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.25  # Max fraction (5%) of social signal frames allowed in the window for classification as 'Alone'
     # -- Hyperparameter Tuning Parameters --
     MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
     RANDOM_SAMPLING = True # Whether to use random sampling for hyperparameter tuning
