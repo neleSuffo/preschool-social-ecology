@@ -70,6 +70,17 @@ class PersonDetection:
 
     DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_person_det_20251029_202741.txt")
 
+class FaceClassification:
+    TRAINED_WEIGHTS_PATH = Path(BasePaths.OUTPUT_DIR/'face_classification/yolo12l_cls_20251110_210415/weights/best.pt')
+    EXTRACTION_PROGRESS_FILE_PATH = Path(BasePaths.DATA_DIR/"face_cls_extraction_progress.txt")
+    MISSING_FRAMES_FILE_PATH = Path(BasePaths.DATA_DIR/"face_cls_missing_frames.txt")
+    LABELS_INPUT_DIR = Path(BasePaths.DATA_DIR/"face_cls_labels")
+    IMAGES_INPUT_DIR = Path(BasePaths.DATA_DIR/"quantex_annotated_rawframes")
+    INPUT_DIR = Path(BasePaths.DATA_DIR/"face_cls_input")
+    OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_classifications/")
+    
+    DATA_DISTRIBUTION_PATH = Path(BasePaths.OUTPUT_DIR/"dataset_statistics/split_distribution_face_cls_20251110_114134.txt")
+
 class FaceDetection:
     INPUT_DIR = Path(BasePaths.DATA_DIR/"face_det_input")
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"face_detections/")
@@ -96,6 +107,7 @@ class Proximity:
     ADULT_FAR_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_0.jpg")
     
 class Inference:
+    QUANTEX_VIDEOS_LIST_FILE = Path(BasePaths.DATA_DIR/"quantex_video_list_inference.txt") # list of all quantex videos for inference
     BASE_OUTPUT_DIR = BasePaths.OUTPUT_DIR / "quantex_inference"
     PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
