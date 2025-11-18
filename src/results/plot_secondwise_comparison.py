@@ -20,7 +20,8 @@ UNANNOTATED_LABEL = 'unannotated'
 def plot_three_timelines(df_gt1: pd.DataFrame, df_gt2: pd.DataFrame, df_pred: pd.DataFrame, 
                          video_name: str, save_path: Path, mode_suffix: str = ""):
     """
-    Plots the second-wise label comparison for GT Annotator 1, GT Annotator 2, and Prediction.
+    Plots the second-wise label comparison for GT Annotator 1, GT Annotator 2, and Prediction,
+    clipping the plot duration to the shortest common maximum end time.
     """
     
     # 1. Filter data for the specific video
@@ -32,7 +33,7 @@ def plot_three_timelines(df_gt1: pd.DataFrame, df_gt2: pd.DataFrame, df_pred: pd
         print(f"Error: Missing data for video '{video_name}' in one or more second-wise files. Skipping plot.")
         return
 
-    # 2. Define Plotting Constants
+    # 2. Define Plotting Constants (Remains unchanged)
     INTERACTION_COLORS = {
         'interacting': '#d62728',       # Red
         'available': '#ff7f0e',         # Orange
@@ -47,8 +48,21 @@ def plot_three_timelines(df_gt1: pd.DataFrame, df_gt2: pd.DataFrame, df_pred: pd
     plot_categories = [cat for cat in sorted(list(all_categories)) if cat not in [UNCLASSIFIED_LABEL, UNANNOTATED_LABEL]]
 
     # 3. Determine Duration and Setup Plot
-    max_time = max(gt1['second'].max(), gt2['second'].max(), pred['second'].max())
-    max_time_rounded = np.ceil((max_time + 1) / 60) * 60 # Round up to nearest minute boundary
+    
+    # --- 🛠️ ADJUSTMENT: Use minimum max_time for common plotting range ---
+    max_time_gt1 = gt1['second'].max() if not gt1.empty else 0
+    max_time_gt2 = gt2['second'].max() if not gt2.empty else 0
+    max_time_pred = pred['second'].max() if not pred.empty else 0
+
+    # The plot duration is the shortest end time index (plus 1 second)
+    common_max_time_index = min(max_time_gt1, max_time_gt2, max_time_pred)
+    common_duration = common_max_time_index + 1
+    
+    if common_duration <= 1:
+        print(f"⚠️ Warning: Video {video_name} has zero or one common second, skipping plot.")
+        return
+        
+    max_time_rounded = np.ceil(common_duration / 60) * 60 # Round up to nearest minute boundary
 
     fig, ax = plt.subplots(figsize=(15, 4))
     
@@ -59,9 +73,12 @@ def plot_three_timelines(df_gt1: pd.DataFrame, df_gt2: pd.DataFrame, df_pred: pd
     
     # 4. Plotting (One bar per second, using the second as the left position and width=1)
     
-    # Helper to plot a single time series
+    # Helper to plot a single time series, clipped to common_duration
     def plot_time_series(df, y_pos, label):
-        for _, row in df.iterrows():
+        # Clip the DataFrame to include only seconds up to common_max_time_index
+        df_clipped = df[df['second'] <= common_max_time_index]
+        
+        for _, row in df_clipped.iterrows():
             interaction = row['interaction_type']
             color = INTERACTION_COLORS.get(interaction, '#808080')
             
@@ -71,7 +88,7 @@ def plot_three_timelines(df_gt1: pd.DataFrame, df_gt2: pd.DataFrame, df_pred: pd
                     left=row['second'],
                     height=0.3,
                     color=color,
-                    edgecolor='none', # Remove individual second borders for a cleaner look
+                    edgecolor='none',
                     alpha=0.8)
         
         # Add Y-label
@@ -91,10 +108,11 @@ def plot_three_timelines(df_gt1: pd.DataFrame, df_gt2: pd.DataFrame, df_pred: pd
     
     # X-axis (Time) configuration
     ax.set_xlabel("Time (seconds)", fontsize=12)
-    ax.set_xlim(0, max_time_rounded)
+    # Set X-limit exactly to the rounded common duration
+    ax.set_xlim(0, max_time_rounded) 
     
     # Title
-    ax.set_title(f"Second-Wise Comparison: {video_name}{mode_suffix}", fontsize=14)
+    ax.set_title(f"Second-Wise Comparison: {video_name}{mode_suffix} (Common Duration: {common_duration}s)", fontsize=14)
 
     # Custom Legend
     legend_patches = [
