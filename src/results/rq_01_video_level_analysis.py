@@ -10,7 +10,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import Inference
+from constants import Inference, Evaluation
 from config import DataConfig, InferenceConfig
 
 # Constants
@@ -146,9 +146,16 @@ def merge_segments_with_small_gaps(segments_df):
         for i in range(1, len(video_segments)):
             next_segment = video_segments.iloc[i]
             
-            # Check if the segments are of the same interaction type
-            if current_segment['interaction_type'] == next_segment['interaction_type']:
-                # If yes, merge them by extending the end time                
+            # --- 1. Calculate the Gap Duration ---
+            gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
+            
+            # Check 1: Must be the same interaction type
+            # Check 2: The gap must be positive (i.e., not overlapping) AND small
+            if (current_segment['interaction_type'] == next_segment['interaction_type'] and
+                gap_duration > 0 and 
+                gap_duration <= InferenceConfig.GAP_MERGE_DURATION_SEC):
+                
+                # If conditions met, merge them by extending the end time                
                 current_segment['segment_end'] = next_segment['segment_end']
                 current_segment['end_time_sec'] = next_segment['end_time_sec']
                 current_segment['duration_sec'] = (
@@ -752,7 +759,7 @@ def main(output_file_path: Path, frame_data_path: Path):
     # Step 4c: Reclassify 'Available' segments to 'Alone' if no detection occurred
     segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
     
-    segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
+    #segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
     
     # Step 5: Reclassify for Implicit Turn-Taking
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
@@ -768,7 +775,9 @@ def main(output_file_path: Path, frame_data_path: Path):
     
     # Step 9: Save results
     segments_df.to_csv(output_file_path, index=False)
+    segments_df.to_csv(Evaluation.PRED_SECONDWISE_FILE_PATH, index=False)
     print(f"✅ Saved {len(segments_df)} interaction segments to {output_file_path}")
+    print(f" Saved interaction segments gt to {Evaluation.PRED_SECONDWISE_FILE_PATH}")
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Video-level social interaction segment analysis')
