@@ -5,7 +5,7 @@ import populate_speech_db as run_speech_type
 import run_person
 from pathlib import Path
 from setup_interaction_db import main as setup_interaction_db
-from constants import DataPaths
+from constants import DataPaths, Inference
 from config import InferenceConfig
 
 # Configure logging
@@ -18,7 +18,8 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
     Parameters:
     ----------
     video_path : Path
-        Path to either a single video file or a directory containing video files
+        Path to a single video file, a directory containing video files, OR a .txt file 
+        containing a list of video filenames.
     db_path : Path
         Path to the database where results will be stored
     frame_step : int
@@ -36,21 +37,35 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
         # Setup the detection database which will hold the detection results (if it doesnt already exist)
         setup_interaction_db(db_path = db_path)
 
-        # Check if video_path is a file or directory
+        # Ensure video_path is a Path object
         video_path = Path(video_path)
+        selected_videos = []
         
+        # --- PATH CHECK LOGIC ADJUSTMENT ---
         if video_path.is_file():
-            # Single video file processing
-            if not video_path.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.MP4']:
-                logging.error(f"Unsupported video file extension: {video_path.suffix}")
+            if video_path.suffix.lower() == '.txt':
+                # Case 1: .txt file provided
+                logging.info(f"Processing list of videos from text file: {video_path.name}")
+                with open(video_path, 'r') as f:
+                    # Read lines, strip whitespace, and filter out empty lines
+                    selected_videos = [line.strip() for line in f if line.strip()]
+                
+                if not selected_videos:
+                    logging.error(f"Text file is empty or contains no video names: {video_path}")
+                    return False
+                logging.info(f"Loaded {len(selected_videos)} video names from the list.")
+
+            elif video_path.suffix.lower() in video_extensions:
+                # Case 2: Single video file processing
+                logging.info(f"Processing single video file: {video_path.name}")
+                selected_videos = [video_path.stem]  # Use stem (filename without extension)
+                
+            else:
+                logging.error(f"Unsupported file extension: {video_path.suffix}")
                 return False
             
-            logging.info(f"Processing single video file: {video_path.name}")
-            selected_videos = [video_path.stem]  # Use stem (filename without extension)
-            
         elif video_path.is_dir():
-            # Directory processing - find all video files
-            video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.MP4', '.AVI', '.MOV', '.MKV'}
+            # Case 3: Directory processing - find all video files
             video_files = [f for f in video_path.iterdir() 
                         if f.is_file() and f.suffix in video_extensions]
             
@@ -63,7 +78,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
             selected_videos = [f.stem for f in video_files]  # Use stems (filenames without extensions)
             
         else:
-            logging.error(f"Path is neither a file nor a directory: {video_path}")
+            logging.error(f"Path is neither a file, a directory, nor a valid text list: {video_path}")
             return False
         
         # Determine which models to run
@@ -95,7 +110,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference pipeline with selectable models")
 
-    parser.add_argument("--video_path", type=Path, default=DataPaths.QUANTEX_VIDEOS_INPUT_DIR, help="Path to video file or directory containing videos")
+    parser.add_argument("--video_path", type=Path, default=Inference.QUANTEX_VIDEOS_LIST_FILE, help="Path to video file or directory containing videos")
     parser.add_argument("--db_path", type=Path, default=DataPaths.INFERENCE_DB_PATH, help="Path to the database where results will be stored")
     parser.add_argument("--frame_step", type=int, default=InferenceConfig.SAMPLE_RATE, help="Frame step size for processing videos")
     parser.add_argument("--models", nargs='+', choices=['person', 'face_proximity', 'speech_type', 'all'], default=['all'],  help="Select which models to run. Options: person, face_proximity, speech_type, all")
