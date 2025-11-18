@@ -170,7 +170,7 @@ def plot_kappa_comparison(df1: pd.DataFrame, df2: pd.DataFrame, video_name: str,
     
 def compute_second_wise_kappa(annotator1_file: Path, annotator2_file: Path, video_plot_list: list = None, output_folder: Path = None) -> float:
     """
-    Computes second-wise Cohen's Kappa between two annotator files.
+    Computes second-wise Cohen's Kappa between two annotator files and saves the second-wise aligned annotations.
     
     Parameters
     ----------
@@ -196,6 +196,9 @@ def compute_second_wise_kappa(annotator1_file: Path, annotator2_file: Path, vide
 
     print(f"Found {len(common_videos)} videos in common for reliability check: {', '.join(sorted(common_videos))}")
 
+    df_annotator1_data = []
+    df_annotator2_data = []
+    
     ratings_a_aggr = []
     ratings_b_aggr = []
 
@@ -222,14 +225,31 @@ def compute_second_wise_kappa(annotator1_file: Path, annotator2_file: Path, vide
         ratings_a_video = []
         ratings_b_video = []
 
-        # Filter for mutual Ground Truth (Non-None)
+        # Filter for mutual Ground Truth (Non-None) AND collect all data for saving
         for sec in range(min_len): 
-            label_a = labels_a_raw[sec]
-            label_b = labels_b_raw[sec]
+            label_a_raw = labels_a_raw[sec]
+            label_b_raw = labels_b_raw[sec]
             
-            if label_a is not None and label_b is not None:
-                ratings_a_video.append(str(label_a).lower())
-                ratings_b_video.append(str(label_b).lower())
+            # Use UNANNOTATED_LABEL for saving purposes to prevent NaN/None strings in output file
+            label_a_save = str(label_a_raw).lower() if label_a_raw is not None else UNANNOTATED_LABEL
+            label_b_save = str(label_b_raw).lower() if label_b_raw is not None else UNANNOTATED_LABEL
+
+            # --- NEW: Collect data for output files (all seconds in common duration) ---
+            df_annotator1_data.append({
+                'video_name': video_name,
+                'second': sec,
+                'interaction_type': label_a_save
+            })
+            df_annotator2_data.append({
+                'video_name': video_name,
+                'second': sec,
+                'interaction_type': label_b_save
+            })
+            
+            # Kappa calculation logic (only mutual GT, no UNANNOTATED_LABEL)
+            if label_a_raw is not None and label_b_raw is not None:
+                ratings_a_video.append(str(label_a_raw).lower())
+                ratings_b_video.append(str(label_b_raw).lower())
 
         ratings_a_aggr.extend(ratings_a_video)
         ratings_b_aggr.extend(ratings_b_video)
@@ -242,6 +262,18 @@ def compute_second_wise_kappa(annotator1_file: Path, annotator2_file: Path, vide
     if len(ratings_a_aggr) == 0:
         print("⚠️ Warning: Zero seconds found with mutual ground truth. Kappa is 0.0.")
         return 0.0
+
+    # Save Second-Wise DataFiles ---
+    if output_folder:
+        output_folder.mkdir(parents=True, exist_ok=True)
+        
+        df_gt1 = pd.DataFrame(df_annotator1_data)
+        df_gt2 = pd.DataFrame(df_annotator2_data)
+
+        # Save files
+        df_gt1.to_csv(Evaluation.GT_1_SECONDWISE_FILE_PATH, index=False)
+        df_gt2.to_csv(Evaluation.GT_2_SECONDWISE_FILE_PATH, index=False)
+        print(f"✅ Second-wise data saved to {output_folder.name} folder.")
         
     print(f"Total seconds evaluated (mutual agreement only): {len(ratings_a_aggr):,}")
     
@@ -258,7 +290,7 @@ if __name__ == "__main__":
 # Define your actual paths (replace with your setup)
     ANNOTATOR_1_FILE = Evaluation.GT_1_FILE_PATH
     ANNOTATOR_2_FILE = Evaluation.GT_2_FILE_PATH
-    OUTPUT_FOLDER = ANNOTATOR_1_FILE.parent / "irr_results" # Example output path
+    OUTPUT_FOLDER = ANNOTATOR_1_FILE.parent
 
     if not ANNOTATOR_1_FILE.exists() or not ANNOTATOR_2_FILE.exists():
         print("❌ Error: One or both annotation files not found.")
