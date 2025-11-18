@@ -17,12 +17,34 @@ from datetime import datetime
 
 from pandera import parser
 
-from constants import DataPaths, BasePaths, FaceDetection
+from app.src.boost.libs.python.test import args
+from constants import DataPaths, BasePaths, FaceDetection, FaceClassification
 from config import FaceConfig, DataConfig
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+def get_data_constants(data_type: str):
+    """
+    Returns the correct constants object based on the data_type flag.
+
+    Parameters
+    ----------
+    data_type : str
+        Type of data processing ("detection" or "classification")
+
+    Returns
+    -------
+    Type
+        Corresponding constants object for the specified data type.
+    """
+    if data_type == "detection":
+        return FaceDetection
+    elif data_type == "classification":
+        return FaceClassification
+    else:
+        raise ValueError(f"Unknown data type: {data_type}. Must be 'detection' or 'classification'.")
+    
 def parse_retrain_file(retrain_file: Path) -> Dict[str, List[str]]:
     """
     Parses the ID Distribution section from the statistics file.
@@ -152,9 +174,8 @@ def convert_to_yolo_format(width: int, height: int, bbox: List[float]) -> Tuple[
 def write_annotations(file_path: Path, lines: List[str]) -> None:
     file_path.write_text("".join(lines))
 
-def save_annotations(annotations: List[Tuple], output_dir: Path = None, mode: str = "face-only") -> None:
-    """Convert annotations to YOLO format and save them in parallel.
-    
+def save_annotations(annotations: List[Tuple], output_dir: Path = None, mode: str = "face-only", data_type: str = "detection") -> None:
+    """
     Parameters
     ----------
     annotations : List[Tuple]
@@ -163,16 +184,45 @@ def save_annotations(annotations: List[Tuple], output_dir: Path = None, mode: st
         Directory to save annotation files
     mode : str
         Detection mode to use for saving annotations (default: "face-only")
+    data_type : str
+        Type of data processing ("detection" or "classification")
     """
+    CONSTANTS = get_data_constants(data_type)
+    
     if output_dir is None:
-        output_dir = FaceDetection.LABELS_INPUT_DIR
+        output_dir = CONSTANTS.LABELS_INPUT_DIR
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
     files = defaultdict(list)
     processed, skipped = 0, 0
 
+    if mode == "face-only":
+        mode_config = FaceConfig.AGE_GROUP_TO_CLASS_ID_FACE_ONLY
+    elif mode == "age-binary":
+        mode_config = FaceConfig.AGE_GROUP_TO_CLASS_ID_AGE_BINARY
+    else:
+        logging.error(f"Unknown mode: {mode}")
+        return
+    
     for _, bbox_json, img_name, age in annotations:
+        
+        class_id = mode_config.get(age, 99)
+        
+        if class_id == 99:
+            logging.warning(f"Unknown age group '{age}' for {img_name}")
+            skipped += 1
+            continue
+        
+        # --- CLASSIFICATION (Single class ID line) ---
+        if data_type == "classification" and mode == "age-binary":
+            # For classification, we only care if a face is present, and its class (child/adult).
+            # The classification label is only the class ID, and we assume the image is positive.
+            files[img_name].append(f"{class_id}\n")
+            processed += 1
+            continue
+        
+        # --- DETECTION (YOLO) MODE LOGIC ---
         # img_name comes from database and should be the image filename without extension
         # Example: quantex_at_home_id255237_2022_05_08_04_000240 -> quantex_at_home_id255237_2022_05_08_04
         img_name_parts = img_name.split("_")
@@ -208,21 +258,6 @@ def save_annotations(annotations: List[Tuple], output_dir: Path = None, mode: st
             bbox = json.loads(bbox_json)
             yolo_bbox = convert_to_yolo_format(width, height, bbox)
             
-            if mode == "face-only":
-                class_id = FaceConfig.AGE_GROUP_TO_CLASS_ID_FACE_ONLY.get(age, 99)
-            elif mode == "age-binary":
-                class_id = FaceConfig.AGE_GROUP_TO_CLASS_ID_AGE_BINARY.get(age, 99)
-            else:
-                logging.error(f"Unknown detection mode: {mode}")
-                skipped += 1
-                continue
-            # Skip invalid class IDs
-            if class_id == 99:
-                logging.warning(f"Unknown age group '{age}' for {img_name}")
-                skipped += 1
-                continue
-
-            # Write the dynamically determined class_id (0 for all faces in 'face-only')
             files[img_name].append(f"{class_id} " + " ".join(map(str, yolo_bbox)) + "\n")
             processed += 1
         except Exception as e:
@@ -1037,11 +1072,14 @@ def split_by_child_id(df: pd.DataFrame, negative_candidates: Dict[str, List[Tupl
     return (train_df['filename'].tolist(), val_df['filename'].tolist(), test_df_final['filename'].tolist(),
                 train_df, val_df, test_df_final)
 
-def move_images(image_names: list, 
-                split_type: str, 
+def move_images(image_names: list,
+                split_type: str,
                 label_path: Path,
                 input_dir: Path = None,
-                n_workers: int = 4) -> Tuple[int, int]:
+                n_workers: int = 4,
+                data_type: str = "detection",
+                mode: str = "face-only",
+                df_split: pd.DataFrame = None) -> Tuple[int, int]:
     """
     Move images and their corresponding labels to the specified split directory for face detection.
     Uses multithreading for faster processing.
@@ -1058,63 +1096,115 @@ def move_images(image_names: list,
         Custom input directory (if None, uses default FaceDetection.INPUT_DIR)
     n_workers: int
         Number of worker threads for parallel processing
+    data_type: str
+        Type of data ('detection' or 'classification')
+    mode: str
+        Mode for classification ('age-binary' supported)
+    df_split: pd.DataFrame
+        DataFrame for the current split (required for classification)
         
     Returns
     -------
     Tuple[int, int]
         Number of successful and failed moves
     """
+    CONSTANTS = get_data_constants(data_type)
+    
     if not image_names:
         logging.info(f"No images to move for face detection {split_type}")
         return (0, 0)
 
     # Use custom input_dir if provided, otherwise use default
     if input_dir is None:
-        input_dir = FaceDetection.INPUT_DIR
+        input_dir = CONSTANTS.INPUT_DIR
 
-    image_dst_dir = input_dir / "images" / split_type
-    label_dst_dir = input_dir / "labels" / split_type
+    image_src_root = CONSTANTS.IMAGES_INPUT_DIR
+
+    # --- Classification Mode Setup ---
+    if data_type == "classification":
+        if mode != "age-binary":
+            logging.error("Classification is only supported in 'age-binary' mode for this script logic.")
+            return (0, len(image_names))
+            
+        # Check if we have the DataFrame needed to map filenames to classes
+        if df_split is None or df_split.empty:
+             logging.error("DataFrame is required for classification to determine image class!")
+             return (0, len(image_names))
+
+        # Map filenames to class folders based on df_split
+        class_map = {}
+        target_labels = FaceConfig.TARGET_LABELS_AGE_BINARY
+        # Map class name to folder name (e.g., 'child' -> 'child' folder)
+        for class_name in target_labels:
+            class_map[class_name] = class_name
+                    
+        file_to_class_folder = {}
+        for index, row in df_split.iterrows():
+            # Positive case (should only be one class flag true for classification)
+            if row[target_labels[0]] == 1:
+                file_to_class_folder[filename] = class_map[target_labels[0]]
+            elif row[target_labels[1]] == 1:
+                file_to_class_folder[filename] = class_map[target_labels[1]]
+            else:
+                logging.warning(f"Positive image {filename} has no class label set. Skipping.")
+                continue
+                
+    # --- Setup Destination Directories ---
+    image_dst_base_dir = input_dir / "images" / split_type
     
-    image_dst_dir.mkdir(parents=True, exist_ok=True)
-    label_dst_dir.mkdir(parents=True, exist_ok=True)
+    if data_type == "detection":
+        label_dst_dir = input_dir / "labels" / split_type
+        label_dst_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        # For classification, the final destination is within a class folder inside 'images/split_type'
+        image_dst_base_dir.mkdir(parents=True, exist_ok=True) # Ensure split dir exists
 
     def process_single_image(image_name: str) -> bool:
-        """Process a single image and its label."""
+        """Process a single image and move it to the final location."""
         try:
-            
-            # Handle face detection cases - get video folder from image name
             image_parts = image_name.split("_")
             if len(image_parts) < 9:
-                logging.debug(f"Invalid image name format: {image_name}")
                 return False
-            
-            # from quantex_at_home_id255237_2022_05_08_04_000240.jpg to quantex_at_home_id255237_2022_05_08_04
+
             image_folder = "_".join(image_parts[:8])
-            
-            # Try to find image with any valid extension
             image_src = None
+
             for ext in DataConfig.VALID_EXTENSIONS:
-                potential_path = FaceDetection.IMAGES_INPUT_DIR / image_folder / f"{image_name}{ext}"
+                potential_path = image_src_root / image_folder / f"{image_name}{ext}"
                 if potential_path.exists():
                     image_src = potential_path
                     break
-            
+
             if image_src is None:
-                logging.debug(f"Image not found with any valid extension: {image_name}")
                 return False
-            
-            label_src = label_path / f"{image_name}.txt"
-            # Keep original extension in destination
-            image_dst = image_dst_dir / f"{image_name}{image_src.suffix}"
-            label_dst = label_dst_dir / f"{image_name}.txt"
 
-            # Handle label file
-            if not label_src.exists():
-                label_dst.touch()
-            else:
-                shutil.copy2(label_src, label_dst)
+            # --- 1. Determine Image Destination ---
+            if data_type == "classification":
+                class_folder_name = file_to_class_folder.get(image_name)
+                if not class_folder_name:
+                    # Already logged a warning in file_to_class_folder creation, just return False
+                    return False
 
-            # Handle image file
+                # Destination is [base_dir]/[split]/[class_folder]/[image_file]
+                final_image_dst_dir = image_dst_base_dir / class_folder_name
+                final_image_dst_dir.mkdir(parents=True, exist_ok=True)
+                image_dst = final_image_dst_dir / f"{image_name}{image_src.suffix}"
+
+            else: # Detection Mode
+                # Destination is [base_dir]/[split]/[image_file]
+                image_dst = image_dst_base_dir / f"{image_name}{image_src.suffix}"
+                image_dst_base_dir.mkdir(parents=True, exist_ok=True) # Ensure split dir exists
+
+                # --- 2. Handle Label File (Detection Only) ---
+                label_src = label_path / f"{image_name}.txt"
+                label_dst = label_dst_dir / f"{image_name}.txt"
+
+                if not label_src.exists():
+                    label_dst.touch()
+                else:
+                    shutil.copy2(label_src, label_dst)
+
+            # --- 3. Move Image ---
             shutil.copy2(image_src, image_dst)
             return True
 
@@ -1122,14 +1212,14 @@ def move_images(image_names: list,
             logging.error(f"Error processing {image_name}: {str(e)}")
             return False
 
-    # Process images in parallel with progress bar
+    # Process images in parallel
     successful = failed = 0
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         futures = [executor.submit(process_single_image, img) for img in image_names]
-        
+
         from concurrent.futures import as_completed
         from tqdm import tqdm
-        with tqdm(total=len(image_names), desc=f"Moving {split_type} images") as pbar:
+        with tqdm(total=len(image_names), desc=f"Moving {split_type} {data_type} files") as pbar:
             for future in as_completed(futures):
                 if future.result():
                     successful += 1
@@ -1137,8 +1227,7 @@ def move_images(image_names: list,
                     failed += 1
                 pbar.update(1)
 
-    # Log results
-    logging.info(f"\nCompleted moving {split_type} images:")    
+    logging.info(f"\nCompleted moving {split_type} images:")
     return successful, failed
     
 def generate_statistics_file(df: pd.DataFrame, df_train: pd.DataFrame, df_val: pd.DataFrame, df_test: pd.DataFrame, train_ids: List, val_ids: List, test_ids: List, mode: str = "face-only"):
@@ -1353,7 +1442,7 @@ def fixed_id_split_logic(df: pd.DataFrame, negative_candidates: Dict[str, List[T
             val_df, 
             test_df_final)
     
-def split_data(annotation_folder: Path, mode: str = "face-only", data_distribution_file: Path = None, hard_neg_file: Path = None):
+def split_data(annotation_folder: Path, mode: str = "face-only", data_distribution_file: Path = None, hard_neg_file: Path = None, data_type: str = "detection"):
     """
     This function prepares the dataset for face detection YOLO training by splitting the images into train, val, and test sets.
     
@@ -1367,6 +1456,8 @@ def split_data(annotation_folder: Path, mode: str = "face-only", data_distributi
         Path to data distribution file (if any).
     hard_neg_file: Path
         Path to hard negative samples file (if any).
+    data_type: str
+        Type of data processing ('detection' or 'classification').
     """
     logging.info(f"Starting dataset preparation for face detection in mode: {mode}")
 
@@ -1461,7 +1552,10 @@ def split_data(annotation_folder: Path, mode: str = "face-only", data_distributi
                     split_type=split_name,
                     label_path=annotation_folder,
                     input_dir=input_dir,
-                    n_workers=4
+                    n_workers=4,
+                    data_type=data_type,
+                    mode=mode,
+                    df_split={'train': df_train, 'val': df_val, 'test': df_test}.get(split_name) if data_type == "classification" else None
                 )
                 logging.info(f"{split_name}: Moved {successful}, Failed {failed}")
             else:
@@ -1518,14 +1612,23 @@ def generate_false_positive_list():
 def main():
     parser = argparse.ArgumentParser(description='Create input files for face detection YOLO training')
     parser.add_argument('--mode', choices=["face-only", "age-binary"], default="face-only",
-                       help='Select the detection mode')
+                        help='Select the detection mode')
+    parser.add_argument('--type', choices=["detection", "classification"], default="detection",
+                        help='Select the output data format type (detection for YOLO, classification for single class ID)') # ADDED argument
     parser.add_argument('--fetch-annotations', action='store_true',
-                       help='Fetch and save annotations from database (default: False)')
+                        help='Fetch and save annotations from database (default: False)')
     parser.add_argument('--retrain', action='store_true', default=False,
-                       help='Activate retrain mode using fixed IDs and hard negative files defined in FaceConfig.')
+                        help='Activate retrain mode using fixed IDs and hard negative files defined in FaceConfig.')
     parser.add_argument('--fixed-split-file', action='store_true', default=False,
-                       help='Use fixed split file for data splitting.')
+                        help='Use fixed split file for data splitting.')
     args = parser.parse_args()
+    
+    # The classification logic is specifically tied to 'age-binary' mode, which is 2+1 classes (adult, child, no_face)
+    if args.type == "classification" and args.mode == "face-only":
+        logging.error("Classification mode is only supported with '--mode age-binary'. Falling back to detection.")
+        args.type = "detection"
+    
+    CONSTANTS = get_data_constants(args.type)
     
     data_distribution_file = FaceDetection.DATA_DISTRIBUTION_PATH if args.retrain or args.fixed_split_file else None
     hard_neg_file = FaceDetection.RETRAIN_FALSE_POSITIVES_PATH if args.retrain else None
@@ -1539,14 +1642,15 @@ def main():
     try:            
         if args.fetch_annotations:
             # Output annotations to the correct location (standard or retrain folder)
-            labels_output_dir = FaceDetection.LABELS_INPUT_DIR
+            labels_output_dir = CONSTANTS.LABELS_INPUT_DIR
             anns = fetch_all_annotations(FaceConfig.DATABASE_CATEGORY_IDS)
-            save_annotations(anns, output_dir=labels_output_dir, mode=args.mode)
+            save_annotations(anns, output_dir=labels_output_dir, mode=args.mode, data_type=args.type)
         
-        split_data(FaceDetection.LABELS_INPUT_DIR, 
+        split_data(CONSTANTS.LABELS_INPUT_DIR,
                    mode=args.mode,
                    data_distribution_file=data_distribution_file,
-                   hard_neg_file=hard_neg_file)
+                   hard_neg_file=hard_neg_file,
+                   data_type=args.type)
                                    
     except Exception as e:
         logging.error(f"Failed: {e}")
