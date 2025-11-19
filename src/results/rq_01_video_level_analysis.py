@@ -151,9 +151,7 @@ def merge_segments_with_small_gaps(segments_df):
             
             # Check 1: Must be the same interaction type
             # Check 2: The gap must be positive (i.e., not overlapping) AND small
-            if (current_segment['interaction_type'] == next_segment['interaction_type'] and
-                gap_duration > 0 and 
-                gap_duration <= InferenceConfig.GAP_MERGE_DURATION_SEC):
+            if (current_segment['interaction_type'] == next_segment['interaction_type']):
                 
                 # If conditions met, merge them by extending the end time                
                 current_segment['segment_end'] = next_segment['segment_end']
@@ -601,9 +599,9 @@ def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_
             if segment['interaction_type'] != 'Alone':
                 continue
             
-            # --- Condition 2: Duration Check (must be > MIN_RECLASSIFY_DURATION_SEC seconds) ---
-            #if segment['duration_sec'] <= InferenceConfig.MIN_RECLASSIFY_DURATION_SEC:
-            #    continue
+            #--- Condition 2: Duration Check (must be > MIN_RECLASSIFY_DURATION_SEC seconds) ---
+            if segment['duration_sec'] <= InferenceConfig.MIN_RECLASSIFY_DURATION_SEC:
+               continue
 
             # --- Extract Segment Frames ---
             video_name = segment['video_name']
@@ -682,6 +680,12 @@ def main(output_file_path: Path, frame_data_path: Path):
         video_segments = create_segments_for_video(video_id, video_df)
         all_segments.extend(video_segments)
     
+    # save intermediate segments for debugging
+    intermediate_segments_path = output_file_path.parent / f"intermediate_segments_{output_file_path.name}"
+    if all_segments:
+        intermediate_df = pd.DataFrame(all_segments)
+        intermediate_df.to_csv(intermediate_segments_path, index=False)
+        print(f"✅ Saved intermediate segments to {intermediate_segments_path}")
     # Step 3: Convert to DataFrame and merge segments with small gaps
     if all_segments:
         segments_df = pd.DataFrame(all_segments)
@@ -703,7 +707,7 @@ def main(output_file_path: Path, frame_data_path: Path):
     # Step 4c: Reclassify 'Available' segments to 'Alone' if no detection occurred
     segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
     
-    #segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
+    segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
     
     # Step 5: Reclassify for Implicit Turn-Taking
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
