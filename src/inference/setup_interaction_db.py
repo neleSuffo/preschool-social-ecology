@@ -1,15 +1,35 @@
 import sqlite3
 import logging
 import pandas as pd
+import cv2
 from pathlib import Path
 from constants import DataPaths
 
 logging.basicConfig(level=logging.INFO)
 
+def get_max_frame_count(video_path: Path) -> int:
+    """
+    Returns the maximum number of frames in a video using OpenCV.
+    If the video cannot be opened, returns None.
+    """
+    if not video_path.exists():
+        logging.error(f"Video not found: {video_path}")
+        return None
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        logging.error(f"Failed to open video: {video_path}")
+        return None
+
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return frame_count
+
+
 def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection):
     """
     Stores video information from age_group.csv directly in the Videos table.
-    Logs video information in a tabular format.
+    Also computes and stores max_frame for each video.
     """
     cursor = conn.cursor()
     video_data = []
@@ -21,35 +41,46 @@ def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection):
             recording_date_str = row['recording_date']
             age_at_recording = row['age_at_recording']
             age_group = row['age_group']
-            
+
             # Parse recording date (format: dd.mm.yyyy)
             recording_date = pd.to_datetime(recording_date_str, format="%d.%m.%Y")
-            
-            # Add data to video_data list for logging
+
+            # ---------- NEW: determine max_frame ----------
+            video_path = Path(DataPaths.RAW_VIDEOS_DIR) / video_name
+            max_frame = get_max_frame_count(video_path)
+
+            # Prepare table output log
             video_data.append({
                 'video_name': video_name,
                 'child_id': child_id,
                 'recording_date': recording_date.strftime('%Y-%m-%d'),
                 'age_at_recording': f"{age_at_recording:.2f}",
-                'age_group': age_group
+                'age_group': age_group,
+                'max_frame': max_frame
             })
 
-            # Insert or update video data
+            # Insert or update video data including max_frame
             cursor.execute('''
-                INSERT INTO Videos (video_name, child_id, recording_date, age_at_recording, age_group)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(video_name) DO UPDATE SET
+                INSERT INTO Videos (video_name, child_id, recording_date, age_at_recording, age_group, max_frame)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(video_name) DO UPDATE SET
                     child_id=excluded.child_id,
                     recording_date=excluded.recording_date,
                     age_at_recording=excluded.age_at_recording,
-                    age_group=excluded.age_group
-                ''', (video_name, child_id, recording_date.strftime('%Y-%m-%d'), 
-                    age_at_recording, age_group))
+                    age_group=excluded.age_group,
+                    max_frame=excluded.max_frame
+            ''', (
+                video_name,
+                child_id,
+                recording_date.strftime('%Y-%m-%d'),
+                age_at_recording,
+                age_group,
+                max_frame
+            ))
 
         except Exception as e:
             logging.error(f"Error processing video {row.get('video_name', 'unknown')}: {str(e)}")
-            continue
-    
+
     conn.commit()
 
 def setup_interaction_db(db_path: Path):
@@ -74,7 +105,8 @@ def setup_interaction_db(db_path: Path):
             child_id INTEGER,
             recording_date DATE,
             age_at_recording FLOAT,
-            age_group INTEGER
+            age_group INTEGER,
+            max_frame INTEGER
         )
     ''')
 
