@@ -34,30 +34,74 @@ from results.rq_01_video_level_analysis import main as segment_analysis_main
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""   
     HYPERPARAMETER_RANGES = {
-    # Tier 2 Classification Adjustments (to make Available easier to trigger)
-    'PERSON_AVAILABLE_WINDOW_SEC': [6, 7, 10],    # Exploring shorter memory
-    'MIN_PRESENCE_FRACTION': [0.1, 0.2, 0.3], # Exploring lower threshold
-    
-    # Segment Duration Adjustments (to retain short Available segments)
-    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [2.5, 3, 3.5], 
-    
-    # Segment Processing/Reclassification (to better separate Available/Alone)
-    'MIN_RECLASSIFY_DURATION_SEC': [3, 3.5, 4],
-    'MIN_ALONE_SEGMENT_DURATION_SEC': [4.5, 5, 5.5], # Keep steady
-    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.2, 0.25, 0.3],
-    'ALONE_RECLASSIFY_AUDIO_THRESHOLD': [0.2, 0.25, 0.3],
-    # Keep others fixed at their current best for a focused search:
-    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.6, 0.7, 0.75],
-    'MIN_KCDS_DURATION_SEC': [1.25, 1.5, 1.75],
-    'SUSTAINED_KCDS_SEC': [1, 1.1, 1.2],
-    'PROXIMITY_THRESHOLD': [0.75, 0.78, 0.8],
-    'KCHI_PERSON_BUFFER_FRAMES': [10, 11, 12],
-    'MAX_SAME_SPEAKER_GAP_SEC': [1.75, 2, 2.25],
-    'MAX_TURN_TAKING_GAP_SEC': [4.5, 5, 5.5],
-    'GAP_MERGE_DURATION_SEC': [10, 11, 12],
-    'KCHI_ONLY_FRACTION_THRESHOLD': [0.7, 0.75, 0.8],
-    'MIN_PERSON_PRESENCE_FRACTION': [0.03, 0.04, 0.05]
-}
+        # --- Interaction and Presence Thresholds ---
+        
+        # Rule 2: Very Close Proximity Threshold (Current Best: 0.78)
+        'PROXIMITY_THRESHOLD': [0.7, 0.78, 0.85], 
+        
+        # Min visual presence fraction for Available (Current Best: 0.04)
+        'MIN_PERSON_PRESENCE_FRACTION': [0.03, 0.05, 0.07], 
+        
+        # --- Segmentation Window Sizes (In Seconds) ---
+        
+        # Rule 4 Window: Person + Recent KCDS (Current Best: 2)
+        'PERSON_AUDIO_WINDOW_SEC': [1, 2, 4],    
+        
+        # Rule 3 Window: Sustained KCDS Duration (Current Best: 3)
+        'SUSTAINED_KCDS_SEC': [1.5, 3, 5],
+        
+        # Rule 5 Buffer: Buffered KCHI (Current Best: 10 frames = 1 sec)
+        'KCHI_PERSON_BUFFER_FRAMES': [5, 10, 20], 
+        
+        # Available Window: Sustained Presence Memory (Current Best: 10)
+        'PERSON_AVAILABLE_WINDOW_SEC': [5, 10, 15], 
+        
+        # Robust Alone Window: Sustained Absence Memory (Current Best: 10)
+        'ROBUST_ALONE_WINDOW_SEC': [5, 10, 15],
+
+        # --- Audio Chaining Thresholds (Rule 1) ---
+        
+        # Intra-Speaker Gap (Monologue Prevention) (Current Best: 2.25)
+        'MAX_SAME_SPEAKER_GAP_SEC': [1.5, 2.25, 3],
+        
+        # Inter-Speaker Gap (Turn-Taking) (Current Best: 5)
+        'MAX_TURN_TAKING_GAP_SEC': [4, 5, 7],
+
+        # --- Segment Duration and Filtering ---
+
+        # Min Duration to keep an Interacting Segment (Current Best: 0.7)
+        'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.5, 0.7, 1.0],
+        
+        # Min Duration to keep an Alone Segment (Current Best: 5)
+        'MIN_ALONE_SEGMENT_DURATION_SEC': [4, 5, 6.5],
+        
+        # Min Duration to keep an Available Segment (Current Best: 4)
+        'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [3, 4, 5],
+        
+        # Min Duration for Reclassification/Sandwiching (Current Best: 5)
+        'MIN_RECLASSIFY_DURATION_SEC': [3, 5, 7],
+
+        # --- Reclassification and Noise Tolerance ---
+        
+        # Max tolerated fraction for Alone (Current Best: 0.1)
+        'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.05, 0.1, 0.15],
+        
+        # Threshold to reclassify Alone -> Available (Visual) (Current Best: 0.24)
+        'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.15, 0.25, 0.35],
+        
+        # Threshold to reclassify Alone -> Available (Audio) (Current Best: 0.24)
+        'ALONE_RECLASSIFY_AUDIO_THRESHOLD': [0.15, 0.25, 0.35],
+        
+        # KCHI-only fraction for Implicit Turn-taking (Current Best: 0.75)
+        'KCHI_ONLY_FRACTION_THRESHOLD': [0.6, 0.75, 0.9],
+        
+        # Min KCDS duration for initial segment creation (Current Best: 1.5)
+        'MIN_KCDS_DURATION_SEC': [1.0, 1.5, 2.0],
+        
+        # Gap size to merge same-type segments (Current Best: Implicitly MAX_TURN_TAKING_GAP_SEC or similar)
+        # Note: Added for completeness, assuming you mean GAP_MERGE_DURATION_FRAMES/SEC here.
+        'GAP_MERGE_DURATION_SEC': [3, 5, 8]
+    }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
     """
