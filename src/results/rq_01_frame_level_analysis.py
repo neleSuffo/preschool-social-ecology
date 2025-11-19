@@ -395,13 +395,13 @@ def classify_frames(row, results_df, included_rules=None):
     # Calculate recent speech activity once at the beginning
     current_index = row.name
     
-    # --- Evaluate Rule 1 (Turn-Taking) ---
+    # --- Evaluate Rule I1 (Turn-Taking) ---
     rule1_turn_taking = bool(row['is_audio_interaction'])
     
-    # --- Evaluate Rule 2 (Very Close Proximity) ---
+    # --- Evaluate Rule I2 (Very Close Proximity) ---
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
     
-    # --- Evaluate Rule 3 (Sustained KCDS Speaking) ---
+    # --- Evaluate Rule I3 (Sustained KCDS Speaking) ---
     current_index = row.name
     total_frames = len(results_df) # Total samples in the dataset
     
@@ -435,7 +435,7 @@ def classify_frames(row, results_df, included_rules=None):
                 break # Found a sustained segment, stop checking windows for this frame
     rule3_kcds_speaking = is_sustained_kcds
     
-    # --- Evaluate Rule 4 (Person/Face + Recent Speech) ---
+    # --- Evaluate Rule I4 (Person/Face + Recent Speech) ---
     window_samples = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * FPS / SAMPLE_RATE)
     window_start = max(0, current_index - window_samples)
     
@@ -444,26 +444,10 @@ def classify_frames(row, results_df, included_rules=None):
 
     # Check for person/face presence and OHS
     person_or_face_present_instant = (row['person_or_face_present'] == 1)
-    has_ohs = (row['has_ohs'] == 1)
-
-    # --- Sustained Person/Face Presence for 'Available' (Tier 2 Visual Check) ---
-    window_samples_person = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * FPS / SAMPLE_RATE)
-    window_start_person = max(0, current_index - window_samples_person + 1)
-    
-    window_data_person = results_df.loc[window_start_person : current_index]
-    window_size = len(window_data_person)
-    
-    if window_size > 0:
-        person_count_in_window = (window_data_person['person_or_face_present'] == 1).sum()
-        presence_fraction = person_count_in_window / window_size
-        is_sustained_person_or_face_present = presence_fraction >= InferenceConfig.MIN_PRESENCE_FRACTION
-    else:
-        is_sustained_person_or_face_present = False
     
     rule4_person_recent_speech = bool(person_or_face_present_instant and recent_speech_exists)
     
-    # Evaluate Rule 5 (KCHI + Buffered Visual Presence)
-    # --- NEW RULE 5: Buffered KCHI + Visual Presence (30 frame buffer) ---
+    # Evaluate Rule I5 (KCHI + Buffered Visual Presence)
     BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
     
     is_kchi = (row['has_kchi'] == 1)
@@ -480,31 +464,75 @@ def classify_frames(row, results_df, included_rules=None):
                 results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1
             ).any()
             rule5_buffered_kchi = visual_in_buffer
+           
+           
+    # --- Evaluate Available Rules ---
+    # --- Evaluate A1 Rule (OHS is heard) ---
+    # Define the parameters for the sliding window check (e.g., 7.5 seconds)
+    window_samples_avail = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * FPS / SAMPLE_RATE)
+    
+    # Initialize flags
+    is_sustained_ohs = False
+    is_robust_person_presence = False
+    
+    # Only proceed if the window size is positive and the data length allows a window
+    if window_samples_avail > 0 and total_frames >= window_samples_avail:
+        
+        # Define the range of possible start indices for a window that includes the current frame.
+        # Start of the earliest possible window (full lookback): current_index - N + 1
+        start_of_range = max(0, current_index - window_samples_avail)
+        
+        # End of the latest possible window (full lookahead)
+        end_of_range = min(current_index, total_frames - window_samples_avail)
+        
+        # --- Aggregation for OHS and Person Presence ---
+        
+        # List to hold max fractional presence found across all sliding windows
+        ohs_fractions = []
+        person_fractions = []
+
+        # Check every possible N-sample window that overlaps the current frame.
+        for window_start in range(start_of_range, end_of_range):
+            window_end = window_start + window_samples_avail
             
+            # Extract data for the current sliding window
+            window_data = results_df.loc[window_start : window_end]
+            
+            # Calculate presence fractions within this specific window
+            ohs_fractions.append( (window_data['has_ohs'] == 1).sum() / window_samples_avail )
+            person_fractions.append( (window_data['person_or_face_present'] == 1).sum() / window_samples_avail )
+        
+        # Check if the maximum fraction found across all overlapping windows exceeds the required minimum (e.g., 5%)
+        if ohs_fractions: # Ensure list is not empty
+            if max(ohs_fractions) >= InferenceConfig.MIN_PRESENCE_FRACTION:
+                 is_sustained_ohs = True
+        
+        if person_fractions: # Ensure list is not empty
+            if max(person_fractions) >= InferenceConfig.MIN_PRESENCE_FRACTION:
+                 is_robust_person_presence = True
+        
     # Tier 1: INTERACTING (Active engagement) - check only included rules
-    active_rules = []
+    interacting_rules = []
     
     if 1 in included_rules and rule1_turn_taking:
-        active_rules.append(1)
+        interacting_rules.append(1)
     
     if 2 in included_rules and rule2_close_proximity:
-        active_rules.append(2)
+        interacting_rules.append(2)
 
     if 3 in included_rules and rule3_kcds_speaking:
-        active_rules.append(3)
+        interacting_rules.append(3)
     
     if 4 in included_rules and rule4_person_recent_speech:
-        active_rules.append(4)
+        interacting_rules.append(4)
 
     if 5 in included_rules and rule5_buffered_kchi:
-        active_rules.append(5)
+        interacting_rules.append(5)
 
     # --- Hierarchical Classification ---
-    
-    if active_rules:
+    if interacting_rules:
         interaction_category = "Interacting"
-    # Trigger 'Available' if (OHS is heard) OR (Sustained Person/Face Presence is true)
-    elif has_ohs or is_sustained_person_or_face_present: 
+    elif is_sustained_ohs or is_robust_person_presence: 
         interaction_category = "Available"
     else:
         interaction_category = "Alone"
