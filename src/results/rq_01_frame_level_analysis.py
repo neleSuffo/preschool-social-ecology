@@ -11,8 +11,10 @@ import sys
 import shutil
 import json
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from datetime import datetime
+from typing import List, Dict
 
 # Get the src directory (2 levels up from current notebook location)
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
@@ -24,69 +26,62 @@ from inference.utils import load_processed_videos
 
 # Constants
 FPS = DataConfig.FPS # frames per second
-SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling rate)
+SAMPLE_RATE = InferenceConfig.SAMPLE_RATE # every n-th frame is processed (configurable sampling sampling rate)
 
-def find_segments(video_df, column_name):
+# Placeholder labels for classification
+ROBUST_ALONE_FLAG = 'is_robust_alone'
+SUSTAINED_KCDS_FLAG = 'is_sustained_kcds'
+ROBUST_PERSON_FLAG = 'is_robust_person'
+ROBUST_OHS_FLAG = 'is_sustained_ohs'
+RECENT_KCDS_FLAG = 'has_recent_kcds'
+
+
+def find_segments(video_df: pd.DataFrame, column_name: str) -> List[Dict]:
     """
-    Identifies continuous audio interaction bouts by chaining segments 
-    where the gap between any two adjacent segments (KCHI or CDS) is 
-    less than or equal to MAX_TURN_TAKING_GAP_SEC.
-    
-    The entire chained sequence of KCHI and CDS segments is marked as 
-    'is_audio_interaction', provided the intervals contain both KCHI and CDS.
-
-    Parameters:
-    ----------
-    video_df (pd.DataFrame): 
-        DataFrame for a single video.
-    column_name (str): 
-        The name of the binary column ('has_kchi' or 'has_cds').
-        
-    Returns:
-    ----------
-    list of dicts: 
-        [{'start': frame_num, 'end': frame_num, 'type': 'kchi'/'kcds'}, ...]
+    Identifies continuous segments using vectorized operations.
+    (Optimized: Replaced Python loop with NumPy diff)
     """
     segments = []
 
-    # If requested binary column doesn't exist, return empty
     if column_name not in video_df.columns:
         return segments
 
-    # Work on a copy to avoid SettingWithCopy warnings and allow index manipulations
-    speech_frames = video_df[video_df[column_name] == 1].copy()
+    speech_frames = video_df[video_df[column_name] == 1]
     if speech_frames.empty:
         return segments
 
-    # Determine frame numbers: prefer explicit 'frame_number' column, then any column containing 'frame', then the index
+    # Determine frame numbers: use index if frame_number isn't explicit
     if 'frame_number' in speech_frames.columns:
-        frame_numbers = speech_frames['frame_number'].values
+        frame_numbers = speech_frames['frame_number'].values.astype(int)
     else:
-        candidate_cols = [c for c in speech_frames.columns if 'frame' in c.lower()]
-        if candidate_cols:
-            frame_numbers = speech_frames[candidate_cols[0]].values
-        else:
-            # If frame_number is the index (common when callers set it), use the index values
-            frame_numbers = speech_frames.index.values
+        frame_numbers = speech_frames.index.values.astype(int)
 
-    # Ensure frame_numbers is a 1-D numpy array of integers
-    try:
-        frame_numbers = frame_numbers.astype(int)
-    except Exception:
-        frame_numbers = pd.Series(frame_numbers).astype(int).values
+    if len(frame_numbers) < 2:
+        # Handle the single-frame or single-segment case
+        return [{
+            'start': int(frame_numbers[0]),
+            'end': int(frame_numbers[-1]),
+            'type': column_name.split('_')[-1]
+        }]
 
-    # Initialize the start of the first segment
-    current_start = int(frame_numbers[0])
+    # Vectorized gap calculation (difference between consecutive frames)
+    gaps = np.diff(frame_numbers) 
 
-    for i in range(1, len(frame_numbers)):
-        # Treat gaps larger than SAMPLE_RATE as segment breaks
-        if int(frame_numbers[i]) > int(frame_numbers[i-1]) + SAMPLE_RATE:
-            segments.append({
-                'start': int(current_start),
-                'end': int(frame_numbers[i-1]),
-                'type': column_name.split('_')[-1]
-            })
-            current_start = int(frame_numbers[i])
+    # Identify indices where the gap exceeds SAMPLE_RATE (segment breaks)
+    # np.where returns a tuple, take the first element (the array of indices)
+    break_indices = np.where(gaps > SAMPLE_RATE)[0]
+    
+    # Segment boundaries reconstruction
+    current_start = frame_numbers[0]
+    
+    # Loop over break indices
+    for i in break_indices:
+        segments.append({
+            'start': int(current_start),
+            'end': int(frame_numbers[i]),
+            'type': column_name.split('_')[-1]
+        })
+        current_start = frame_numbers[i + 1]
 
     # Append last segment
     segments.append({
@@ -228,6 +223,108 @@ def get_all_analysis_data(conn, video_list: list):
     # Pass the parameters to pd.read_sql for secure execution
     return pd.read_sql(query, conn, params=query_params)
 
+def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> pd.DataFrame:
+    """
+    Calculates all windowed features (Rules 3, 4, Available, Alone) in a single vectorized pass.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain ['video_id', 'frame_number', 'has_cds', 'has_ohs', 'person_or_face_present']
+    fps : int
+        Frames per second of the video
+    sample_rate : int
+        Sampling rate used for frame selection
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with calculated window features
+    """
+    
+    # 1. Setup Window Sizes (in samples/rows)
+    samples_per_sec = fps / sample_rate
+    
+    # Rule 3/Available Window (N)
+    N_sustained = int(InferenceConfig.SUSTAINED_KCDS_SEC * samples_per_sec)
+    N_avail = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * samples_per_sec)
+    N_recent_speech = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * samples_per_sec)
+    N_alone = int(InferenceConfig.ROBUST_ALONE_WINDOW_SEC * samples_per_sec)
+    
+    # Rule 5 Buffer size (N_buffer)
+    N_buffer = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / sample_rate)
+
+    # --- 2. Sustained KCDS (Rule 3) ---
+    # Goal: 100% presence in *any* N_sustained window that overlaps the current frame.
+    
+    if N_sustained > 0:
+        # a. Calculate the sum of KCDS in every possible N_sustained window ending at frame i.
+        # This gives the raw count of CDS in the lookback window.
+        df['kcds_sum_lookback'] = df['has_cds'].rolling(window=N_sustained, min_periods=N_sustained).sum()
+        
+        # b. Check if the sum is equal to the window size (100% presence).
+        df[SUSTAINED_KCDS_FLAG] = (df['kcds_sum_lookback'] == N_sustained)
+        
+        # c. Forward-Backward Sliding Check: If any frame is marked True in a window of size N, 
+        #    then all frames in that window should be True. This is done by checking the 
+        #    rolling *maximum* of the boolean flag itself.
+        df[SUSTAINED_KCDS_FLAG] = (
+            df[SUSTAINED_KCDS_FLAG].rolling(window=N_sustained, min_periods=1, center=True).max().fillna(False).astype(bool)
+        )
+    else:
+         df[SUSTAINED_KCDS_FLAG] = False
+
+    # --- 3. Robust Presence/Available Check (OHS & Person) ---
+    # Goal: Check if fraction > MIN_PRESENCE_FRACTION in any overlapping N_avail window.
+    
+    if N_avail > 0:
+        # Calculate the rolling mean (fraction) of presence for every window ending at frame i.
+        df['person_frac_lookback'] = df['person_or_face_present'].rolling(window=N_avail, min_periods=1).mean()
+        df['ohs_frac_lookback'] = df['has_ohs'].rolling(window=N_avail, min_periods=1).mean()
+        
+        # Robust Person Presence (Rule for Available)
+        df[ROBUST_PERSON_FLAG] = (
+            df['person_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_PERSON_FRACTION
+        )
+        
+        # Robust OHS Presence (Rule for Available)
+        df[ROBUST_OHS_FLAG] = (
+            df['ohs_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_OHS_FRACTION
+        )
+
+    else:
+        df[ROBUST_PERSON_FLAG] = False
+        df[ROBUST_OHS_FLAG] = False
+
+
+    # --- 4. Robust Alone Check (Used in Hierarchical Classification) ---
+    # Goal: Confirm if the total social signal fraction is <= MAX_ALONE_FALSE_POSITIVE_FRACTION.
+    
+    if N_alone > 0:
+        # Total social signal (Visual + CDS + OHS)
+        df['social_signal_total'] = df['person_or_face_present'] + df['has_cds'] + df['has_ohs']
+        
+        # Calculate the rolling mean of the social signal
+        df['social_signal_frac'] = df['social_signal_total'].rolling(window=N_avail, min_periods=1).mean() / 3
+        
+        # Define 'is_sustained_absence' (used to determine Alone)
+        # Check if the fraction is BELOW the max tolerance in *all* overlapping windows
+        # We check the rolling *minimum* of the inverse condition over the window.
+        df[ROBUST_ALONE_FLAG] = (
+             df['social_signal_frac'].rolling(window=N_alone, min_periods=1, center=True).min().fillna(1) <= InferenceConfig.MAX_ALONE_FALSE_POSITIVE_FRACTION
+        )
+    else:
+        df[ROBUST_ALONE_FLAG] = True # Default to Alone if no window possible
+
+    
+    # --- 5. Recent KCDS (Rule 4 Component) ---
+    if N_recent_speech > 0:
+        # Check if the max KCDS in the lookback window is 1 (i.e., KCDS existed recently)
+        df[RECENT_KCDS_FLAG] = df['has_cds'].rolling(window=N_recent_speech, min_periods=1).max().fillna(0).astype(bool).shift(1).fillna(False)
+    else:
+         df[RECENT_KCDS_FLAG] = False
+        
+    return df[['video_id', 'frame_number', SUSTAINED_KCDS_FLAG, ROBUST_PERSON_FLAG, ROBUST_OHS_FLAG, ROBUST_ALONE_FLAG, RECENT_KCDS_FLAG]].copy()
 
 def check_audio_interaction_turn_taking(df, fps):
     """
@@ -356,187 +453,69 @@ def check_audio_interaction_turn_taking(df, fps):
 
 def classify_frames(row, results_df, included_rules=None):
     """
-    Hierarchical social interaction classifier with dynamic proximity and audio priority.
-    Also returns individual rule activations for analysis.
-    
-    CLASSIFICATION LOGIC:
-    1. INTERACTING: Active social engagement (Highest Priority)
-    - Turn-taking detected (Rule 1)
-    - OR Very close proximity (Rule 2)
-    - OR Sustained child-directed speech present (Rule 3)
-    - OR Face/Person + recent speech (Rule 4)
-    - OR KCHI + Buffered Visual (Rule 5)
-    
-    2. Available: Passive social presence (Tier 2)
-    - OHS is present OR Sustained Person/Face presence is true
-    
-    3. ALONE: No social presence detected
-    
-    Parameters
-    ----------
-    row : pd.Series
-        DataFrame row with detection flags and proximity values
-    results_df : pd.DataFrame
-        The full DataFrame to enable window-based lookups
-    included_rules : list, optional
-        List of rule numbers to include (1, 2, 3, 4, 5). If None, uses default rules.
-        
-    Returns
-    -------
-    tuple
-        (interaction_category, rule1_active, rule2_active, rule3_active, rule4_active, rule5_active)
-        where interaction_category is str ('Interacting', 'Available', 'Alone')
-        and rule flags are boolean
+    Hierarchical social interaction classifier (Optimized: uses pre-calculated flags).
     """
-    # Default rules if none specified
     if included_rules is None:
         included_rules = [1, 2, 3, 4, 5]
     
-    # Calculate recent speech activity once at the beginning
     current_index = row.name
     
-    # --- Evaluate Rule I1 (Turn-Taking) ---
+    # --- Retrieve Pre-calculated Flags ---
+    
+    # Interacting Flags
     rule1_turn_taking = bool(row['is_audio_interaction'])
-    
-    # --- Evaluate Rule I2 (Very Close Proximity) ---
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
+    rule3_kcds_speaking = bool(row[SUSTAINED_KCDS_FLAG])
     
-    # --- Evaluate Rule I3 (Sustained KCDS Speaking) ---
-    current_index = row.name
-    total_frames = len(results_df) # Total samples in the dataset
-    
-    # Window samples needed to satisfy the sustained duration (N)
-    window_samples_rule3 = int(InferenceConfig.SUSTAINED_KCDS_SEC * FPS / SAMPLE_RATE)
-    
-    # Initialize flag to False
-    is_sustained_kcds = False
-
-    if row['has_cds'] == 1:
-        # Define the range of possible start indices for a window that includes the current frame.
-        # 1. Start of the earliest possible window (full lookback): current_index - N + 1
-        start_of_lookback_range = max(0, current_index - window_samples_rule3)
-        
-        # 2. End of the latest possible window (full lookahead): current_index
-        end_of_lookahead_range = min(current_index, total_frames - window_samples_rule3) 
-        
-        # Check every possible N-sample window that overlaps the current frame.
-        # A window starts at 'window_start' and ends at 'window_start + window_samples_rule3'.
-        # We only need to find ONE window where KCDS is 100% sustained.
-        
-        for window_start in range(start_of_lookback_range, end_of_lookahead_range + 1):
-            window_end = window_start + window_samples_rule3
-            
-            # Extract KCDS data for the current sliding window
-            kcds_window_data = results_df.loc[window_start : window_end, 'has_cds']
-            
-            # Check if the sum of 'has_cds' equals the size of the window (all frames must be 1)
-            if kcds_window_data.sum() == len(kcds_window_data):
-                is_sustained_kcds = True
-                break # Found a sustained segment, stop checking windows for this frame
-    rule3_kcds_speaking = is_sustained_kcds
-    
-    # --- Evaluate Rule I4 (Person/Face + Recent Speech) ---
-    window_samples = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * FPS / SAMPLE_RATE)
-    window_start = max(0, current_index - window_samples)
-    
-    # Check for recent KCDS in the window based on the original dataframe's index
-    recent_speech_exists = (results_df.loc[window_start:current_index, 'has_cds'] == 1).any()
-
-    # Check for person/face presence and OHS
     person_or_face_present_instant = (row['person_or_face_present'] == 1)
+    rule4_person_recent_speech = bool(person_or_face_present_instant and row[RECENT_KCDS_FLAG])
     
-    rule4_person_recent_speech = bool(person_or_face_present_instant and recent_speech_exists)
+    # Available/Alone Flags
+    is_sustained_ohs = bool(row[ROBUST_OHS_FLAG])
+    is_robust_person_presence = bool(row[ROBUST_PERSON_FLAG])
+    is_sustained_absence = bool(row[ROBUST_ALONE_FLAG]) # This flag is TRUE when ALONE is robustly detected
     
-    # Evaluate Rule I5 (KCHI + Buffered Visual Presence)
+    # --- Rule 5: Buffered KCHI (Still needs lookahead/lookback) ---
     BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
-    
     is_kchi = (row['has_kchi'] == 1)
-    
     rule5_buffered_kchi = False
-    if is_kchi:
-        # Define window indices relative to the current index
+    
+    if 5 in included_rules and is_kchi:
         start_buffer = max(0, current_index - BUFFER_SAMPLES)
         end_buffer = min(len(results_df) - 1, current_index + BUFFER_SAMPLES)
         
-        # Check if *any* person/face detection exists in the surrounding buffer
         if end_buffer >= start_buffer:
             visual_in_buffer = (
                 results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1
             ).any()
             rule5_buffered_kchi = visual_in_buffer
-           
-           
-    # --- Evaluate Available Rules ---
-    # --- Evaluate A1 Rule (OHS is heard) ---
-    # Define the parameters for the sliding window check (e.g., 7.5 seconds)
-    window_samples_avail = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * FPS / SAMPLE_RATE)
-    
-    # Initialize flags
-    is_sustained_ohs = False
-    is_robust_person_presence = False
-    
-    # Only proceed if the window size is positive and the data length allows a window
-    if window_samples_avail > 0 and total_frames >= window_samples_avail:
-        
-        # Define the range of possible start indices for a window that includes the current frame.
-        # Start of the earliest possible window (full lookback): current_index - N + 1
-        start_of_range = max(0, current_index - window_samples_avail)
-        
-        # End of the latest possible window (full lookahead)
-        end_of_range = min(current_index, total_frames - window_samples_avail)
-        
-        # --- Aggregation for OHS and Person Presence ---
-        
-        # List to hold max fractional presence found across all sliding windows
-        ohs_fractions = []
-        person_fractions = []
-
-        # Check every possible N-sample window that overlaps the current frame.
-        for window_start in range(start_of_range, end_of_range):
-            window_end = window_start + window_samples_avail
             
-            # Extract data for the current sliding window
-            window_data = results_df.loc[window_start : window_end]
-            
-            # Calculate presence fractions within this specific window
-            ohs_fractions.append( (window_data['has_ohs'] == 1).sum() / window_samples_avail )
-            person_fractions.append( (window_data['person_or_face_present'] == 1).sum() / window_samples_avail )
-        
-        # Check if the maximum fraction found across all overlapping windows exceeds the required minimum (e.g., 5%)
-        if ohs_fractions: # Ensure list is not empty
-            if max(ohs_fractions) >= InferenceConfig.MIN_PRESENCE_FRACTION:
-                 is_sustained_ohs = True
-        
-        if person_fractions: # Ensure list is not empty
-            if max(person_fractions) >= InferenceConfig.MIN_PRESENCE_FRACTION:
-                 is_robust_person_presence = True
-        
-    # Tier 1: INTERACTING (Active engagement) - check only included rules
-    interacting_rules = []
+    # --- Tier 1: INTERACTING ---
+    active_rules = []
     
     if 1 in included_rules and rule1_turn_taking:
-        interacting_rules.append(1)
-    
+        active_rules.append(1)
     if 2 in included_rules and rule2_close_proximity:
-        interacting_rules.append(2)
-
+        active_rules.append(2)
     if 3 in included_rules and rule3_kcds_speaking:
-        interacting_rules.append(3)
-    
+        active_rules.append(3)
     if 4 in included_rules and rule4_person_recent_speech:
-        interacting_rules.append(4)
-
+        active_rules.append(4)
     if 5 in included_rules and rule5_buffered_kchi:
-        interacting_rules.append(5)
+        active_rules.append(5)
 
-    # --- Hierarchical Classification ---
-    if interacting_rules:
+    if active_rules:
         interaction_category = "Interacting"
+    # --- Tier 2: ALONE (Based on Robust Absence) ---
+    elif is_sustained_absence:
+        interaction_category = "Alone"
+    # --- Tier 3: AVAILABLE (Triggered by sustained presence, but no interaction) ---
     elif is_sustained_ohs or is_robust_person_presence: 
         interaction_category = "Available"
     else:
-        interaction_category = "Alone"
-    
+        # Fallback (This state should ideally be covered by Alone if data is complete)
+        interaction_category = "Available"
+            
     return (
         interaction_category, 
         rule1_turn_taking, 
@@ -706,8 +685,18 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
 
     with sqlite3.connect(db_path) as conn:
         all_data = get_all_analysis_data(conn, processed_videos) 
+        
+        # --- PHASE 1: AUDIO/TURN-TAKING ANALYSIS (Still sequential, benefits from faster find_segments) ---
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(all_data, FPS)
         
+        # --- PHASE 2: VECTORIZED WINDOW FEATURE CALCULATION (HUGE SPEEDUP) ---
+        print("⏱️ Pre-calculating all windowed features using rolling statistics...")
+        window_flags_df = calculate_window_features(all_data[['video_id', 'frame_number', 'has_cds', 'has_ohs', 'person_or_face_present']].copy(), FPS, SAMPLE_RATE)
+        
+        # Merge the pre-calculated features back into the main DataFrame
+        all_data = pd.concat([all_data, window_flags_df.drop(columns=['video_id', 'frame_number'], errors='ignore')], axis=1)
+
+        # --- PHASE 3: HIERARCHICAL CLASSIFICATION (Now relies on the vectorized flags) ---
         classification_results = all_data.apply(
             lambda row: classify_frames(row, all_data, included_rules), axis=1
         )
@@ -717,8 +706,10 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         all_data['rule2_close_proximity'] = [result[2] for result in classification_results]
         all_data['rule3_kcds_speaking'] = [result[3] for result in classification_results]
         all_data['rule4_person_recent_speech'] = [result[4] for result in classification_results]
-        all_data['rule5_buffered_kchi'] = [result[5] for result in classification_results] # ADDED 5
+        all_data['rule5_buffered_kchi'] = [result[5] for result in classification_results]
 
+        # ... (Rest of main function: Categorization, Age Merge, Saving) ...
+        
         # Categorization
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
         all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
