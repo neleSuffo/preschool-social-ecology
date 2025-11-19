@@ -223,7 +223,6 @@ class InferenceConfig:
     MIN_INTERACTING_SEGMENT_DURATION_SEC = 0.7 # minimum duration for a interacting segment
     MIN_ALONE_SEGMENT_DURATION_SEC = 5 # minimum duration for an alone segment
     MIN_AVAILABLE_SEGMENT_DURATION_SEC = 4 # minimum duration for an available segment
-    GAP_MERGE_DURATION_SEC = 5 # duration for merging gaps for segments with same label
     MIN_ALONE_SANDWICH_DURATION_SEC = 4 # minimum duration for alone segments sandwiched between interacting segments
     MIN_INTERACTING_SANDWICH_DURATION_SEC = 4 # minimum duration for interacting segments sandwiched between alone segments
     MIN_RECLASSIFY_DURATION_SEC = 5 # minimum duration for reclassifying 'Available' segments
