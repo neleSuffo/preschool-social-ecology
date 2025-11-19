@@ -208,8 +208,8 @@ class InferenceConfig:
     PROXIMITY_THRESHOLD = 0.78 # face proximity so that frame is counted as interaction
     
     # -- Person Related Parameters --
-    PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for is_sustained_person_or_face_present (rule available)
-    MIN_PRESENCE_FRACTION = 0.38 # # At least 38% presence in PERSON_AVAILABLE_WINDOW_SEC window
+    PERSON_AVAILABLE_WINDOW_SEC = 20 # window duration for is_sustained_person_or_face_present (rule available)
+    MIN_PRESENCE_FRACTION = 0.05 # # At least 5% presence in PERSON_AVAILABLE_WINDOW_SEC window
     PERSON_AUDIO_WINDOW_SEC = 2 # window duration for rule4_person_recent_speech
     KCHI_PERSON_BUFFER_FRAMES = 10 # number of frames to look back and forward for KCHI + visual presence
 
@@ -217,7 +217,7 @@ class InferenceConfig:
     MAX_SAME_SPEAKER_GAP_SEC = 2.25 # maximum gap duration to consider same speaker segment
     MIN_KCDS_DURATION_SEC = 1.5 # minimum duration of KCDS to consider for analysis
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
-    SUSTAINED_KCDS_SEC = 1 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
+    SUSTAINED_KCDS_SEC = 3 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
 
     # -- Segment Merging Parameters --
     MIN_INTERACTING_SEGMENT_DURATION_SEC = 0.7 # minimum duration for a interacting segment
