@@ -209,13 +209,14 @@ class InferenceConfig:
     
     # -- Person Related Parameters --
     PERSON_AVAILABLE_WINDOW_SEC = 20 # window duration for is_sustained_person_or_face_present (rule available)
-    MIN_PRESENCE_FRACTION = 0.05 # # At least 5% presence in PERSON_AVAILABLE_WINDOW_SEC window
+    MIN_PRESENCE_PERSON_FRACTION = 0.05 # # At least 5% presence in PERSON_AVAILABLE_WINDOW_SEC window
+    MIN_PRESENCE_OHS_FRACTION = 0.025 # # At least 5% presence in PERSON_AVAILABLE_WINDOW_SEC window
     PERSON_AUDIO_WINDOW_SEC = 2 # window duration for rule4_person_recent_speech
     KCHI_PERSON_BUFFER_FRAMES = 10 # number of frames to look back and forward for KCHI + visual presence
 
     # -- Audio Related Parameters --
     MAX_SAME_SPEAKER_GAP_SEC = 2.25 # maximum gap duration to consider same speaker segment
-    MIN_KCDS_DURATION_SEC = 1.5 # minimum duration of KCDS to consider for analysis
+    MIN_KCDS_DURATION_SEC = 2 # minimum duration of KCDS to consider for analysis
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
     SUSTAINED_KCDS_SEC = 3 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
 
@@ -232,7 +233,7 @@ class InferenceConfig:
     MIN_PERSON_PRESENCE_FRACTION = 0.04 # At least 4% person presence in segments available or alone for reclassification
     
     ROBUST_ALONE_WINDOW_SEC = 10  # Time window for sustained 'Alone' check (e.g., 7.5 seconds)
-    MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.25  # Max fraction (5%) of social signal frames allowed in the window for classification as 'Alone'
+    MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.05  # Max fraction (5%) of social signal frames allowed in the window for classification as 'Alone'
     # -- Hyperparameter Tuning Parameters --
     MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
     RANDOM_SAMPLING = True # Whether to use random sampling for hyperparameter tuning
