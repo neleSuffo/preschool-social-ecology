@@ -357,15 +357,20 @@ def check_audio_interaction_turn_taking(df, fps):
 def classify_frames(row, results_df, included_rules=None):
     """
     Hierarchical social interaction classifier with dynamic proximity and audio priority.
+    Also returns individual rule activations for analysis.
     
-    ADJUSTED CLASSIFICATION LOGIC:
-    1. INTERACTING: Active social engagement (Highest Priority) - Same rules (1-5).
+    CLASSIFICATION LOGIC:
+    1. INTERACTING: Active social engagement (Highest Priority)
+    - Turn-taking detected (Rule 1)
+    - OR Very close proximity (Rule 2)
+    - OR Sustained child-directed speech present (Rule 3)
+    - OR Face/Person + recent speech (Rule 4)
+    - OR KCHI + Buffered Visual (Rule 5)
     
-    2. ALONE: No social presence detected (Tier 2 Priority).
-       - True if: NO has_cds AND NO has_ohs AND NO person_or_face_present.
+    2. Available: Passive social presence (Tier 2)
+    - OHS is present OR Sustained Person/Face presence is true
     
-    3. AVAILABLE: Ambiguous/Low Presence (Tier 3 Catch-All).
-       - True if: Not Interacting AND Not Alone (i.e., at least one signal is present).
+    3. ALONE: No social presence detected
     
     Parameters
     ----------
@@ -387,84 +392,110 @@ def classify_frames(row, results_df, included_rules=None):
     if included_rules is None:
         included_rules = [1, 2, 3, 4, 5]
     
+    # Calculate recent speech activity once at the beginning
     current_index = row.name
     
-    # --- Lookback Window Setup for all Rules ---
+    # --- Evaluate Rule 1 (Turn-Taking) ---
+    rule1_turn_taking = bool(row['is_audio_interaction'])
     
-    # Rule 4: Person + Recent Speech (e.g., 5 seconds)
-    window_samples_rule4 = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * FPS / SAMPLE_RATE)
-    window_start_rule4 = max(0, current_index - window_samples_rule4)
-    recent_speech_exists = (results_df.loc[window_start_rule4:current_index, 'has_cds'] == 1).any()
+    # --- Evaluate Rule 2 (Very Close Proximity) ---
+    rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
     
-    # Rule 3: Sustained KCDS (e.g., 3 seconds)
+    # --- Evaluate Rule 3 (Sustained KCDS Speaking) ---
+    current_index = row.name
+    total_frames = len(results_df) # Total samples in the dataset
+    
+    # Window samples needed to satisfy the sustained duration (N)
     window_samples_rule3 = int(InferenceConfig.SUSTAINED_KCDS_SEC * FPS / SAMPLE_RATE)
-    window_start_rule3 = max(0, current_index - window_samples_rule3 + 1)
-    if row['has_cds'] == 1:
-        kcds_window_data = results_df.loc[window_start_rule3 : current_index, 'has_cds']
-        is_sustained_kcds = (kcds_window_data.sum() == len(kcds_window_data))
-    else:
-        is_sustained_kcds = False
-
-    # Rule 5: Buffered KCHI + Visual Presence (e.g., 30 frame buffer)
-    BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
-    is_kchi = (row['has_kchi'] == 1)
-    rule5_buffered_kchi = False
-    person_or_face_present_instant = (row['person_or_face_present'] == 1)
     
+    # Initialize flag to False
+    is_sustained_kcds = False
+
+    if row['has_cds'] == 1:
+        # Define the range of possible start indices for a window that includes the current frame.
+        # 1. Start of the earliest possible window (full lookback): current_index - N + 1
+        start_of_lookback_range = max(0, current_index - window_samples_rule3)
+        
+        # 2. End of the latest possible window (full lookahead): current_index
+        end_of_lookahead_range = min(current_index, total_frames - window_samples_rule3) 
+        
+        # Check every possible N-sample window that overlaps the current frame.
+        # A window starts at 'window_start' and ends at 'window_start + window_samples_rule3'.
+        # We only need to find ONE window where KCDS is 100% sustained.
+        
+        for window_start in range(start_of_lookback_range, end_of_lookahead_range + 1):
+            window_end = window_start + window_samples_rule3
+            
+            # Extract KCDS data for the current sliding window
+            kcds_window_data = results_df.loc[window_start : window_end, 'has_cds']
+            
+            # Check if the sum of 'has_cds' equals the size of the window (all frames must be 1)
+            if kcds_window_data.sum() == len(kcds_window_data):
+                is_sustained_kcds = True
+                break # Found a sustained segment, stop checking windows for this frame
+    rule3_kcds_speaking = is_sustained_kcds
+    
+    # --- Evaluate Rule 4 (Person/Face + Recent Speech) ---
+    window_samples = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * FPS / SAMPLE_RATE)
+    window_start = max(0, current_index - window_samples)
+    
+    # Check for recent KCDS in the window based on the original dataframe's index
+    recent_speech_exists = (results_df.loc[window_start:current_index, 'has_cds'] == 1).any()
+
+    # Check for person/face presence and OHS
+    person_or_face_present_instant = (row['person_or_face_present'] == 1)
+    has_ohs = (row['has_ohs'] == 1)
+
+    # --- Sustained Person/Face Presence for 'Available' (Tier 2 Visual Check) ---
+    window_samples_person = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * FPS / SAMPLE_RATE)
+    window_start_person = max(0, current_index - window_samples_person + 1)
+    
+    window_data_person = results_df.loc[window_start_person : current_index]
+    window_size = len(window_data_person)
+    
+    if window_size > 0:
+        person_count_in_window = (window_data_person['person_or_face_present'] == 1).sum()
+        presence_fraction = person_count_in_window / window_size
+        is_sustained_person_or_face_present = presence_fraction >= InferenceConfig.MIN_PRESENCE_FRACTION
+    else:
+        is_sustained_person_or_face_present = False
+    
+    rule4_person_recent_speech = bool(person_or_face_present_instant and recent_speech_exists)
+    
+    # Evaluate Rule 5 (KCHI + Buffered Visual Presence)
+    # --- NEW RULE 5: Buffered KCHI + Visual Presence (30 frame buffer) ---
+    BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
+    
+    is_kchi = (row['has_kchi'] == 1)
+    
+    rule5_buffered_kchi = False
     if is_kchi:
+        # Define window indices relative to the current index
         start_buffer = max(0, current_index - BUFFER_SAMPLES)
         end_buffer = min(len(results_df) - 1, current_index + BUFFER_SAMPLES)
+        
+        # Check if *any* person/face detection exists in the surrounding buffer
         if end_buffer >= start_buffer:
             visual_in_buffer = (
                 results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1
             ).any()
             rule5_buffered_kchi = visual_in_buffer
-    
-    # --- NEW ALONE CHECK: Robust Sustained Absence ---
-    
-    # 1. Define the parameters for the robust alone check (Requires new config constants)
-    # The constants must be defined in InferenceConfig: ROBUST_ALONE_WINDOW_SEC and MAX_ALONE_FALSE_POSITIVE_FRACTION
-    alone_lookback_sec = InferenceConfig.ROBUST_ALONE_WINDOW_SEC # e.g., 7.5s
-    alone_lookback_frame_diff = int(alone_lookback_sec * FPS / SAMPLE_RATE) # Convert seconds to samples
-    
-    robust_window_start_index = max(0, current_index - alone_lookback_frame_diff)
-    
-    window_data_alone = results_df.loc[robust_window_start_index : current_index]
-    
-    is_sustained_absence = False
-    
-    if not window_data_alone.empty:
-        window_size = len(window_data_alone)
-        
-        # Define ANY social signal as the sum of visual and auditory flags
-        social_signal_count = (
-            (window_data_alone['person_or_face_present'] == 1).sum() +
-            (window_data_alone['has_cds'] == 1).sum() +
-            (window_data_alone['has_ohs'] == 1).sum()
-        )
-        
-        social_signal_fraction = social_signal_count / window_size
-        
-        # Classified as Alone if the social signal fraction is BELOW the max tolerance
-        is_sustained_absence = social_signal_fraction <= InferenceConfig.MAX_ALONE_FALSE_POSITIVE_FRACTION
-
-    # --- Rule Tracking (Remains mostly unchanged) ---
-    
-    rule1_turn_taking = bool(row['is_audio_interaction'])
-    rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
-    rule3_kcds_speaking = is_sustained_kcds
-    rule4_person_recent_speech = bool(person_or_face_present_instant and recent_speech_exists)
-    
+            
+    # Tier 1: INTERACTING (Active engagement) - check only included rules
     active_rules = []
     
     if 1 in included_rules and rule1_turn_taking:
         active_rules.append(1)
+    
     if 2 in included_rules and rule2_close_proximity:
         active_rules.append(2)
+
     if 3 in included_rules and rule3_kcds_speaking:
         active_rules.append(3)
+    
     if 4 in included_rules and rule4_person_recent_speech:
         active_rules.append(4)
+
     if 5 in included_rules and rule5_buffered_kchi:
         active_rules.append(5)
 
@@ -472,12 +503,12 @@ def classify_frames(row, results_df, included_rules=None):
     
     if active_rules:
         interaction_category = "Interacting"
-    elif is_sustained_absence: # Tier 2: Use the new robust absence check for Alone
-        interaction_category = "Alone"
-    else:
-        # Tier 3: If not interacting, but sustained presence (fraction > 5%) exists
+    # Trigger 'Available' if (OHS is heard) OR (Sustained Person/Face Presence is true)
+    elif has_ohs or is_sustained_person_or_face_present: 
         interaction_category = "Available"
-            
+    else:
+        interaction_category = "Alone"
+    
     return (
         interaction_category, 
         rule1_turn_taking, 
