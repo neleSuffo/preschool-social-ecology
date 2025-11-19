@@ -514,7 +514,7 @@ def classify_frames(row, results_df, included_rules=None):
         interaction_category = "Available"
     else:
         # Fallback (This state should ideally be covered by Alone if data is complete)
-        interaction_category = "Available"
+        interaction_category = "Alone"
             
     return (
         interaction_category, 
