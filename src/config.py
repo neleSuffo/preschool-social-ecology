@@ -217,7 +217,7 @@ class InferenceConfig:
     MAX_SAME_SPEAKER_GAP_SEC = 2.25 # maximum gap duration to consider same speaker segment
     MIN_KCDS_DURATION_SEC = 1.5 # minimum duration of KCDS to consider for analysis
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
-    SUSTAINED_KCDS_SEC = 1.1 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
+    SUSTAINED_KCDS_SEC = 1 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
 
     # -- Segment Merging Parameters --
     MIN_INTERACTING_SEGMENT_DURATION_SEC = 0.7 # minimum duration for a interacting segment
