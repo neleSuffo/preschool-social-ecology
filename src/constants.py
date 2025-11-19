@@ -24,7 +24,7 @@ class DataPaths:
     CHILDLENS_PROCESSED_VIDEOS_LOG = Path(BasePaths.DATA_DIR/"childlens_processed_videos.log")
     SUBJECTS_CSV_PATH = Path(BasePaths.DATA_DIR/"age_group.csv")
     INFERENCE_DIR = Path(BasePaths.OUTPUT_DIR/"quantex_inference/")
-    INFERENCE_DB_PATH = Path(INFERENCE_DIR/"inference_shorts.db")
+    INFERENCE_DB_PATH = Path(INFERENCE_DIR/"inference.db")
 
 class AudioClassification:
     OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_classification")
