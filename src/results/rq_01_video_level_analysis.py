@@ -463,62 +463,6 @@ def reclassify_available_segments(segments_df, frame_data, detection_col='person
     print(f"   Reclassified {reclassified_count} 'Available' segments to 'Alone'.")
     return updated_segments_df
 
-
-def add_metadata_to_segments(segments_df, frame_data):
-    """
-    Add child_id and age information to segments.
-    
-    Parameters
-    ----------
-    segments_df : pd.DataFrame
-        DataFrame with segments
-    frame_data : pd.DataFrame
-        Frame-level data containing age information
-        
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with added metadata
-    """    
-    # Add child_id to segments_df using extract_child_id
-    segments_df['child_id'] = segments_df['video_name'].apply(extract_child_id)
-    
-    # Extract age information from frame_data (get unique video_name to age_at_recording mapping)
-    try:
-        # Get unique video_name to age_at_recording mapping from frame_data
-        age_mapping = frame_data[['video_name', 'age_at_recording']].drop_duplicates()
-        
-        # Merge age information based on video_name
-        segments_df = segments_df.merge(
-            age_mapping, 
-            on='video_name', 
-            how='left'
-        )
-        
-        # Check merge success
-        missing_age_count = segments_df['age_at_recording'].isna().sum()
-        if missing_age_count > 0:
-            print(f"⚠️ Warning: {missing_age_count} segments missing age data ({missing_age_count/len(segments_df)*100:.1f}%)")
-            
-            # Show some examples of unmatched video names
-            unmatched_videos = segments_df[segments_df['age_at_recording'].isna()]['video_name'].unique()[:5]
-            print(f"Examples of unmatched video names: {list(unmatched_videos)}")
-            
-    except KeyError:
-        print(f"⚠️ Warning: 'age_at_recording' column not found in frame data")
-        print("Proceeding without age information")
-        segments_df['age_at_recording'] = None
-    except Exception as e:
-        print(f"⚠️ Warning: Error extracting age data from frame data: {e}")
-        print("Proceeding without age information")
-        segments_df['age_at_recording'] = None
-
-    # Reorder columns so that child_id and age_at_recording come after video_name
-    cols = ['video_name', 'child_id', 'age_at_recording'] + [col for col in segments_df.columns if col not in ['video_name', 'child_id', 'age_at_recording']]
-    segments_df = segments_df.loc[:, cols]
-    
-    return segments_df
-
 def fill_gaps_between_segments(segments_df):
     """
     Final step: Extends the end time of every segment to meet the start time of the 
@@ -767,13 +711,10 @@ def main(output_file_path: Path, frame_data_path: Path):
     # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
     segments_df = fill_gaps_between_segments(segments_df)
     
-    # Step 7: Add metadata
-    segments_df = add_metadata_to_segments(segments_df, frame_data)
-    
-    # Step 8: Generate and print summary
+    # Step 7: Generate and print summary
     print_segment_summary(segments_df)
     
-    # Step 9: Save results
+    # Step 8: Save results
     segments_df.to_csv(output_file_path, index=False)
     segments_df.to_csv(Evaluation.PRED_SECONDWISE_FILE_PATH, index=False)
     print(f"✅ Saved {len(segments_df)} interaction segments to {output_file_path}")
