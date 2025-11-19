@@ -178,6 +178,12 @@ def main(db_path: Path = DataPaths.INFERENCE_DB_PATH):
             DataPaths.SUBJECTS_CSV_PATH,
             header=0, sep=',', encoding='utf-8'
         )
+        age_group_df['age_at_recording'] = (
+            age_group_df['age_at_recording']
+            .astype(str)
+            .str.replace(',', '.', regex=False)
+            .astype(float)
+        )
     except Exception as e:
         logging.error(f"Failed to load CSV at {DataPaths.SUBJECTS_CSV_PATH}: {str(e)}")
         return
