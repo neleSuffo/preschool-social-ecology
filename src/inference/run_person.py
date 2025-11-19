@@ -6,7 +6,7 @@ from typing import List, Callable
 from pathlib import Path
 from ultralytics import YOLO
 from tqdm import tqdm
-from constants import DataPaths, Inference, PersonClassification
+from constants import DataPaths, Inference, PersonDetection
 from config import PersonConfig
 from utils import get_video_id, get_frame_paths, extract_frame_number, load_processed_videos, save_processed_video
 
@@ -162,7 +162,7 @@ def main(video_list: List[str], frame_step: int = 10):
     cursor = conn.cursor()
     
     # Load YOLO face detection model
-    model = YOLO(PersonClassification.TRAINED_WEIGHTS_PATH)
+    model = YOLO(PersonDetection.TRAINED_WEIGHTS_PATH)
     
     # Process each video
     for video_name in videos_to_process:
