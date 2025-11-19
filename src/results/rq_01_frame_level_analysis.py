@@ -35,6 +35,8 @@ ROBUST_PERSON_FLAG = 'is_robust_person'
 ROBUST_OHS_FLAG = 'is_sustained_ohs'
 RECENT_KCDS_FLAG = 'has_recent_kcds'
 
+# configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def find_segments(video_df: pd.DataFrame, column_name: str) -> List[Dict]:
     """
@@ -220,8 +222,13 @@ def get_all_analysis_data(conn, video_list: list):
     ORDER BY fg.video_id, fg.frame_number
     """
     
+    df = pd.read_sql(query, conn, params=query_params)
+    
     # Pass the parameters to pd.read_sql for secure execution
-    return pd.read_sql(query, conn, params=query_params)
+    # save df temporarily for debugging
+    df.to_csv("/home/nele_pauline_suffo/outputs/quantex_inference/debug_all_analysis_data.csv", index=False)
+    print()
+    return df
 
 def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> pd.DataFrame:
     """
@@ -555,55 +562,6 @@ def classify_fused_category(row):
     except Exception:
         return 'no_person_or_face'
 
-def merge_age_information(df):
-    """
-    Merge age information from subjects CSV into the DataFrame.
-    
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Frame-level data with video_name column
-        
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with age information merged
-    """    
-    try:
-        subjects_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
-        
-        # Merge age information based on video_name
-        df_with_age = df.merge(
-            subjects_df[['video_name', 'age_at_recording', 'child_id']], 
-            on='video_name', 
-            how='left'
-        )
-        
-        # Check merge success
-        missing_age_count = df_with_age['age_at_recording'].isna().sum()
-        if missing_age_count > 0:
-            print(f"⚠️ Warning: {missing_age_count} frames missing age data ({missing_age_count/len(df_with_age)*100:.1f}%)")
-            
-            # Show some examples of unmatched video names
-            unmatched_videos = df_with_age[df_with_age['age_at_recording'].isna()]['video_name'].unique()[:5]
-            print(f"Examples of unmatched video names: {list(unmatched_videos)}")
-
-        # Reorder columns to put age near the beginning
-        cols = df_with_age.columns.tolist()
-        new_order = ['frame_number', 'video_id', 'video_name', 'child_id', 'age_at_recording'] + [col for col in cols if col not in ['frame_number', 'video_id', 'video_name', 'age_at_recording', 'child_id']]
-        df_with_age = df_with_age[new_order]
-        
-        return df_with_age
-        
-    except FileNotFoundError:
-        print(f"⚠️ Warning: Subjects CSV not found at {DataPaths.SUBJECTS_CSV_PATH}")
-        print("Proceeding without age information")
-        return df
-    except Exception as e:
-        print(f"⚠️ Warning: Error loading subjects data: {e}")
-        print("Proceeding without age information")
-        return df
-
 def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included_rules: list = None):
     """
     Main analysis function that orchestrates multimodal social interaction analysis.
@@ -681,7 +639,7 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
     # ------------------------------------------------------------------
     # 🔍 Perform analysis
     # ------------------------------------------------------------------
-    processed_videos = load_processed_videos(Inference.PERSON_LOG_FILE_PATH)
+    processed_videos = load_processed_videos(Inference.QUANTEX_VIDEOS_LIST_FILE)
 
     with sqlite3.connect(db_path) as conn:
         all_data = get_all_analysis_data(conn, processed_videos) 
@@ -714,9 +672,6 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
         all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
         all_data['fused_frame_category'] = all_data.apply(classify_fused_category, axis=1)
-
-        # Merge age info
-        all_data = merge_age_information(all_data)
 
         # ------------------------------------------------------------------
         # 💾 Save frame-level CSV to the timestamped output folder
