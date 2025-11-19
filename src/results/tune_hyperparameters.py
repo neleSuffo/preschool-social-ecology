@@ -187,7 +187,7 @@ def evaluate_combination(segment_output_path):
         # Load data
         save_path = segment_output_path.parent / "performance_results.txt"
         # Run evaluation (assumes eval_segment_performance.evaluate_performance is available)
-        _, _, detailed_metrics = run_evaluation(segment_output_path, binary_mode=False)
+        _, _, detailed_metrics = run_evaluation(segment_output_path, binary_mode=False, output_folder=segment_output_path.parent)
 
         # Calculate overall metrics directly from results
         if detailed_metrics:
@@ -238,7 +238,7 @@ def main(max_combinations=None):
     print(f"Will test {len(combinations)} combinations")
     
     # Ground truth path
-    ground_truth_path = Inference.GROUND_TRUTH_SEGMENTS_CSV
+    ground_truth_path = Evaluation.GROUND_TRUTH_SEGMENTS_CSV
     if not ground_truth_path.exists():
         print(f"❌ Ground truth file not found: {ground_truth_path}")
         return
