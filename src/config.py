@@ -77,6 +77,12 @@ class LabelMapping:
     unknown_label_id = -1
     unknown_supercategory = "unknown"
 
+class BookConfig:
+    """Configuration for book detection."""
+    MODEL_NAME = "yolo12l"
+    DATABASE_CATEGORY_IDS = [73]  # COCO category ID for 'book'
+    MODEL_ID = 5
+    
 # Specific Task Configurations
 class PersonConfig:
     """Configuration for person detection and classification."""
