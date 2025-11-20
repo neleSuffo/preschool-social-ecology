@@ -155,6 +155,23 @@ def setup_interaction_db(db_path: Path):
             FOREIGN KEY (model_id) REFERENCES Models(model_id)
         )
     ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS BookDetections (
+            detection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id INTEGER,
+            frame_number INTEGER,
+            model_id INTEGER,
+            confidence_score REAL,
+            x_min REAL,
+            y_min REAL,
+            x_max REAL,
+            y_max REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (video_id) REFERENCES Videos(video_id),
+            FOREIGN KEY (model_id) REFERENCES Models(model_id)
+        )
+    ''')
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS AudioClassifications (
@@ -184,7 +201,9 @@ def setup_interaction_db(db_path: Path):
         ('audio_voice_classification', 'Audio model for voice type classification',
         '{"has_kchi": {"0": "no", "1": "yes"}, "has_cds": {"0": "no", "1": "yes"}, "has_ohs": {"0": "no", "1": "yes"}}'),
         ('kchi_vocalization', 'ALICE for KCHI vocalization analysis',
-        '{"phonemes": "float", "syllables": "float", "words": "float"}')
+        '{"phonemes": "float", "syllables": "float", "words": "float"}'),
+        ('book_detection', 'YOLO model for book detection',
+        '')
     ''')
     
     conn.commit()
