@@ -127,12 +127,14 @@ def process_frame(frame_path: Path, video_id: int, frame_number: int,
                 # only insert book detections
                 if class_id in BookConfig.DATABASE_CATEGORY_IDS:
                     book_count += 1             
-                    # Insert into BookDetections table
+                    # Insert into BookDetections table                
                     cursor.execute('''
-                        INSERT INTO BookDetections 
-                        (video_id, frame_number, model_id, confidence_score)
-                        VALUES (?, ?, ?, ?)
-                    ''', (video_id, frame_number, BookConfig.MODEL_ID, float(confidence)))
+                    INSERT INTO BookDetections 
+                    (video_id, frame_number, model_id, confidence_score,
+                    x_min, y_min, x_max, y_max)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (video_id, frame_number, BookConfig.MODEL_ID, float(confidence), 
+                    float(x1), float(y1), float(x2), float(y2)))
                 
     return book_count
 
