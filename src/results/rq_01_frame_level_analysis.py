@@ -96,17 +96,20 @@ def find_segments(video_df: pd.DataFrame, column_name: str) -> List[Dict]:
 
 def get_all_analysis_data(conn, video_list: list):
     """
-    Multimodal data integration at configurable frame intervals.
+    Multimodal data integration at configurable frame intervals, 
+    EXCLUDING Face/Person Detections fully contained within Book Detections.
     
     Parameters:
     ----------
-    conn : sqlite3.Connection   
-        SQLite connection.
+    conn : sqlite3.Connection
+        SQLite connection to the database.
     video_list : list
-        List of video names to include in the analysis.
-    
+        List of video names to filter analysis on. If empty, process all videos.
+        
     Returns:
-        pd.DataFrame: Temporally-aligned dataset at SAMPLE_RATE intervals.
+    -------
+    pd.DataFrame
+        DataFrame containing the integrated analysis data.
     """
     # Ensure video list elements are str
     video_list = [str(v) for v in video_list]
@@ -126,38 +129,78 @@ def get_all_analysis_data(conn, video_list: list):
         logging.info("No video filter list provided. Processing all videos.")
         
     # ====================================================================
-    # STEP 1A: FACE DETECTION AGGREGATION
+    # STEP 0: CREATE EXCLUSION TEMPORARY TABLE
+    # (Identifies all Face/Person detections that are 100% contained in a Book)
     # ====================================================================
-    # Aggregate face detections, ensuring they align with the temporal grid.
     
+    # Exclude Face Detections contained in Books
+    conn.execute(f"""
+    CREATE TEMP TABLE IF NOT EXISTS ExcludedFaceDetections AS
+    SELECT 
+        fd.detection_id
+    FROM FaceDetections fd
+    JOIN BookDetections bd 
+        ON fd.frame_number = bd.frame_number AND fd.video_id = bd.video_id
+    WHERE 
+        -- 100% CONTAINMENT CHECK: Face BB is fully inside Book BB
+        -- (Face_min >= Book_min) AND (Face_max <= Book_max)
+        fd.x_min >= bd.x_min AND 
+        fd.y_min >= bd.y_min AND
+        fd.x_max <= bd.x_max AND
+        fd.y_max <= bd.y_max;
+    """)
+
+    # Exclude Person Detections contained in Books
+    conn.execute(f"""
+    CREATE TEMP TABLE IF NOT EXISTS ExcludedPersonDetections AS
+    SELECT 
+        pc.classification_id
+    FROM PersonClassifications pc
+    JOIN BookDetections bd 
+        ON pc.frame_number = bd.frame_number AND pc.video_id = bd.video_id
+    WHERE 
+        pc.x_min >= bd.x_min AND 
+        pc.y_min >= bd.y_min AND
+        pc.x_max <= bd.x_max AND
+        pc.y_max <= bd.y_max;
+    """)
+
+    # ====================================================================
+    # STEP 1A: FACE DETECTION AGGREGATION (FILTERED)
+    # ====================================================================
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS FaceAgg AS
-    SELECT DISTINCT
-        frame_number, 
-        video_id, 
-        proximity,
+    SELECT
+        fd.frame_number, 
+        fd.video_id, 
+        MAX(fd.proximity) AS proximity,
         1 AS has_face
-    FROM FaceDetections
-    WHERE frame_number % ? = 0;
+    FROM FaceDetections fd
+    WHERE 
+        fd.frame_number % ? = 0 
+        -- FILTER: Exclude any detection blacklisted by the media check
+        AND fd.detection_id NOT IN (SELECT detection_id FROM ExcludedFaceDetections)
+    GROUP BY fd.frame_number, fd.video_id;
     """, (SAMPLE_RATE,))
     
     # ====================================================================
-    # STEP 1B: PERSON DETECTION AGGREGATION (NEW)
+    # STEP 1B: PERSON DETECTION AGGREGATION (FILTERED)
     # ====================================================================
-    # Aggregate person detections (single "person" class), aligning with the grid.
-    
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS PersonAgg AS
-    SELECT DISTINCT
-        frame_number, 
-        video_id, 
+    SELECT DISTINCT 
+        pc.frame_number, 
+        pc.video_id, 
         1 AS has_person
-    FROM PersonClassifications
-    WHERE frame_number % ? = 0;
+    FROM PersonClassifications pc
+    WHERE 
+        pc.frame_number % ? = 0
+        -- FILTER: Exclude any detection blacklisted by the media check
+        AND pc.detection_id NOT IN (SELECT detection_id FROM ExcludedPersonDetections);
     """, (SAMPLE_RATE,))
-    
+
     # ====================================================================
-    # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID
+    # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID (UNCHANGED)
     # ====================================================================
     
     query = f"""
@@ -224,10 +267,9 @@ def get_all_analysis_data(conn, video_list: list):
     
     df = pd.read_sql(query, conn, params=query_params)
     
-    # Pass the parameters to pd.read_sql for secure execution
     # save df temporarily for debugging
-    df.to_csv("/home/nele_pauline_suffo/outputs/quantex_inference/debug_all_analysis_data.csv", index=False)
-    print()
+    # df.to_csv("/home/nele_pauline_suffo/outputs/quantex_inference/debug_all_analysis_data.csv", index=False)
+    # print()
     return df
 
 def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> pd.DataFrame:
@@ -517,7 +559,7 @@ def classify_frames(row, results_df, included_rules=None):
     elif is_sustained_absence:
         interaction_category = "Alone"
     # --- Tier 3: AVAILABLE (Triggered by sustained presence, but no interaction) ---
-    elif is_sustained_ohs or is_robust_person_presence: 
+    elif is_sustained_ohs and is_robust_person_presence: 
         interaction_category = "Available"
     else:
         # Fallback (This state should ideally be covered by Alone if data is complete)
