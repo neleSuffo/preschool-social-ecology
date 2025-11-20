@@ -112,6 +112,7 @@ class Inference:
     PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
     SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
+    BOOK_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "book_processed.txt"
     FRAME_LEVEL_INTERACTIONS_CSV = Path("01_frame_level_social_interactions.csv")
     INTERACTION_SEGMENTS_CSV = Path("01_interaction_segments.csv")
     UTTERANCE_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_utterance_segments.csv"
