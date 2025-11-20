@@ -37,7 +37,7 @@ def process_video(
     conn: sqlite3.Connection
         SQLite connection.
     process_frame_func: Callable[[Path, int, int, YOLO, sqlite3.Cursor], int]
-        Function that processes a single frame and returns an int (number of faces detected).
+        Function that processes a single frame and returns an int (number of persons detected).
     """
     logging.info(f"Processing video: {video_name}")
 
@@ -124,12 +124,15 @@ def process_frame(frame_path: Path, video_id: int, frame_number: int,
                 confidence = box.conf[0].cpu().numpy()
                 class_id = int(box.cls[0].cpu().numpy())
                 
-                # Insert into PersonClassifications table
+                # Insert into PersonDetections table
                 cursor.execute('''
-                    INSERT INTO PersonClassifications 
-                    (video_id, frame_number, model_id, confidence_score, age_class)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (video_id, frame_number, PersonConfig.MODEL_ID, float(confidence), "adult"))
+                    INSERT INTO PersonDetections 
+                    (video_id, frame_number, model_id, confidence_score, age_class,
+                    x_min, y_min, x_max, y_max)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (video_id, frame_number, PersonConfig.MODEL_ID, float(confidence), 0, 
+                    float(x1), float(y1), float(x2), float(y2)))
+                
                 
                 person_count += 1
 
