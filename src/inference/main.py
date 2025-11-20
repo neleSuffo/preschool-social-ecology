@@ -3,6 +3,7 @@ import argparse
 import run_face_proximity
 import populate_speech_db as run_speech_type
 import run_person
+import run_book
 from pathlib import Path
 from setup_interaction_db import main as setup_interaction_db
 from constants import DataPaths, Inference
@@ -83,7 +84,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
         
         # Determine which models to run
         if models is None or 'all' in models:
-            models_to_run = ['person', 'face_proximity', 'speech_type']
+            models_to_run = ['person', 'face_proximity', 'speech_type', 'book']
         else:
             models_to_run = models
         
@@ -91,6 +92,10 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
         if 'person' in models_to_run:
             logging.info("Running person detection model")
             run_person.main(selected_videos)
+        
+        if 'book' in models_to_run:
+            logging.info("Running book detection model")
+            run_book.main(selected_videos)
         
         if 'face_proximity' in models_to_run:
             logging.info("Running face model with proximity heuristic")
@@ -113,7 +118,7 @@ if __name__ == "__main__":
     parser.add_argument("--video_path", type=Path, default=Inference.QUANTEX_VIDEOS_LIST_FILE, help="Path to video file or directory containing videos")
     parser.add_argument("--db_path", type=Path, default=DataPaths.INFERENCE_DB_PATH, help="Path to the database where results will be stored")
     parser.add_argument("--frame_step", type=int, default=InferenceConfig.SAMPLE_RATE, help="Frame step size for processing videos")
-    parser.add_argument("--models", nargs='+', choices=['person', 'face_proximity', 'speech_type', 'all'], default=['all'],  help="Select which models to run. Options: person, face_proximity, speech_type, all")
+    parser.add_argument("--models", nargs='+', choices=['person', 'face_proximity', 'speech_type', 'book', 'all'], default=['all'],  help="Select which models to run. Options: person, face_proximity, speech_type, book, all")
     args = parser.parse_args()
     
     main(
