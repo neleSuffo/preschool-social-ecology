@@ -45,9 +45,26 @@ def store_video_data(age_group_df: pd.DataFrame, conn: sqlite3.Connection):
             # Parse recording date (format: dd.mm.yyyy)
             recording_date = pd.to_datetime(recording_date_str, format="%d.%m.%Y")
 
-            # ---------- NEW: determine max_frame ----------
-            video_path = Path(DataPaths.RAW_VIDEOS_DIR) / video_name
-            max_frame = get_max_frame_count(video_path)
+            # Determine max frame
+            # check for .MP4 and .mp4
+            
+            video_base = Path(DataPaths.QUANTEX_VIDEOS_INPUT_DIR) / video_name
+
+            # Find the actual file independent of extension
+            matched_files = list(video_base.parent.glob(f"{video_base.stem}.*"))
+
+            if not matched_files:
+                raise FileNotFoundError(f"No file found for base name: {video_name}")
+
+            # Normalize extension to handle .mp4 / .MP4 / .mP4 / .Mp4 etc.
+            video_path = matched_files[0]
+            ext = video_path.suffix.lower()
+
+            if ext == ".mp4":
+                # use video_path from here
+                max_frame = get_max_frame_count(video_path)
+            else:
+                raise ValueError(f"Unsupported extension: {ext}")
 
             # Prepare table output log
             video_data.append({
@@ -196,13 +213,13 @@ def setup_interaction_db(db_path: Path):
         INSERT OR IGNORE INTO Models (model_name, description, output_variables) VALUES 
         ('yolo_face_detection', 'YOLO model for face detection with age classification', 
         '{"age_class": {"0": "child_face", "1": "adult_face"}, "proximity": "continuous_value"}'),
-        ('cnn_rnn_person_classification', 'CNN+RNN model for person presence classification',
+        ('yolo_person_detection', 'CNN+RNN model for person presence classification',
         '{"has_adult_person": {"0": "no", "1": "yes"}, "has_child_person": {"0": "no", "1": "yes"}}'),
         ('audio_voice_classification', 'Audio model for voice type classification',
         '{"has_kchi": {"0": "no", "1": "yes"}, "has_cds": {"0": "no", "1": "yes"}, "has_ohs": {"0": "no", "1": "yes"}}'),
         ('kchi_vocalization', 'ALICE for KCHI vocalization analysis',
         '{"phonemes": "float", "syllables": "float", "words": "float"}'),
-        ('book_detection', 'YOLO model for book detection',
+        ('yolo_book_detection', 'YOLO model for book detection',
         '')
     ''')
     
@@ -227,7 +244,7 @@ def main(db_path: Path = DataPaths.INFERENCE_DB_PATH):
     try:
         age_group_df = pd.read_csv(
             DataPaths.SUBJECTS_CSV_PATH,
-            header=0, sep=',', encoding='utf-8'
+            header=0, sep=';', encoding='utf-8'
         )
         age_group_df['age_at_recording'] = (
             age_group_df['age_at_recording']
