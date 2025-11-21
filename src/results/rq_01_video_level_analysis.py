@@ -558,6 +558,8 @@ def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_
     Reclassify 'Alone' segments to 'Available' if they contain sufficient evidence
     of partner presence (visual or audio) that exceeds defined thresholds.
     
+    (EXCLUDES segments where the frame-level classification was ALONE due to MEDIA.)
+    
     CRITERIA FOR RECLASSIFICATION (Alone -> Available):
     1. Segment type must be 'Alone'.
     2. Segment length must be longer than MIN_RECLASSIFY_DURATION_SEC (to avoid short noise).
@@ -578,8 +580,8 @@ def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_
     pd.DataFrame
         DataFrame with reclassified segments.
     """        
-    # Ensure necessary columns exist
-    required_cols = [detection_col, 'has_cds', 'has_ohs']
+    # Ensure necessary columns exist (including the new media flag for exclusion)
+    required_cols = [detection_col, 'has_cds', 'has_ohs', 'is_media_interaction'] 
     if not all(col in frame_data.columns for col in required_cols):
         print(f"⚠️ Warning: Required frame columns {required_cols} not found. Skipping alone reclassification.")
         return segments_df
@@ -603,7 +605,7 @@ def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_
             if segment['duration_sec'] <= InferenceConfig.MIN_RECLASSIFY_DURATION_SEC:
                continue
 
-            # --- Extract Segment Frames ---
+            # --- Condition 3: Exclude Media Interaction Segments ---
             video_name = segment['video_name']
             start_frame = segment['segment_start']
             end_frame = segment['segment_end']
@@ -614,15 +616,22 @@ def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_
                 (current_video_frames['frame_number'] <= end_frame)
             ]
             
+            # Check if *any* frame in the segment was flagged as media interaction
+            # If any frame was flagged as media interaction, we assume the whole segment
+            # was derived from that state and should not be reclassified.
+            if segment_frames['is_media_interaction'].any():
+                 print(f"   [Alone->Available] Segment {segment['start_time_sec']:.1f}s skipped due to MEDIA flag.")
+                 continue
+            
             total_frames = len(segment_frames)
             if total_frames == 0:
                 continue
                 
-            # --- Condition 3: Visual Presence Check (> 5%) ---
+            # --- Condition 4: Visual Presence Check (> 5%) ---
             person_count = (segment_frames[detection_col] == 1).sum()
             visual_fraction = person_count / total_frames
             
-            # --- Condition 4: Partner Audio Check (> 5%) ---
+            # --- Condition 5: Partner Audio Check (> 5%) ---
             partner_audio_count = (
                 (segment_frames['has_cds'] == 1) | 
                 (segment_frames['has_ohs'] == 1)
@@ -634,11 +643,11 @@ def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_
             should_reclassify = False
             
             if visual_fraction > InferenceConfig.ALONE_RECLASSIFY_VISUAL_THRESHOLD:
-                print(f"   [Alone->Available] Segment {segment['start_time_sec']:.1f}s: Visual frac {visual_fraction:.2f} > {InferenceConfig.ALONE_RECLASSIFY_VISUAL_THRESHOLD}")
+                # print(f"   [Alone->Available] Segment {segment['start_time_sec']:.1f}s: Visual frac {visual_fraction:.2f} > {InferenceConfig.ALONE_RECLASSIFY_VISUAL_THRESHOLD}")
                 should_reclassify = True
 
             if audio_fraction > InferenceConfig.ALONE_RECLASSIFY_AUDIO_THRESHOLD:
-                print(f"   [Alone->Available] Segment {segment['start_time_sec']:.1f}s: Audio frac {audio_fraction:.2f} > {InferenceConfig.ALONE_RECLASSIFY_AUDIO_THRESHOLD}")
+                # print(f"   [Alone->Available] Segment {segment['start_time_sec']:.1f}s: Audio frac {audio_fraction:.2f} > {InferenceConfig.ALONE_RECLASSIFY_AUDIO_THRESHOLD}")
                 should_reclassify = True
 
             if should_reclassify:
