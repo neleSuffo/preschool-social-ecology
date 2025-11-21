@@ -83,6 +83,8 @@ def load_ground_truth(label_path: str, img_width: int, img_height: int) -> Tuple
 def process_and_save(image_path, output_dir, cut_face, filter_proximity):
     """
     Process the image for face detection and save the results.
+    The function can either save cropped face images or an annotated image
+    with detected faces, depending on the `cut_face` parameter.
     
     Parameters:
     -----------
@@ -116,27 +118,25 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
         for i, (bbox, class_id) in enumerate(zip(results.xyxy, results.class_id)):
             x1, y1, x2, y2 = map(int, bbox)
             proximity = calculate_proximity([x1, y1, x2, y2], class_id)
-            if proximity > 0.3:
-                face_crop = image[y1:y2, x1:x2]
-                face_filename = f"{image_path.stem}_face_{i+1}.PNG"
-                face_path = output_dir / face_filename
-                cv2.imwrite(str(face_path), face_crop)
-                logging.info(f"Saved face crop: {face_path} (proximity={proximity:.2f})")
-                saved_any = True
+            face_crop = image[y1:y2, x1:x2]
+            face_filename = f"{image_path.stem}_face_{i+1}.PNG"
+            face_path = output_dir / face_filename
+            cv2.imwrite(str(face_path), face_crop)
+            logging.info(f"Saved face crop: {face_path} (proximity={proximity:.2f})")
+            saved_any = True
     else:
         # Only save annotated image if at least one face passes proximity filter
         keep_indices = []
         for i, (bbox, class_id) in enumerate(zip(results.xyxy, results.class_id)):
             x1, y1, x2, y2 = map(int, bbox)
             proximity = calculate_proximity([x1, y1, x2, y2], class_id)
-            if proximity > 0.3:
-                keep_indices.append(i)
+            keep_indices.append(i)
             if results.xyxy is None or len(results.xyxy) == 0:
                 logging.info("No detections in this image.")
                 return
 
             if not keep_indices:
-                logging.info(f"No faces with proximity > 0.3 found in {image_path}")
+                logging.info(f"No faces found in {image_path}")
                 return
 
             filtered_results = Detections(
@@ -155,7 +155,7 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
                     raise RuntimeError(f"Failed to save image to {output_path}")
             logging.info(f"Annotated image saved to: {output_path}")
         else:
-            logging.info(f"No faces with proximity > 0.3 found in {image_path}")
+            logging.info(f"No faces found in {image_path}")
             
 def main():
     parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
