@@ -34,6 +34,7 @@ SUSTAINED_KCDS_FLAG = 'is_sustained_kcds'
 ROBUST_PERSON_FLAG = 'is_robust_person'
 ROBUST_OHS_FLAG = 'is_sustained_ohs'
 RECENT_KCDS_FLAG = 'has_recent_kcds'
+MEDIA_INTERACTION_FLAG = 'is_media_interaction'
 
 # configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -97,14 +98,15 @@ def find_segments(video_df: pd.DataFrame, column_name: str) -> List[Dict]:
 def get_all_analysis_data(conn, video_list: list):
     """
     Multimodal data integration at configurable frame intervals, 
-    EXCLUDING Face/Person Detections fully contained within Book Detections.
+    EXCLUDING Face/Person Detections fully contained within Book Detections,
+    and including the aggregated book presence.
     
     Parameters:
     ----------
     conn : sqlite3.Connection
         SQLite connection to the database.
     video_list : list
-        List of video names to filter analysis on. If empty, process all videos.
+        List of video names to filter analysis on.
         
     Returns:
     -------
@@ -114,23 +116,19 @@ def get_all_analysis_data(conn, video_list: list):
     # Ensure video list elements are str
     video_list = [str(v) for v in video_list]
     
-    # Check if a video list was provided and is not empty
     if video_list:
-        # Create placeholders for the IN clause (?, ?, ?)
         placeholders = ','.join('?' for _ in video_list)
         video_filter_clause = f"WHERE video_name IN ({placeholders})"
         query_params = tuple(video_list)
         
         logging.info(f"Filtering analysis for {len(video_list)} videos.")
     else:
-        # If no list is provided, process all videos
         video_filter_clause = ""
         query_params = ()
         logging.info("No video filter list provided. Processing all videos.")
         
     # ====================================================================
     # STEP 0: CREATE EXCLUSION TEMPORARY TABLE
-    # (Identifies all Face/Person detections that are 100% contained in a Book)
     # ====================================================================
     
     # Exclude Face Detections contained in Books
@@ -142,8 +140,6 @@ def get_all_analysis_data(conn, video_list: list):
     JOIN BookDetections bd 
         ON fd.frame_number = bd.frame_number AND fd.video_id = bd.video_id
     WHERE 
-        -- 100% CONTAINMENT CHECK: Face BB is fully inside Book BB
-        -- (Face_min >= Book_min) AND (Face_max <= Book_max)
         fd.x_min >= bd.x_min AND 
         fd.y_min >= bd.y_min AND
         fd.x_max <= bd.x_max AND
@@ -154,8 +150,8 @@ def get_all_analysis_data(conn, video_list: list):
     conn.execute(f"""
     CREATE TEMP TABLE IF NOT EXISTS ExcludedPersonDetections AS
     SELECT 
-        pc.classification_id
-    FROM PersonClassifications pc
+        pc.detection_id
+    FROM PersonDetections pc
     JOIN BookDetections bd 
         ON pc.frame_number = bd.frame_number AND pc.video_id = bd.video_id
     WHERE 
@@ -178,7 +174,6 @@ def get_all_analysis_data(conn, video_list: list):
     FROM FaceDetections fd
     WHERE 
         fd.frame_number % ? = 0 
-        -- FILTER: Exclude any detection blacklisted by the media check
         AND fd.detection_id NOT IN (SELECT detection_id FROM ExcludedFaceDetections)
     GROUP BY fd.frame_number, fd.video_id;
     """, (SAMPLE_RATE,))
@@ -192,15 +187,28 @@ def get_all_analysis_data(conn, video_list: list):
         pc.frame_number, 
         pc.video_id, 
         1 AS has_person
-    FROM PersonClassifications pc
+    FROM PersonDetections pc
     WHERE 
         pc.frame_number % ? = 0
-        -- FILTER: Exclude any detection blacklisted by the media check
         AND pc.detection_id NOT IN (SELECT detection_id FROM ExcludedPersonDetections);
     """, (SAMPLE_RATE,))
 
     # ====================================================================
-    # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID (UNCHANGED)
+    # STEP 1C (NEW): BOOK DETECTION AGGREGATION
+    # ====================================================================
+    conn.execute("""
+    CREATE TEMP TABLE IF NOT EXISTS BookAgg AS
+    SELECT DISTINCT 
+        bd.frame_number, 
+        bd.video_id, 
+        1 AS has_book
+    FROM BookDetections bd
+    WHERE 
+        bd.frame_number % ? = 0;
+    """, (SAMPLE_RATE,))
+
+    # ====================================================================
+    # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID
     # ====================================================================
     
     query = f"""
@@ -237,15 +245,15 @@ def get_all_analysis_data(conn, video_list: list):
         fg.video_id,
         fg.video_name,
         
-        -- PERSON DETECTION MODALITY (LEFT JOIN onto the grid)
+        -- PERSON DETECTION MODALITY
         COALESCE(pa.has_person, 0) AS has_person, 
         
-        -- AUDIO CLASSIFICATION MODALITY (LEFT JOIN onto the grid)
+        -- AUDIO CLASSIFICATION MODALITY
         COALESCE(af.has_kchi, 0) AS has_kchi,
         COALESCE(af.has_ohs, 0) AS has_ohs,
         COALESCE(af.has_cds, 0) AS has_cds,
         
-        -- FACE DETECTION MODALITY (LEFT JOIN onto the grid)
+        -- FACE DETECTION MODALITY
         COALESCE(fa.has_face, 0) AS has_face,
         fa.proximity,
         
@@ -253,7 +261,10 @@ def get_all_analysis_data(conn, video_list: list):
         CASE 
             WHEN COALESCE(fa.has_face, 0)=1 OR COALESCE(pa.has_person, 0)=1 THEN 1 
             ELSE 0 
-        END AS person_or_face_present
+        END AS person_or_face_present,
+        
+        -- NEW: BOOK DETECTION MODALITY
+        COALESCE(ba.has_book, 0) AS has_book
 
     FROM FrameGrid fg
     LEFT JOIN AudioClassifications af 
@@ -262,14 +273,14 @@ def get_all_analysis_data(conn, video_list: list):
         ON fg.frame_number = fa.frame_number AND fg.video_id = fa.video_id
     LEFT JOIN PersonAgg pa
         ON fg.frame_number = pa.frame_number AND fg.video_id = pa.video_id
+    -- NEW JOIN: Join to Book Aggregation
+    LEFT JOIN BookAgg ba
+        ON fg.frame_number = ba.frame_number AND fg.video_id = ba.video_id
     ORDER BY fg.video_id, fg.frame_number
     """
     
     df = pd.read_sql(query, conn, params=query_params)
     
-    # save df temporarily for debugging
-    # df.to_csv("/home/nele_pauline_suffo/outputs/quantex_inference/debug_all_analysis_data.csv", index=False)
-    # print()
     return df
 
 def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> pd.DataFrame:
@@ -299,6 +310,7 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     N_avail = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * samples_per_sec)
     N_recent_speech = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * samples_per_sec)
     N_alone = int(InferenceConfig.ROBUST_ALONE_WINDOW_SEC * samples_per_sec)
+    N_media = int(InferenceConfig.MEDIA_WINDOW_SEC * samples_per_sec)
     
     # Rule 5 Buffer size (N_buffer)
     N_buffer = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / sample_rate)
@@ -372,8 +384,33 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
         df[RECENT_KCDS_FLAG] = df['has_cds'].rolling(window=N_recent_speech, min_periods=1).max().fillna(0).astype(bool).shift(1).fillna(False)
     else:
          df[RECENT_KCDS_FLAG] = False
+         
+    # --- 6. Media Interaction Check ---
+    if N_media > 0:
+        # Calculate rolling fractions
+        df['book_frac'] = df['has_book'].rolling(window=N_media, min_periods=N_media).mean()
+        df['cds_ohs_frac'] = (df['has_cds'] + df['has_ohs']).rolling(window=N_media, min_periods=N_media).mean() / 2
+        df['kchi_frac'] = df['has_kchi'].rolling(window=N_media, min_periods=N_media).mean()
+
+        # Check for sustained book and sustained adult-like audio
+        sustained_book = (df['book_frac'] >= InferenceConfig.MIN_BOOK_PRESENCE_FRACTION)
+        sustained_adult_audio = (df['cds_ohs_frac'] >= InferenceConfig.MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA) 
         
-    return df[['video_id', 'frame_number', SUSTAINED_KCDS_FLAG, ROBUST_PERSON_FLAG, ROBUST_OHS_FLAG, ROBUST_ALONE_FLAG, RECENT_KCDS_FLAG]].copy()
+        # Check for non-reciprocal audio (child is quiet)
+        non_reciprocal_kchi = (df['kchi_frac'] <= InferenceConfig.MAX_KCHI_FRACTION_FOR_MEDIA)
+        
+        # Combine conditions for the media flag
+        df[MEDIA_INTERACTION_FLAG] = (
+            sustained_book & 
+            sustained_adult_audio & 
+            non_reciprocal_kchi
+        ).rolling(window=N_media, min_periods=1, center=True).max().fillna(False).astype(bool)
+        
+    else:
+        df[MEDIA_INTERACTION_FLAG] = False
+        
+    return df[['video_id', 'frame_number', SUSTAINED_KCDS_FLAG, ROBUST_PERSON_FLAG, 
+               ROBUST_OHS_FLAG, ROBUST_ALONE_FLAG, RECENT_KCDS_FLAG, MEDIA_INTERACTION_FLAG]].copy()
 
 def check_audio_interaction_turn_taking(df, fps):
     """
@@ -522,7 +559,8 @@ def classify_frames(row, results_df, included_rules=None):
     # Available/Alone Flags
     is_sustained_ohs = bool(row[ROBUST_OHS_FLAG])
     is_robust_person_presence = bool(row[ROBUST_PERSON_FLAG])
-    is_sustained_absence = bool(row[ROBUST_ALONE_FLAG]) # This flag is TRUE when ALONE is robustly detected
+    is_sustained_absence = bool(row[ROBUST_ALONE_FLAG])
+    is_media_interaction = bool(row[MEDIA_INTERACTION_FLAG])
     
     # --- Rule 5: Buffered KCHI (Still needs lookahead/lookback) ---
     BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
@@ -555,14 +593,16 @@ def classify_frames(row, results_df, included_rules=None):
 
     if active_rules:
         interaction_category = "Interacting"
-    # --- Tier 2: ALONE (Based on Robust Absence) ---
-    elif is_sustained_absence:
+    elif is_sustained_absence: 
         interaction_category = "Alone"
-    # --- Tier 3: AVAILABLE (Triggered by sustained presence, but no interaction) ---
-    elif is_sustained_ohs and is_robust_person_presence: 
-        interaction_category = "Available"
+    elif is_sustained_ohs or is_robust_person_presence:         
+        if is_media_interaction:
+            # If the criteria for 'Available' are met, but it correlates with sustained non-reciprocal media, classify as ALONE.
+            interaction_category = "Alone"
+        else:
+            interaction_category = "Available"
+            
     else:
-        # Fallback (This state should ideally be covered by Alone if data is complete)
         interaction_category = "Alone"
             
     return (
@@ -691,12 +731,11 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         
         # --- PHASE 2: VECTORIZED WINDOW FEATURE CALCULATION (HUGE SPEEDUP) ---
         print("⏱️ Pre-calculating all windowed features using rolling statistics...")
-        window_flags_df = calculate_window_features(all_data[['video_id', 'frame_number', 'has_cds', 'has_ohs', 'person_or_face_present']].copy(), FPS, SAMPLE_RATE)
-        
+        window_flags_df = calculate_window_features(all_data[['video_id', 'frame_number', 'has_kchi', 'has_cds', 'has_ohs', 'person_or_face_present', 'has_book']].copy(), FPS, SAMPLE_RATE)
         # Merge the pre-calculated features back into the main DataFrame
         all_data = pd.concat([all_data, window_flags_df.drop(columns=['video_id', 'frame_number'], errors='ignore')], axis=1)
 
-        # --- PHASE 3: HIERARCHICAL CLASSIFICATION (Now relies on the vectorized flags) ---
+        # --- PHASE 3: HIERARCHICAL CLASSIFICATION ---
         classification_results = all_data.apply(
             lambda row: classify_frames(row, all_data, included_rules), axis=1
         )
