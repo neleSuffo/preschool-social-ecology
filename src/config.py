@@ -228,8 +228,8 @@ class InferenceConfig:
 
 
     # --- Media Related Parameters --
-    MEDIA_WINDOW_SEC = 10  # Time window for sustained 'Media' check
-    MIN_BOOK_PRESENCE_FRACTION = 0.8  # At least 80% media presence in the MEDIA_WINDOW_SEC window
+    MEDIA_WINDOW_SEC = 15  # Time window for sustained 'Media' check
+    MIN_BOOK_PRESENCE_FRACTION = 0.7  # At least 70% media presence in the MEDIA_WINDOW_SEC window
     MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA = 0.05  # At least 5% OHS/KCDS presence in the MEDIA_WINDOW_SEC window
     MAX_KCHI_FRACTION_FOR_MEDIA = 0.1  # Maximum fraction of KCHI presence allowed for media interaction
     
