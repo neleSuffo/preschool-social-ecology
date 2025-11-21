@@ -121,6 +121,7 @@ class Inference:
     CDS_SUMMARY_CSV = BASE_OUTPUT_DIR / "04_cds_summary.csv"
     PRESENCE_CSV = BASE_OUTPUT_DIR / "05_presence.csv"
     INTERACTION_COMPOSITION_CSV = BASE_OUTPUT_DIR / "06_interaction_composition.csv"
+    TEMP_CUT_FACE_DIR = BASE_OUTPUT_DIR / "temp_cut_faces"
     
 class Evaluation:
     BASE_OUTPUT_DIR = BasePaths.OUTPUT_DIR / "segment_evaluation"
