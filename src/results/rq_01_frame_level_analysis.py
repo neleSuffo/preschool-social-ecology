@@ -14,7 +14,8 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict
+from deepface import DeepFace
+from typing import List, Dict, Optional, Tuple
 
 # Get the src directory (2 levels up from current notebook location)
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
@@ -38,6 +39,50 @@ MEDIA_INTERACTION_FLAG = 'is_media_interaction'
 
 # configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
+def get_raw_face_bboxes_for_frames(conn, video_id: int, start_frame: int, end_frame: int) -> pd.DataFrame:
+    """
+    Retrieves face detections (bounding boxes + proximity) for a frame range of a given video.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        SQLite connection to the database.
+    video_id : int
+        ID of the video to query.
+    start_frame : int
+        Starting frame number (inclusive).
+    end_frame : int
+        Ending frame number (inclusive).
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing face detections with columns:
+        [frame_number, x_min, y_min, x_max, y_max, proximity, has_face, detection_id]
+    """
+    query = """
+        SELECT detection_id, frame_number, x_min, y_min, x_max, y_max  
+        FROM FaceDetections
+        WHERE video_id = ?
+        AND frame_number BETWEEN ? AND ?
+        ORDER BY frame_number ASC;
+    """
+
+    try:
+        df = pd.read_sql_query(
+            query,
+            conn,
+            params=(video_id, start_frame, end_frame)
+        )
+        return df
+
+    except Exception as e:
+        logging.error(f"Database error in get_raw_face_bboxes_for_frames: {e}")
+        return pd.DataFrame(columns=[
+            "frame_number", "x_min", "y_min", "x_max", "y_max",
+            "proximity", "has_face", "detection_id"
+        ])
 
 def find_segments(video_df: pd.DataFrame, column_name: str) -> List[Dict]:
     """
@@ -644,6 +689,311 @@ def classify_fused_category(row):
     except Exception:
         return 'no_person_or_face'
 
+def get_reference_bb_at_segment_start(
+    conn: sqlite3.Connection, 
+    video_id: int, 
+    current_index: int, 
+    video_df: pd.DataFrame
+) -> Optional[Tuple]:
+    """
+    Back-tracks from the current_index (which is the last frame of the Media-Alone segment) 
+    to find the FIRST frame of that contiguous Media-Alone segment, and returns the BB 
+    from that frame if available.
+    
+    Parameters:
+    ----------
+    conn : sqlite3.Connection
+        SQLite connection to the database.
+    video_id : int
+        ID of the video.
+    current_index : int
+        Current index in video_df (last frame of Media-Alone segment).
+    video_df : pd.DataFrame
+        DataFrame containing frame-level data for the video.
+    
+    Returns
+    -------
+    Optional[Tuple[int, int, int, int]]
+    """
+    # 1. Back-track to find the start index of the contiguous Media-Alone segment
+    segment_start_index = current_index
+    
+    # Check current status (must be Alone and Media)
+    current_type = video_df.loc[current_index, 'interaction_type']
+    current_media = video_df.loc[current_index, MEDIA_INTERACTION_FLAG]
+    
+    if current_type != 'Alone' or not current_media:
+        # Should not happen if called correctly, but is a safe guard
+        logging.warning(f"Index {current_index} is not an Alone/Media anchor point. Skipping BB search.")
+        return None
+
+    # Iterate backward as long as the conditions hold
+    for i in range(current_index - 1, -1, -1):
+        prev_type = video_df.loc[i, 'interaction_type']
+        prev_media = video_df.loc[i, MEDIA_INTERACTION_FLAG]
+        
+        if prev_type == 'Alone' and prev_media:
+            segment_start_index = i
+        else:
+            break
+            
+    # The reference frame number is the frame corresponding to the start index
+    reference_frame_number = video_df.loc[segment_start_index, 'frame_number']
+    
+    # 2. Fetch the actual Bounding Box from the database
+    query = f"""
+    SELECT 
+        fd.x_min, fd.y_min, fd.x_max, fd.y_max
+    FROM FaceDetections fd
+    """
+    params = (video_id, reference_frame_number)
+    
+    try:
+        result = conn.execute(query, params).fetchone()
+        if result:
+            return result
+        return None
+    except Exception as e:
+        logging.error(f"Error fetching GT BB for video {video_id}: {e}")
+        return None
+
+def cut_and_save_face(video_name: str, frame_num: int, bb: Tuple[int, int, int, int], output_dir: Path, face_id: int, is_gt: bool = False) -> Optional[Path]:
+    """Cuts face from the image and saves it to a temporary folder.
+    
+    Parameters
+    ----------
+    video_name : str
+        Name of the video.
+    frame_num : int
+        Frame number to cut from.
+    bb : Tuple[int, int, int, int]
+        Bounding box coordinates (x_min, y_min, x_max, y_max).
+    output_dir : Path
+        Directory to save the cropped face image.
+    face_id : int
+        ID of the face in the frame (used for naming).
+    is_gt : bool, optional
+        Whether this is the ground truth reference face, by default False.
+        
+    Returns
+    -------
+    Optional[Path]
+        Path to the saved cropped face image, or None if failed.
+    """
+    # 1. Construct image path
+    frame_padded = str(frame_num).zfill(6)
+    video_dir = DataPaths.QUANTEX_IMAGES_INPUT_DIR / video_name 
+    img_path = video_dir / f"{video_name}_{frame_padded}.png"
+    
+    if not img_path.exists():
+        logging.warning(f"Source image not found: {img_path}")
+        return None
+
+    # 2. Define output filename
+    tag = "gt_ref" if is_gt else f"face_{face_id}"
+    output_filename = f"{video_name}_{frame_padded}_{tag}.png"
+    output_path = output_dir / output_filename
+
+    try:
+        # 3. Load image and crop
+        img = Image.open(img_path)
+        # Ensure BB coordinates are integers (x_min, y_min, x_max, y_max)
+        crop_area = tuple(map(int, bb))
+        cropped_img = img.crop(crop_area)
+        
+        # 4. Save
+        cropped_img.save(output_path)
+        return output_path
+    except Exception as e:
+        logging.error(f"Error processing image {img_path}: {e}")
+        return None
+    
+def run_deepface_verification(gt_bb_coords: Tuple, gt_frame_num: int, gap_frames_df: pd.DataFrame, video_id: int, video_name: str, conn: sqlite3.Connection) -> pd.DataFrame:
+    """
+    Runs DeepFace verification against a GT reference face for all frames in the gap.
+    
+    Parameters:
+    ----------
+    gt_bb_coords : Tuple[int, int, int, int]
+        Bounding box coordinates of the GT reference face.
+    gt_frame_num : int
+        Frame number of the GT reference face.
+    gap_frames_df : pd.DataFrame
+        DataFrame containing frames in the gap to verify.
+    video_id : int
+        ID of the video.
+    video_name : str
+        Name of the video.
+    conn : sqlite3.Connection
+        SQLite connection to the database.
+        
+    Returns:
+    -------
+    pd.DataFrame
+        DataFrame with verification results for each frame in the gap.
+    """
+    if DeepFace is None:
+        logging.error("DeepFace is not available. Verification skipped.")
+        return pd.DataFrame()
+        
+    temp_crop_dir = Inference.TEMP_CUT_FACE_DIR / video_name
+    temp_crop_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 1. Fetch all raw BBs for the gap
+    gap_start_frame = gap_frames_df['frame_number'].min()
+    gap_end_frame = gap_frames_df['frame_number'].max()
+    raw_bb_data = get_raw_face_bboxes_for_frames(conn, video_id, gap_start_frame, gap_end_frame)
+    
+    # 2. Cut and save the GT reference face
+    gt_bb_list = [gt_bb_coords]
+    gt_face_path = cut_and_save_face(video_name, gt_frame_num, gt_bb_coords, temp_crop_dir, face_id=0, is_gt=True)
+    
+    if not gt_face_path:
+        logging.error("Could not save GT reference face. Aborting verification.")
+        return pd.DataFrame()
+        
+    verification_results = []
+    
+    # 3. Iterate through gap frames and compare all detected faces against GT
+    for frame_num in gap_frames_df['frame_number'].unique():
+        frame_bbs = raw_bb_data[raw_bb_data['frame_number'] == frame_num]
+        
+        if frame_bbs.empty:
+            verification_results.append({
+                'frame_number': frame_num, 'matched_gt': False, 'bb_matched': False
+            })
+            continue
+
+        match_found_in_frame = False
+        
+        for face_idx, bb_row in enumerate(frame_bbs.itertuples()):
+            current_bb = (bb_row.x_min, bb_row.y_min, bb_row.x_max, bb_row.y_max)
+            
+            # Cut and save the detected face in the gap frame
+            current_face_path = cut_and_save_face(video_name, frame_num, current_bb, temp_crop_dir, face_id=face_idx, is_gt=False)
+            
+            if current_face_path:
+                try:
+                    # Run DeepFace verification
+                    result = DeepFace.verify(img1_path=str(gt_face_path), img2_path=str(current_face_path), enforce_detection=False, detector_backend="retinaface")
+                    
+                    if result[0]['verified']:
+                        match_found_in_frame = True
+                        break # Found a match in this frame, move to next frame
+
+                except Exception as e:
+                    logging.warning(f"DeepFace failed for frame {frame_num}: {e}")
+            
+        verification_results.append({
+            'frame_number': frame_num, 
+            'matched_gt': match_found_in_frame, 
+            'bb_matched': not frame_bbs.empty # Record if any face was detected at all
+        })
+        
+    return pd.DataFrame(verification_results)
+  
+def smooth_media_persistence(all_data: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    """
+    Orchestrates DeepFace verification to persist media exclusion.
+    
+    Parameters:
+    ----------
+    all_data : pd.DataFrame
+        DataFrame containing frame-level data with MEDIA_INTERACTION_FLAG.
+    conn : sqlite3.Connection
+        SQLite connection to the database.
+        
+    Returns
+    -------
+    pd.DataFrame
+        Updated DataFrame with persisted MEDIA_INTERACTION_FLAG.
+    """
+    updated_data = all_data.copy()
+    updated_data[MEDIA_INTERACTION_FLAG] = updated_data[MEDIA_INTERACTION_FLAG].astype(bool)
+    
+    MAX_GAP_FRAMES = InferenceConfig.MAX_MEDIA_ALONE_GAP_SEC * FPS
+
+    for video_id, video_df in updated_data.groupby('video_id'):
+        
+        video_name = video_df['video_name'].iloc[0]
+        video_df = video_df.reset_index(drop=False) 
+        
+        last_media_alone_idx = -1
+        
+        for i in range(len(video_df)):
+            row = video_df.iloc[i]
+            
+            # Find Anchor A: Last frame of the contiguous media-Alone segment
+            is_media_alone = (row['interaction_type'] == 'Alone' and row[MEDIA_INTERACTION_FLAG])
+            if is_media_alone:
+                last_media_alone_idx = i
+                continue
+            
+            # Check for Gap Start: Current frame is NOT Alone/Media, but preceded by one.
+            if last_media_alone_idx != -1 and not is_media_alone:
+                
+                start_gap_frame = video_df.iloc[last_media_alone_idx]['frame_number']
+                
+                # Search forward for Anchor B (next media-Alone segment)
+                next_media_alone_idx = -1
+                for j in range(i, len(video_df)):
+                    future_row = video_df.iloc[j]
+                    future_frame = future_row['frame_number']
+                    if future_frame - start_gap_frame > MAX_GAP_FRAMES:
+                        break
+                    if future_row['interaction_type'] == 'Alone' and future_row[MEDIA_INTERACTION_FLAG]:
+                        next_media_alone_idx = j
+                        break
+
+                if next_media_alone_idx != -1:
+                    # 1. Define Gap Boundaries
+                    start_persistence_idx = last_media_alone_idx
+                    gap_start_idx = start_persistence_idx + 1
+                    gap_end_idx = next_media_alone_idx
+                    
+                    # 2. Get GT Reference BB (Start of the preceding Media-Alone segment)
+                    gt_bb_coords = get_reference_bb_at_segment_start(conn, video_id, start_persistence_idx, video_df)
+                    
+                    if gt_bb_coords is None:
+                        logging.warning(f"Video {video_name}: Skipping gap due to missing GT BB.")
+                        last_media_alone_idx = next_media_alone_idx
+                        continue
+
+                    # 3. Run DeepFace Verification on the gap frames
+                    frames_in_gap_df = video_df.iloc[gap_start_idx : gap_end_idx].copy()
+                    gt_frame_num = video_df.iloc[start_persistence_idx]['frame_number']
+                    
+                    verification_df = run_deepface_verification(
+                        gt_bb_coords, gt_frame_num, frames_in_gap_df, video_id, video_name, conn
+                    )
+
+                    # 4. Analyze Results
+                    match_count = verification_df['matched_gt'].sum()
+                    total_frames_in_gap = len(verification_df)
+
+                    if total_frames_in_gap > 0 and (match_count / total_frames_in_gap) >= InferenceConfig.MIN_MEDIA_FACE_MATCH_FRACTION:
+                        
+                        # 5. Apply Persistence: Mark all frames in the gap as MEDIA_INTERACTION=True change 
+                        updated_data.loc[frames_in_gap_df.index, MEDIA_INTERACTION_FLAG] = True
+                        logging.info(f"   [DeepFace Persistence APPLIED] Video {video_name}: {match_count}/{total_frames_in_gap} frames matched GT face.")
+                    
+                    # 6. Advance Iterator
+                    last_media_alone_idx = next_media_alone_idx
+                    # The outer loop's 'i' is automatically advanced due to the 'continue' skip in the gap range
+                    
+            # Important: If this frame is NOT media-alone, and we haven't found Anchor B yet,
+            # we must reset the current anchor, UNLESS we are inside a persistence check.
+            # This complex handling is simplified by only advancing 'i' or continuing the loop.
+            if not is_media_alone and last_media_alone_idx != -1:
+                # This frame is the start of the break. We just finished processing the gap (or skipped it).
+                # The next iteration will continue the search for Anchor B from this point.
+                pass 
+            elif not is_media_alone:
+                # If we are not media-alone and we haven't found Anchor A yet, keep searching.
+                last_media_alone_idx = -1
+                
+    return updated_data.drop(columns=['index'], errors='ignore')
+
 def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included_rules: list = None):
     """
     Main analysis function that orchestrates multimodal social interaction analysis.
@@ -730,24 +1080,36 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(all_data, FPS)
         
         # --- PHASE 2: VECTORIZED WINDOW FEATURE CALCULATION (HUGE SPEEDUP) ---
-        print("⏱️ Pre-calculating all windowed features using rolling statistics...")
         window_flags_df = calculate_window_features(all_data[['video_id', 'frame_number', 'has_kchi', 'has_cds', 'has_ohs', 'person_or_face_present', 'has_book']].copy(), FPS, SAMPLE_RATE)
         # Merge the pre-calculated features back into the main DataFrame
         all_data = pd.concat([all_data, window_flags_df.drop(columns=['video_id', 'frame_number'], errors='ignore')], axis=1)
 
-        # --- PHASE 3: HIERARCHICAL CLASSIFICATION ---
-        classification_results = all_data.apply(
+        # --- PHASE 3A: INITIAL HIERARCHICAL CLASSIFICATION (Provides interaction_type and initial MEDIA_INTERACTION flags) ---
+        print("⏱️ PHASE 3A: Running Initial Classification...")
+        initial_classification_results = all_data.apply(
             lambda row: classify_frames(row, all_data, included_rules), axis=1
         )
 
-        all_data['interaction_type'] = [result[0] for result in classification_results]
-        all_data['rule1_turn_taking'] = [result[1] for result in classification_results]
-        all_data['rule2_close_proximity'] = [result[2] for result in classification_results]
-        all_data['rule3_kcds_speaking'] = [result[3] for result in classification_results]
-        all_data['rule4_person_recent_speech'] = [result[4] for result in classification_results]
-        all_data['rule5_buffered_kchi'] = [result[5] for result in classification_results]
+        # Apply results to all_data
+        all_data['interaction_type'] = [result[0] for result in initial_classification_results]
 
-        # ... (Rest of main function: Categorization, Age Merge, Saving) ...
+        # --- PHASE 3B: BB PERSISTENCE SMOOTHING ---
+        # This modifies the 'is_media_interaction' column based on BB tracking.
+        print("🧠 PHASE 3B: Running Bounding Box Persistence and Smoothing (DeepFace Check)...")
+        all_data = smooth_media_persistence(all_data, conn)
+
+        # --- PHASE 4: FINAL HIERARCHICAL CLASSIFICATION (Applies final interaction_type based on smoothed flag) ---
+        print("🔄 PHASE 4: Applying Final Classification based on persistence...")
+        final_classification_results = all_data.apply(
+            lambda row: classify_frames(row, all_data, included_rules), axis=1
+        )
+
+        all_data['interaction_type'] = [result[0] for result in final_classification_results]
+        all_data['rule1_turn_taking'] = [result[1] for result in final_classification_results]
+        all_data['rule2_close_proximity'] = [result[2] for result in final_classification_results]
+        all_data['rule3_kcds_speaking'] = [result[3] for result in final_classification_results]
+        all_data['rule4_person_recent_speech'] = [result[4] for result in final_classification_results]
+        all_data['rule5_buffered_kchi'] = [result[5] for result in final_classification_results]
         
         # Categorization
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
