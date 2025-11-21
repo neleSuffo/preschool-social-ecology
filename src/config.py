@@ -225,14 +225,14 @@ class InferenceConfig:
     MIN_KCDS_DURATION_SEC = 2 # minimum duration of KCDS to consider for analysis
     MAX_TURN_TAKING_GAP_SEC = 5 # maximum gap duration for turn-taking analysis
     SUSTAINED_KCDS_SEC = 3 # consecutive seconds of KCDS to activate rule3_kcds_speaking 
-
-
+    
     # --- Media Related Parameters --
     MEDIA_WINDOW_SEC = 15  # Time window for sustained 'Media' check
     MIN_BOOK_PRESENCE_FRACTION = 0.7  # At least 70% media presence in the MEDIA_WINDOW_SEC window
     MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA = 0.05  # At least 5% OHS/KCDS presence in the MEDIA_WINDOW_SEC window
     MAX_KCHI_FRACTION_FOR_MEDIA = 0.1  # Maximum fraction of KCHI presence allowed for media interaction
-    
+    MAX_MEDIA_ALONE_GAP_SEC = 300 # Maximum gap duration to check for is_media_interaction between two initial alone segments
+    MIN_MEDIA_FACE_MATCH_FRACTION = 0.1 # Minimum fraction of face matches during media interaction alone segments
     
     # -- Segment Merging Parameters --
     MIN_INTERACTING_SEGMENT_DURATION_SEC = 0.7 # minimum duration for a interacting segment
