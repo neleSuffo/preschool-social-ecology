@@ -131,11 +131,18 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
             proximity = calculate_proximity([x1, y1, x2, y2], class_id)
             if proximity > 0.3:
                 keep_indices.append(i)
-        if keep_indices:
+            if results.xyxy is None or len(results.xyxy) == 0:
+                logging.info("No detections in this image.")
+                return
+
+            if not keep_indices:
+                logging.info(f"No faces with proximity > 0.3 found in {image_path}")
+                return
+
             filtered_results = Detections(
-                xyxy=[results.xyxy[i] for i in keep_indices],
-                confidence=[results.confidence[i] for i in keep_indices],
-                class_id=[results.class_id[i] for i in keep_indices]
+                xyxy=np.array([results.xyxy[i] for i in keep_indices]),
+                confidence=np.array([results.confidence[i] for i in keep_indices]),
+                class_id=np.array([results.class_id[i] for i in keep_indices])
             )
             annotated_image = draw_detections_and_ground_truth(image, filtered_results, ground_truth_boxes, ground_truth_classes)
             output_filename = image_path.stem + "_annotated.jpg"
