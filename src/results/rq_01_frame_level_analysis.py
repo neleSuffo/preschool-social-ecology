@@ -13,6 +13,7 @@ import json
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from PIL import Image
 from datetime import datetime
 from deepface import DeepFace
 from typing import List, Dict, Optional, Tuple
@@ -351,7 +352,7 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     samples_per_sec = fps / sample_rate
     
     # Rule 3/Available Window (N)
-    N_sustained = int(InferenceConfig.SUSTAINED_KCDS_SEC * samples_per_sec)
+    N_sustained = int(InferenceConfig.SUSTAINED_KCDS_WINDOW_SEC * samples_per_sec)
     N_avail = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * samples_per_sec)
     N_recent_speech = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * samples_per_sec)
     N_alone = int(InferenceConfig.ROBUST_ALONE_WINDOW_SEC * samples_per_sec)
@@ -696,65 +697,45 @@ def get_reference_bb_at_segment_start(
     video_df: pd.DataFrame
 ) -> Optional[Tuple]:
     """
-    Back-tracks from the current_index (which is the last frame of the Media-Alone segment) 
-    to find the FIRST frame of that contiguous Media-Alone segment, and returns the BB 
-    from that frame if available.
-    
-    Parameters:
-    ----------
-    conn : sqlite3.Connection
-        SQLite connection to the database.
-    video_id : int
-        ID of the video.
-    current_index : int
-        Current index in video_df (last frame of Media-Alone segment).
-    video_df : pd.DataFrame
-        DataFrame containing frame-level data for the video.
-    
-    Returns
-    -------
-    Optional[Tuple[int, int, int, int]]
+    Finds a reference BB near the start of a Media-Alone segment.
+    If the exact start frame has no face, searches a +/- 15 frame window.
     """
-    # 1. Back-track to find the start index of the contiguous Media-Alone segment
     segment_start_index = current_index
     
-    # Check current status (must be Alone and Media)
-    current_type = video_df.loc[current_index, 'interaction_type']
-    current_media = video_df.loc[current_index, MEDIA_INTERACTION_FLAG]
-    
-    if current_type != 'Alone' or not current_media:
-        # Should not happen if called correctly, but is a safe guard
-        logging.warning(f"Index {current_index} is not an Alone/Media anchor point. Skipping BB search.")
-        return None
-
-    # Iterate backward as long as the conditions hold
+    # Back-track to find the first frame of the contiguous segment
     for i in range(current_index - 1, -1, -1):
-        prev_type = video_df.loc[i, 'interaction_type']
-        prev_media = video_df.loc[i, MEDIA_INTERACTION_FLAG]
-        
-        if prev_type == 'Alone' and prev_media:
+        if video_df.loc[i, 'interaction_type'] == 'Alone' and video_df.loc[i, MEDIA_INTERACTION_FLAG]:
             segment_start_index = i
         else:
             break
             
-    # The reference frame number is the frame corresponding to the start index
-    reference_frame_number = video_df.loc[segment_start_index, 'frame_number']
-    
-    # 2. Fetch the actual Bounding Box from the database
-    query = f"""
-    SELECT 
-        fd.x_min, fd.y_min, fd.x_max, fd.y_max
-    FROM FaceDetections fd
+    anchor_frame = int(video_df.loc[segment_start_index, 'frame_number'])
+    window_size = 15 # Search window: anchor +/- 15 frames
+
+    # Query for the CLOSEST face detection to our anchor frame
+    query = """
+    SELECT x_min, y_min, x_max, y_max, frame_number
+    FROM FaceDetections 
+    WHERE video_id = ? 
+      AND frame_number BETWEEN ? AND ?
+    ORDER BY ABS(frame_number - ?) ASC
+    LIMIT 1
     """
-    params = (video_id, reference_frame_number)
+    params = (int(video_id), anchor_frame - window_size, anchor_frame + window_size, anchor_frame)
     
     try:
-        result = conn.execute(query, params).fetchone()
+        cursor = conn.cursor()
+        result = cursor.execute(query, params).fetchone()
         if result:
-            return result
+            # result[4] is the actual frame number found
+            if result[4] != anchor_frame:
+                logging.info(f"   [Buffer Search] Found reference face at frame {result[4]} (Anchor was {anchor_frame})")
+            return (result[0], result[1], result[2], result[3])
+        
+        logging.warning(f"No face detection found within +/- {window_size} frames of anchor {anchor_frame}")
         return None
     except Exception as e:
-        logging.error(f"Error fetching GT BB for video {video_id}: {e}")
+        logging.error(f"Error in robust BB search: {e}")
         return None
 
 def cut_and_save_face(video_name: str, frame_num: int, bb: Tuple[int, int, int, int], output_dir: Path, face_id: int, is_gt: bool = False) -> Optional[Path]:
@@ -783,10 +764,14 @@ def cut_and_save_face(video_name: str, frame_num: int, bb: Tuple[int, int, int, 
     # 1. Construct image path
     frame_padded = str(frame_num).zfill(6)
     video_dir = DataPaths.QUANTEX_IMAGES_INPUT_DIR / video_name 
-    img_path = video_dir / f"{video_name}_{frame_padded}.png"
-    
+    # check for png or jpg
+    img_path_jpg = video_dir / f"{video_name}_{frame_padded}.jpg"
+    if img_path_jpg.exists():
+        img_path = img_path_jpg
+    else:
+        img_path = video_dir / f"{video_name}_{frame_padded}.png"
     if not img_path.exists():
-        logging.warning(f"Source image not found: {img_path}")
+        logging.error(f"Image file not found: {img_path}")
         return None
 
     # 2. Define output filename
@@ -966,6 +951,12 @@ def smooth_media_persistence(all_data: pd.DataFrame, conn: sqlite3.Connection) -
                     verification_df = run_deepface_verification(
                         gt_bb_coords, gt_frame_num, frames_in_gap_df, video_id, video_name, conn
                     )
+
+                    # Safety check on verification results
+                    if verification_df is None or verification_df.empty or 'matched_gt' not in verification_df.columns:
+                        logging.warning(f"Video {video_name}: Verification returned no valid data for gap. Skipping.")
+                        last_media_alone_idx = next_media_alone_idx
+                        continue
 
                     # 4. Analyze Results
                     match_count = verification_df['matched_gt'].sum()
