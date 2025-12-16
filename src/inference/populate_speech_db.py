@@ -79,11 +79,7 @@ def aggregate_and_save_results(snippets: List[Dict], db_cursor: sqlite3.Cursor, 
     for snippet in snippets:
         duration = snippet['duration']
         label = snippet['label']
-        
-        # Apply minimum duration filter for KCDS
-        if label == "KCDS" and duration < InferenceConfig.MIN_KCDS_DURATION_SEC:
-            continue  # Skip KCDS snippets shorter than minimum duration
-        
+            
         start_sec = snippet['start_time']
         end_sec = start_sec + duration
 
