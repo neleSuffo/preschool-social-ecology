@@ -700,19 +700,9 @@ def get_reference_bb_at_segment_start(
     Finds a reference BB near the start of a Media-Alone segment.
     If the exact start frame has no face, searches a +/- 15 frame window.
     """
-    segment_start_index = current_index
-    
-    # Back-track to find the first frame of the contiguous segment
-    for i in range(current_index - 1, -1, -1):
-        if video_df.loc[i, 'interaction_type'] == 'Alone' and video_df.loc[i, MEDIA_INTERACTION_FLAG]:
-            segment_start_index = i
-        else:
-            break
-            
-    anchor_frame = int(video_df.loc[segment_start_index, 'frame_number'])
-    window_size = 120 # Search window: anchor +/- 15 frames
+    anchor_frame = int(video_df.loc[current_index, 'frame_number'])
+    window_size = 150
 
-    # Query for the CLOSEST face detection to our anchor frame
     query = """
     SELECT x_min, y_min, x_max, y_max, frame_number
     FROM FaceDetections 
@@ -727,15 +717,10 @@ def get_reference_bb_at_segment_start(
         cursor = conn.cursor()
         result = cursor.execute(query, params).fetchone()
         if result:
-            # result[4] is the actual frame number found
-            if result[4] != anchor_frame:
-                logging.info(f"   [Buffer Search] Found reference face at frame {result[4]} (Anchor was {anchor_frame})")
             return (result[0], result[1], result[2], result[3])
-        
-        logging.warning(f"No face detection found within +/- {window_size} frames of anchor {anchor_frame}")
         return None
     except Exception as e:
-        logging.error(f"Error in robust BB search: {e}")
+        logging.error(f"Error in robust Face BB search: {e}")
         return None
 
 def cut_and_save_face(video_name: str, frame_num: int, bb: Tuple[int, int, int, int], output_dir: Path, face_id: int, is_gt: bool = False) -> Optional[Path]:
@@ -895,95 +880,68 @@ def smooth_media_persistence(all_data: pd.DataFrame, conn: sqlite3.Connection) -
     """
     updated_data = all_data.copy()
     updated_data[MEDIA_INTERACTION_FLAG] = updated_data[MEDIA_INTERACTION_FLAG].astype(bool)
-    
     MAX_GAP_FRAMES = InferenceConfig.MAX_MEDIA_ALONE_GAP_SEC * FPS
 
     for video_id, video_df in updated_data.groupby('video_id'):
-        
         video_name = video_df['video_name'].iloc[0]
-        video_df = video_df.reset_index(drop=False) 
+        indices = video_df.index.tolist()
+        i = 0
         
-        last_media_alone_idx = -1
-        
-        for i in range(len(video_df)):
-            row = video_df.iloc[i]
+        while i < len(indices):
+            row = video_df.loc[indices[i]]
             
-            # Find Anchor A: Last frame of the contiguous media-Alone segment
-            is_media_alone = (row['interaction_type'] == 'Alone' and row[MEDIA_INTERACTION_FLAG])
-            if is_media_alone:
-                last_media_alone_idx = i
+            # 1. Look for Anchor A (Start of a Media-Alone segment)
+            if not (row['interaction_type'] == 'Alone' and row[MEDIA_INTERACTION_FLAG]):
+                i += 1
                 continue
+                
+            start_anchor_idx = indices[i]
+            start_frame_num = video_df.loc[start_anchor_idx, 'frame_number']
             
-            # Check for Gap Start: Current frame is NOT Alone/Media, but preceded by one.
-            if last_media_alone_idx != -1 and not is_media_alone:
+            # 2. Look forward for Anchor B (End of the gap)
+            found_anchor_b_idx = -1
+            # We look for the NEXT media-alone segment within the MAX_GAP
+            for j in range(i + 1, len(indices)):
+                future_idx = indices[j]
+                future_row = video_df.loc[future_idx]
                 
-                start_gap_frame = video_df.iloc[last_media_alone_idx]['frame_number']
+                if future_row['frame_number'] - start_frame_num > MAX_GAP_FRAMES:
+                    break
                 
-                # Search forward for Anchor B (next media-Alone segment)
-                next_media_alone_idx = -1
-                for j in range(i, len(video_df)):
-                    future_row = video_df.iloc[j]
-                    future_frame = future_row['frame_number']
-                    if future_frame - start_gap_frame > MAX_GAP_FRAMES:
-                        break
-                    if future_row['interaction_type'] == 'Alone' and future_row[MEDIA_INTERACTION_FLAG]:
-                        next_media_alone_idx = j
-                        break
+                if future_row['interaction_type'] == 'Alone' and future_row[MEDIA_INTERACTION_FLAG]:
+                    found_anchor_b_idx = j
+                    break
+            
+            # 3. If we found a potential gap between two Media-Alone anchors
+            if found_anchor_b_idx != -1:
+                gap_indices = indices[i+1 : found_anchor_b_idx]
+                
+                if not gap_indices: # No gap to fill
+                    i = found_anchor_b_idx
+                    continue
 
-                if next_media_alone_idx != -1:
-                    # 1. Define Gap Boundaries
-                    start_persistence_idx = last_media_alone_idx
-                    gap_start_idx = start_persistence_idx + 1
-                    gap_end_idx = next_media_alone_idx
-                    
-                    # 2. Get GT Reference BB (Start of the preceding Media-Alone segment)
-                    gt_bb_coords = get_reference_bb_at_segment_start(conn, video_id, start_persistence_idx, video_df)
-                    
-                    if gt_bb_coords is None:
-                        logging.warning(f"Video {video_name}: Skipping gap due to missing GT BB.")
-                        last_media_alone_idx = next_media_alone_idx
-                        continue
-
-                    # 3. Run DeepFace Verification on the gap frames
-                    frames_in_gap_df = video_df.iloc[gap_start_idx : gap_end_idx].copy()
-                    gt_frame_num = video_df.iloc[start_persistence_idx]['frame_number']
-                    
+                # 4. Get the Reference Face for DeepFace
+                gt_bb_coords = get_reference_bb_at_segment_start(conn, video_id, start_anchor_idx, video_df)
+                
+                if gt_bb_coords:
+                    frames_in_gap_df = video_df.loc[gap_indices]
                     verification_df = run_deepface_verification(
-                        gt_bb_coords, gt_frame_num, frames_in_gap_df, video_id, video_name, conn
+                        gt_bb_coords, start_frame_num, frames_in_gap_df, video_id, video_name, conn
                     )
 
-                    # Safety check on verification results
-                    if verification_df is None or verification_df.empty or 'matched_gt' not in verification_df.columns:
-                        logging.warning(f"Video {video_name}: Verification returned no valid data for gap. Skipping.")
-                        last_media_alone_idx = next_media_alone_idx
-                        continue
+                    if verification_df is not None and not verification_df.empty:
+                        # Apply persistence if matches are found
+                        match_count = verification_df['matched_gt'].sum()
+                        if (match_count / len(verification_df)) >= InferenceConfig.MIN_MEDIA_FACE_MATCH_FRACTION:
+                            updated_data.loc[gap_indices, MEDIA_INTERACTION_FLAG] = True
+                            logging.info(f"✅ {video_name}: Persisted media over {len(gap_indices)} frames.")
 
-                    # 4. Analyze Results
-                    match_count = verification_df['matched_gt'].sum()
-                    total_frames_in_gap = len(verification_df)
-
-                    if total_frames_in_gap > 0 and (match_count / total_frames_in_gap) >= InferenceConfig.MIN_MEDIA_FACE_MATCH_FRACTION:
-                        
-                        # 5. Apply Persistence: Mark all frames in the gap as MEDIA_INTERACTION=True change 
-                        updated_data.loc[frames_in_gap_df.index, MEDIA_INTERACTION_FLAG] = True
-                        logging.info(f"   [DeepFace Persistence APPLIED] Video {video_name}: {match_count}/{total_frames_in_gap} frames matched GT face.")
-                    
-                    # 6. Advance Iterator
-                    last_media_alone_idx = next_media_alone_idx
-                    # The outer loop's 'i' is automatically advanced due to the 'continue' skip in the gap range
-                    
-            # Important: If this frame is NOT media-alone, and we haven't found Anchor B yet,
-            # we must reset the current anchor, UNLESS we are inside a persistence check.
-            # This complex handling is simplified by only advancing 'i' or continuing the loop.
-            if not is_media_alone and last_media_alone_idx != -1:
-                # This frame is the start of the break. We just finished processing the gap (or skipped it).
-                # The next iteration will continue the search for Anchor B from this point.
-                pass 
-            elif not is_media_alone:
-                # If we are not media-alone and we haven't found Anchor A yet, keep searching.
-                last_media_alone_idx = -1
+                # Move the pointer to Anchor B to continue the search
+                i = found_anchor_b_idx
+            else:
+                i += 1
                 
-    return updated_data.drop(columns=['index'], errors='ignore')
+    return updated_data
 
 def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included_rules: list = None):
     """
