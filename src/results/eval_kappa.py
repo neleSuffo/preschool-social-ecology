@@ -53,7 +53,7 @@ def generate_second_wise_labels(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(all_data)
 
 def run_evaluation(pred_path: Path, gt_path: Path, output_dir: Path):
-    """Core evaluation logic: Aligns data, calculates Kappa, and saves outputs."""
+    """Core evaluation logic: Aligns data, calculates Kappa/Accuracy, and saves outputs."""
     print(f"📊 Loading GT: {gt_path.name} | PRED: {pred_path.name}")
     
     df_pred = load_and_clean_data(pred_path, is_gt=False)
@@ -81,16 +81,25 @@ def run_evaluation(pred_path: Path, gt_path: Path, output_dir: Path):
         labels_pred = create_second_level_labels(v_pred, duration)
 
         for sec in range(start_eval, end_eval):
-            # We only evaluate if GT exists
             if labels_gt[sec] is not None:
                 y_true_all.append(str(labels_gt[sec]).lower())
                 y_pred_all.append(str(labels_pred[sec]).lower() if labels_pred[sec] else UNCLASSIFIED_LABEL)
 
-    # 1. Statistics
-    kappa = cohen_kappa_score(y_true_all, y_pred_all)
-    report = classification_report(y_true_all, y_pred_all)
+    # --- 1. Statistics Calculation ---
+    y_true = np.array(y_true_all)
+    y_pred = np.array(y_pred_all)
     
-    # 2. Saving Second-wise Files
+    # Calculate Kappa
+    kappa = cohen_kappa_score(y_true, y_pred)
+    
+    # Calculate Overall Accuracy (%)
+    correct_matches = np.sum(y_true == y_pred)
+    total_samples = len(y_true)
+    accuracy_pct = (correct_matches / total_samples) * 100 if total_samples > 0 else 0
+    
+    report = classification_report(y_true, y_pred)
+    
+    # --- 2. Saving Second-wise Files ---
     output_dir.mkdir(parents=True, exist_ok=True)
     sw_gt = generate_second_wise_labels(df_gt)
     sw_pred = generate_second_wise_labels(df_pred)
@@ -98,8 +107,9 @@ def run_evaluation(pred_path: Path, gt_path: Path, output_dir: Path):
     sw_gt.to_csv(output_dir / "gt_secondwise_labels.csv", index=False)
     sw_pred.to_csv(output_dir / "pred_secondwise_labels.csv", index=False)
 
-    # 3. Output to Console
+    # --- 3. Output to Console ---
     print("\n" + "="*40)
+    print(f"OVERALL ACCURACY:   **{accuracy_pct:.2f}%**")
     print(f"COHEN'S KAPPA SCORE: **{kappa:.4f}**")
     print("="*40)
     
@@ -112,15 +122,16 @@ def run_evaluation(pred_path: Path, gt_path: Path, output_dir: Path):
     print("\nDetailed Classification Report:")
     print(report)
 
-    # 4. Save Text Summary
+    # --- 4. Save Text Summary ---
     with open(output_dir / "kappa_evaluation_summary.txt", "w") as f:
+        f.write(f"Overall Accuracy: {accuracy_pct:.2f}%\n")
         f.write(f"Kappa Score: {kappa:.4f}\n\n")
         f.write("Classification Report:\n")
         f.write(report)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate Second-Wise Kappa for Model Evaluation")
-    parser.add_argument('--folder_path', type=str, required=True, help='Path containing 02_interaction_segments.csv')
+    parser.add_argument('--folder_path', type=str, required=True, help='Path containing 01_interaction_segments.csv')
     
     args = parser.parse_args()
     
