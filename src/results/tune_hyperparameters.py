@@ -36,49 +36,53 @@ class HyperparameterConfig:
     HYPERPARAMETER_RANGES = {
     # --- 1. Interaction & Presence Thresholds ---
     
-    # Rule 2: Very Close Proximity (Current Best: 0.65)
-    'PROXIMITY_THRESHOLD': [0.60, 0.65, 0.75], 
+    # Current Best: 0.75 (Shifted from 0.65)
+    'PROXIMITY_THRESHOLD': [0.70, 0.75, 0.80], 
     
-    # Min visual presence to reclassify Available/Alone -> Interacting (Current Best: 0.1)
-    'MIN_PERSON_PRESENCE_FRACTION': [0.05, 0.10, 0.15],
+    # Current Best: 0.10
+    'MIN_PERSON_PRESENCE_FRACTION': [0.08, 0.10, 0.12],
     
     # --- 2. Temporal Windows & Robustness ---
     
-    # Rule Available Window: Sustained Co-Presence Memory (Current Best: 5 sec)
-    'PERSON_AVAILABLE_WINDOW_SEC': [4, 5, 8], 
+    # Current Best: 8 (Shifted from 5)
+    'PERSON_AVAILABLE_WINDOW_SEC': [6, 8, 10], 
     
-    # Rule 4 Window: Person + Recent KCDS (Current Best: 2 sec)
-    'PERSON_AUDIO_WINDOW_SEC': [1.5, 2.0, 3.0],    
+    # Current Best: 3 (Shifted from 2)
+    'PERSON_AUDIO_WINDOW_SEC': [2.5, 3.0, 4.0],    
     
-    # Rule 3 Window: Sustained KCDS Duration (Current Best: 2.5 sec)
-    'SUSTAINED_KCDS_WINDOW_SEC': [1.5, 2.5, 4.0], 
+    # Current Best: 4 (Shifted from 2.5)
+    'SUSTAINED_KCDS_WINDOW_SEC': [3.0, 4.0, 5.0], 
     
-    # Robust Alone Max Social Signal (Current Best: 0.05)
-    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.03, 0.05, 0.10], 
+    # Current Best: 0.10 (Shifted from 0.05)
+    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.08, 0.10, 0.15], 
 
     # --- 3. Audio Gaps & Segment Merging ---
     
-    # Inter-Speaker Gap (Turn-Taking) (Current Best: 8 sec)
-    'MAX_TURN_TAKING_GAP_SEC': [5, 8, 10],
+    # Current Best: 5 (Shifted from 8 - suggests narrower turn-taking)
+    'MAX_TURN_TAKING_GAP_SEC': [4, 5, 7],
     
-    # Max gap duration to merge segments of the same class (Current Best: 2.0 sec)
-    'MAX_GAP_SECONDS': [1.0, 2.0, 4.0], 
+    # Current Best: 4.0 (Shifted from 2.0 - helps merge segments)
+    'MAX_GAP_SECONDS': [3.0, 4.0, 5.5], 
     
     # --- 4. Reclassification Thresholds (Alone -> Available) ---
     
-    # Reclassify Alone -> Available (Visual presence check, Current Best: 0.24)
-    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.15, 0.24, 0.35],
+    # Current Best: 0.35 (Shifted from 0.24 - strictness increased)
+    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.30, 0.35, 0.45],
     
-    # Reclassify Alone -> Available (Audio presence check, Current Best: 0.24)
-    'ALONE_RECLASSIFY_AUDIO_THRESHOLD': [0.15, 0.24, 0.35],
+    # Current Best: 0.24 (Consistent)
+    'ALONE_RECLASSIFY_AUDIO_THRESHOLD': [0.18, 0.24, 0.30],
     
     # --- 5. Media Logic ---
     
-    # Media Window Duration (Current Best: 15 sec)
-    'MEDIA_WINDOW_SEC': [10, 15, 20], 
+    # Current Best: 20 (Shifted from 15)
+    'MEDIA_WINDOW_SEC': [15, 20, 25], 
     
-    # Max KCHI allowed for Media Classification (Current Best: 0.1)
-    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.05, 0.10, 0.15],
+    # Current Best: 0.15 (Shifted from 0.10)
+    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.12, 0.15, 0.20],
+
+    # --- 6. Explicit Rule 5 Buffer (Bonus addition) ---
+    # Current Best: 10 frames
+    'KCHI_PERSON_BUFFER_FRAMES': [5, 10, 20]
 }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
