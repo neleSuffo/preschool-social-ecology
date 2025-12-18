@@ -710,7 +710,7 @@ def get_reference_bb_at_segment_start(
             break
             
     anchor_frame = int(video_df.loc[segment_start_index, 'frame_number'])
-    window_size = 15 # Search window: anchor +/- 15 frames
+    window_size = 120 # Search window: anchor +/- 15 frames
 
     # Query for the CLOSEST face detection to our anchor frame
     query = """
