@@ -659,6 +659,56 @@ def reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_
     print(f"   Reclassified {reclassified_count} 'Alone' segments to 'Available' (High Presence Rule).")
     return updated_segments_df
 
+def reclassify_ghost_segments(segments_df, frame_data):
+    """
+    Reclassifies 'Interacting' or 'Available' segments to 'Alone' if they 
+    lack sufficient visual human presence, using type-specific thresholds.
+    """
+    reclassified_count = 0
+    updated_segments_df = segments_df.copy()
+
+    for index, segment in segments_df.iterrows():
+        # Skip segments already classified as Alone
+        if segment['interaction_type'] == 'Alone':
+            continue
+        
+        # 1. Select type-specific thresholds
+        if segment['interaction_type'] == 'Interacting':
+            min_duration = InferenceConfig.MIN_GHOST_CHECK_DURATION_INTERACTING
+            visual_threshold = InferenceConfig.GHOST_VISUAL_THRESHOLD_INTERACTING
+        else: # Available
+            min_duration = InferenceConfig.MIN_GHOST_CHECK_DURATION_AVAILABLE
+            visual_threshold = InferenceConfig.GHOST_VISUAL_THRESHOLD_AVAILABLE
+
+        # Skip if the segment is shorter than the type-specific minimum
+        if segment['duration_sec'] < min_duration:
+            continue
+        
+        video_name = segment['video_name']
+        start_frame = segment['segment_start']
+        end_frame = segment['segment_end']
+        
+        # 2. Filter frame data and calculate presence
+        current_video_frames = frame_data[frame_data['video_name'] == video_name]
+        segment_frames = current_video_frames[
+            (current_video_frames['frame_number'] >= start_frame) & 
+            (current_video_frames['frame_number'] <= end_frame)
+        ]
+        
+        if segment_frames.empty:
+            continue
+            
+        human_presence_mask = (segment_frames['person_or_face_present'] == 1)        
+        human_presence_frac = human_presence_mask.sum() / len(segment_frames)
+        
+        # 3. Apply Reclassification
+        if human_presence_frac < visual_threshold:
+            updated_segments_df.loc[index, 'interaction_type'] = 'Alone'
+            reclassified_count += 1
+
+    print(f"   Reclassified {reclassified_count} 'Ghost' segments to 'Alone' (Dual-Threshold Gate).")
+    return updated_segments_df
+
 def main(output_file_path: Path, frame_data_path: Path):
     """
     Main entry point for video-level segment analysis.
@@ -709,17 +759,16 @@ def main(output_file_path: Path, frame_data_path: Path):
 
     # Step 4a: Reclassify short, sandwiched 'Alone' segments between Alone segments to 'Available'
     segments_df = reclassify_sandwiched_alone_segments(segments_df)
-    
-    # Step 4b: Reclassify short, sandwiched Interacting segments between Alone segments to 'Available'
     segments_df = reclassify_sandwiched_interacting_segments(segments_df)
-    
-    # Step 4c: Reclassify 'Available' segments to 'Alone' if no detection occurred
     segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
-    
     segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
-    
-    # Step 5: Reclassify for Implicit Turn-Taking
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
+
+    # Rerun merge AFTER all types have been finalized to clean up fragmentation
+    print("🧹 Final consolidation: Merging reclassified segments of the same type...")
+    segments_df = merge_segments_with_small_gaps(segments_df)
+    segments_df = reclassify_ghost_segments(segments_df, frame_data)
+    segments_df = merge_segments_with_small_gaps(segments_df)
 
     # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
     segments_df = fill_gaps_between_segments(segments_df)
