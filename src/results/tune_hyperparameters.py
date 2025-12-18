@@ -34,56 +34,29 @@ from results.rq_01_video_level_analysis import main as segment_analysis_main
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""   
     HYPERPARAMETER_RANGES = {
-    # --- 1. Interaction & Presence Thresholds ---
-    
-    # Current Best: 0.75 (Shifted from 0.65)
-    'PROXIMITY_THRESHOLD': [0.70, 0.75, 0.80], 
-    
-    # Current Best: 0.10
-    'MIN_PERSON_PRESENCE_FRACTION': [0.08, 0.10, 0.12],
-    
-    # --- 2. Temporal Windows & Robustness ---
-    
-    # Current Best: 8 (Shifted from 5)
-    'PERSON_AVAILABLE_WINDOW_SEC': [6, 8, 10], 
-    
-    # Current Best: 3 (Shifted from 2)
-    'PERSON_AUDIO_WINDOW_SEC': [2.5, 3.0, 4.0],    
-    
-    # Current Best: 4 (Shifted from 2.5)
-    'SUSTAINED_KCDS_WINDOW_SEC': [3.0, 4.0, 5.0], 
-    
-    # Current Best: 0.10 (Shifted from 0.05)
-    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.08, 0.10, 0.15], 
+        # --- 1. Proximity & Visual Confidence ---
+        'PROXIMITY_THRESHOLD': [0.65, 0.70, 0.75], 
+        'MIN_PERSON_PRESENCE_FRACTION': [0.08, 0.10, 0.12],
+        
+        # --- 2. Temporal Smoothing Windows ---
+        'PERSON_AVAILABLE_WINDOW_SEC': [8, 10, 12], 
+        'PERSON_AUDIO_WINDOW_SEC': [2.0, 2.5, 3.0],    
+        'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.05, 0.10, 0.15], 
 
-    # --- 3. Audio Gaps & Segment Merging ---
-    
-    # Current Best: 5 (Shifted from 8 - suggests narrower turn-taking)
-    'MAX_TURN_TAKING_GAP_SEC': [4, 5, 7],
-    
-    # Current Best: 4.0 (Shifted from 2.0 - helps merge segments)
-    'MAX_GAP_SECONDS': [3.0, 4.0, 5.5], 
-    
-    # --- 4. Reclassification Thresholds (Alone -> Available) ---
-    
-    # Current Best: 0.35 (Shifted from 0.24 - strictness increased)
-    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.30, 0.35, 0.45],
-    
-    # Current Best: 0.24 (Consistent)
-    'ALONE_RECLASSIFY_AUDIO_THRESHOLD': [0.18, 0.24, 0.30],
-    
-    # --- 5. Media Logic ---
-    
-    # Current Best: 20 (Shifted from 15)
-    'MEDIA_WINDOW_SEC': [15, 20, 25], 
-    
-    # Current Best: 0.15 (Shifted from 0.10)
-    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.12, 0.15, 0.20],
+        # --- 3. Audio Continuity & Merging ---
+        'MAX_TURN_TAKING_GAP_SEC': [5, 7, 9],
+        
+        # --- 4. GHOST/Media Reclassification (New) ---
+        'MIN_GHOST_CHECK_DURATION_INTERACTING': [3.0, 5.0, 7.0],
+        'MIN_GHOST_CHECK_DURATION_AVAILABLE': [8.0, 10.0, 15.0],
+        'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.05, 0.10, 0.15], 
+        'GHOST_VISUAL_THRESHOLD_AVAILABLE': [0.02, 0.05, 0.08],
 
-    # --- 6. Explicit Rule 5 Buffer (Bonus addition) ---
-    # Current Best: 10 frames
-    'KCHI_PERSON_BUFFER_FRAMES': [5, 10, 20]
-}
+        # --- 5. Media Logic & Buffers ---
+        'MEDIA_WINDOW_SEC': [15, 20, 25], 
+        'MAX_KCHI_FRACTION_FOR_MEDIA': [0.10, 0.12, 0.15],
+        'KCHI_PERSON_BUFFER_FRAMES': [5, 10, 15]
+    }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
     """
