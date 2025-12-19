@@ -461,6 +461,35 @@ def reclassify_available_segments(segments_df, frame_data, detection_col='person
     print(f"   Reclassified {reclassified_count} 'Available' segments to 'Alone'.")
     return updated_segments_df
 
+def fill_gaps_with_default(segments_df, default_type="Alone"):
+    filled_segments = []
+
+    for video_id, video_df in segments_df.groupby('video_id'):
+        v_segs = video_df.sort_values('start_time_sec').to_dict('records')
+        
+        for i in range(len(v_segs)):
+            filled_segments.append(v_segs[i])
+            
+            if i < len(v_segs) - 1:
+                gap = v_segs[i+1]['start_time_sec'] - v_segs[i]['end_time_sec']
+                
+                if 0 < gap <= InferenceConfig.GAP_STRETCH_THRESHOLD:
+                    # Small gap: Stretch previous segment
+                    filled_segments[-1]['end_time_sec'] = v_segs[i+1]['start_time_sec']
+                    filled_segments[-1]['segment_end'] = v_segs[i+1]['segment_start'] - 1
+                elif gap > InferenceConfig.GAP_STRETCH_THRESHOLD:
+                    # Large gap: Insert Default
+                    filled_segments.append({
+                        'video_id': video_id,
+                        'video_name': v_segs[i]['video_name'],
+                        'interaction_type': default_type,
+                        'start_time_sec': v_segs[i]['end_time_sec'],
+                        'end_time_sec': v_segs[i+1]['start_time_sec'],
+                        'segment_start': v_segs[i]['segment_end'] + 1,
+                        'segment_end': v_segs[i+1]['segment_start'] - 1
+                    })
+    return pd.DataFrame(filled_segments)
+
 def fill_gaps_between_segments(segments_df):
     """
     Final step: Extends the end time of every segment to meet the start time of the 
@@ -758,9 +787,9 @@ def main(output_file_path: Path, frame_data_path: Path):
                                         'start_time_sec', 'end_time_sec', 'duration_sec'])
 
     # Step 4a: Reclassify short, sandwiched 'Alone' segments between Alone segments to 'Available'
-    segments_df = reclassify_sandwiched_alone_segments(segments_df)
-    segments_df = reclassify_sandwiched_interacting_segments(segments_df)
-    segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
+    #segments_df = reclassify_sandwiched_alone_segments(segments_df)
+    #segments_df = reclassify_sandwiched_interacting_segments(segments_df)
+    #segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
     segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
 
@@ -771,7 +800,8 @@ def main(output_file_path: Path, frame_data_path: Path):
     segments_df = merge_segments_with_small_gaps(segments_df)
 
     # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
-    segments_df = fill_gaps_between_segments(segments_df)
+    #segments_df = fill_gaps_between_segments(segments_df)
+    segments_df = fill_gaps_with_default(segments_df, default_type="Available")
     
     # Step 7: Generate and print summary
     print_segment_summary(segments_df)
