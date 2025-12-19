@@ -34,29 +34,54 @@ from results.rq_01_video_level_analysis import main as segment_analysis_main
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""   
     HYPERPARAMETER_RANGES = {
-        # --- 1. Proximity & Visual Confidence ---
-        'PROXIMITY_THRESHOLD': [0.65, 0.70, 0.75], 
-        'MIN_PERSON_PRESENCE_FRACTION': [0.08, 0.10, 0.12],
-        
-        # --- 2. Temporal Smoothing Windows ---
-        'PERSON_AVAILABLE_WINDOW_SEC': [8, 10, 12], 
-        'PERSON_AUDIO_WINDOW_SEC': [2.0, 2.5, 3.0],    
-        'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.05, 0.10, 0.15], 
+    # --- 1. Gap Handling & Timeline Continuity ---
+    
+    # Current Best: 2s. Decides how long a silence can be before it's "Alone" vs. noise.
+    'GAP_STRETCH_THRESHOLD': [1.0, 2.0, 3.5],
 
-        # --- 3. Audio Continuity & Merging ---
-        'MAX_TURN_TAKING_GAP_SEC': [5, 7, 9],
-        
-        # --- 4. GHOST/Media Reclassification (New) ---
-        'MIN_GHOST_CHECK_DURATION_INTERACTING': [3.0, 5.0, 7.0],
-        'MIN_GHOST_CHECK_DURATION_AVAILABLE': [8.0, 10.0, 15.0],
-        'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.05, 0.10, 0.15], 
-        'GHOST_VISUAL_THRESHOLD_AVAILABLE': [0.02, 0.05, 0.08],
+    # --- 2. Tier 1 Classification (Interacting) ---
+    
+    # Current Best: 0.65. Face proximity is a high-sensitivity gate.
+    'PROXIMITY_THRESHOLD': [0.60, 0.65, 0.70], 
+    
+    # Current Best: 3s. Memory duration for sustained adult speech.
+    'SUSTAINED_KCDS_WINDOW_SEC': [2.5, 3.0, 4.0], 
+    
+    # Current Best: 5s. Tolerance for gaps between speakers.
+    'MAX_TURN_TAKING_GAP_SEC': [4, 5, 7],
 
-        # --- 5. Media Logic & Buffers ---
-        'MEDIA_WINDOW_SEC': [15, 20, 25], 
-        'MAX_KCHI_FRACTION_FOR_MEDIA': [0.10, 0.12, 0.15],
-        'KCHI_PERSON_BUFFER_FRAMES': [5, 10, 15]
-    }
+    # --- 3. Tier 2 Classification (Alone Robustness) ---
+    
+    # Current Best: 0.15. Max social signal allowed to maintain "Alone" status.
+    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.10, 0.15, 0.20],
+    
+    # Current Best: 5s. Verification time for sustained absence.
+    'ROBUST_ALONE_WINDOW_SEC': [4, 5, 8],
+
+    # --- 4. Segment Refinement Gates ---
+    
+    # Current Best: 0.3. Visual presence threshold for Available -> Alone.
+    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.25, 0.30, 0.40],
+    
+    # Current Best: 0.08. Density required for implicit turn-taking reclassification.
+    'MIN_PERSON_PRESENCE_FRACTION': [0.05, 0.08, 0.12],
+
+    # --- 5. Media Interaction & Persistence ---
+    
+    # Current Best: 20s. The minimum duration of engagement with a book.
+    'MEDIA_WINDOW_SEC': [15, 20, 30],
+    
+    # Current Best: 0.12. Quietness threshold for the child during reading.
+    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.08, 0.12, 0.18],
+
+    # --- 6. Ghost Gates (Visual Verification) ---
+    
+    # Testing if the visual gate should be more/less strict for Interaction segments.
+    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.02, 0.05, 0.10],
+    
+    # Memory for 'Available' presence (Current Best: 10s).
+    'PERSON_AVAILABLE_WINDOW_SEC': [8, 10, 15], 
+}
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
     """
