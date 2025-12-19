@@ -259,6 +259,7 @@ class InferenceConfig:
     KCHI_ONLY_FRACTION_THRESHOLD = 0.55 # Percentage of KCHI-only frames in segments available or alone for reclassification
     MIN_PERSON_PRESENCE_FRACTION = 0.08 # At least 4% person presence in segments available or alone for reclassification
     
+    GAP_STRETCH_THRESHOLD = 2 # everything below s will be extended, otherwise default
     # -- Hyperparameter Tuning Parameters --
     MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
     RANDOM_SAMPLING = True # Whether to use random sampling for hyperparameter tuning
