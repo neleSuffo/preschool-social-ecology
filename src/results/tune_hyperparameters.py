@@ -9,16 +9,17 @@ against ground truth data.
 import pandas as pd
 import numpy as np
 import sys
-from pathlib import Path
-from itertools import product
+import random
 import json
 import subprocess
 import tempfile
 import time
-from datetime import datetime
 import argparse 
 import shutil
 import inspect
+from datetime import datetime
+from pathlib import Path
+from itertools import product
 
 # Add the src directory to path for imports
 src_path = Path(__file__).parent.parent
@@ -34,53 +35,35 @@ from results.rq_01_video_level_analysis import main as segment_analysis_main
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""   
     HYPERPARAMETER_RANGES = {
-    # --- 1. Gap Handling & Timeline Continuity ---
-    
-    # Current Best: 2s. Decides how long a silence can be before it's "Alone" vs. noise.
-    'GAP_STRETCH_THRESHOLD': [1.0, 2.0, 3.5],
+    # --- 1. NEW: Research-Driven Duration Thresholds ---
+    # Testing current values vs. your findings (95% thresholds)
+    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.4, 1.5, 3.0], # Best: 0.4 | Goal: 3.0
+    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4.0, 6.0, 8.0],   # Best: 8.0 | Goal: 6.0
+    'MIN_ALONE_SEGMENT_DURATION_SEC': [5.0, 8.0, 10.0],     # Best: 5.0 | Goal: 8.0
 
-    # --- 2. Tier 1 Classification (Interacting) ---
-    
-    # Current Best: 0.65. Face proximity is a high-sensitivity gate.
-    'PROXIMITY_THRESHOLD': [0.60, 0.65, 0.70], 
-    
-    # Current Best: 3s. Memory duration for sustained adult speech.
-    'SUSTAINED_KCDS_WINDOW_SEC': [2.5, 3.0, 4.0], 
-    
-    # Current Best: 5s. Tolerance for gaps between speakers.
-    'MAX_TURN_TAKING_GAP_SEC': [4, 5, 7],
+    # --- 2. NEW: Audiobook / Constant OHS Gate ---
+    'MAX_OHS_FOR_AVAILABLE': [0.60, 0.70, 0.85],            # Best: 0.70
 
-    # --- 3. Tier 2 Classification (Alone Robustness) ---
-    
-    # Current Best: 0.15. Max social signal allowed to maintain "Alone" status.
-    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.10, 0.15, 0.20],
-    
-    # Current Best: 5s. Verification time for sustained absence.
-    'ROBUST_ALONE_WINDOW_SEC': [4, 5, 8],
+    # --- 3. Interaction & Presence Logic (Tiers 1 & 2) ---
+    'PROXIMITY_THRESHOLD': [0.55, 0.60, 0.70],              # Best: 0.60
+    'SUSTAINED_KCDS_WINDOW_SEC': [3.0, 4.0, 5.0],           # Best: 4.0
+    'MAX_TURN_TAKING_GAP_SEC': [3, 4, 6],                   # Best: 4
+    'PERSON_AVAILABLE_WINDOW_SEC': [10, 15, 20],            # Best: 15
+    'MIN_PERSON_PRESENCE_FRACTION': [0.08, 0.12, 0.18],     # Best: 0.12
 
-    # --- 4. Segment Refinement Gates ---
-    
-    # Current Best: 0.3. Visual presence threshold for Available -> Alone.
-    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.25, 0.30, 0.40],
-    
-    # Current Best: 0.08. Density required for implicit turn-taking reclassification.
-    'MIN_PERSON_PRESENCE_FRACTION': [0.05, 0.08, 0.12],
+    # --- 4. Continuity & Robustness ---
+    'GAP_STRETCH_THRESHOLD': [0.5, 1.0, 2.0],               # Best: 1.0
+    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.10, 0.15, 0.20], # Best: 0.15
+    'ROBUST_ALONE_WINDOW_SEC': [6, 8, 12],                  # Best: 8
 
     # --- 5. Media Interaction & Persistence ---
-    
-    # Current Best: 20s. The minimum duration of engagement with a book.
-    'MEDIA_WINDOW_SEC': [15, 20, 30],
-    
-    # Current Best: 0.12. Quietness threshold for the child during reading.
-    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.08, 0.12, 0.18],
+    'MEDIA_WINDOW_SEC': [15, 20, 30],                       # Best: 20
+    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.05, 0.08, 0.12],      # Best: 0.08
 
-    # --- 6. Ghost Gates (Visual Verification) ---
-    
-    # Testing if the visual gate should be more/less strict for Interaction segments.
-    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.02, 0.05, 0.10],
-    
-    # Memory for 'Available' presence (Current Best: 10s).
-    'PERSON_AVAILABLE_WINDOW_SEC': [8, 10, 15], 
+    # --- 6. Refinement & Ghost Gates ---
+    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.25, 0.30, 0.40], # Best: 0.30
+    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.02, 0.05, 0.10], # Best: 0.05
+    'KCHI_PERSON_BUFFER_FRAMES': [5, 10, 20],                # Best: 10
 }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
@@ -101,26 +84,23 @@ def generate_hyperparameter_combinations(max_combinations=None, random_sample=Fa
     list of dict
         List of hyperparameter dictionaries to test
     """
-    param_names = list(HyperparameterConfig.HYPERPARAMETER_RANGES.keys())
-    param_values = list(HyperparameterConfig.HYPERPARAMETER_RANGES.values())
-    all_combinations = list(product(*param_values))
+    ranges = HyperparameterConfig.HYPERPARAMETER_RANGES
+    param_names = list(ranges.keys())
+    
     valid_combinations = []
+    seen_combos = set()
     
-    for combo in all_combinations:
-        params = dict(zip(param_names, combo))            
-        valid_combinations.append(params)
-        
-    if max_combinations and len(valid_combinations) > max_combinations:
-        if random_sample:
-            np.random.seed(42)
-            indices = np.random.choice(len(valid_combinations), max_combinations, replace=False)
-            valid_combinations = [valid_combinations[i] for i in indices]
-        else:
-            step = len(valid_combinations) // max_combinations
-            valid_combinations = valid_combinations[::step][:max_combinations]
-        
-    
-    return valid_combinations
+    # If we want a specific number of random samples
+    if random_sample and max_combinations:
+        print(f"   🎲 Generating {max_combinations} unique random samples...")
+        while len(valid_combinations) < max_combinations:
+            # Pick one random value for every parameter
+            combo = tuple(random.choice(ranges[p]) for p in param_names)
+            
+            if combo not in seen_combos:
+                seen_combos.add(combo)
+                valid_combinations.append(dict(zip(param_names, combo)))
+        return valid_combinations
 
 def run_pipeline_for_combo(hyperparameters, combo_dir):
     """
