@@ -965,8 +965,10 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         # --- PHASE 2: VECTORIZED WINDOW FEATURE CALCULATION (HUGE SPEEDUP) ---
         window_flags_df = calculate_window_features(all_data, FPS, SAMPLE_RATE)
         # Merge the pre-calculated features back into the main DataFrame
-        all_data = pd.concat([all_data, window_flags_df.drop(columns=['video_id', 'frame_number'], errors='ignore')], axis=1)
+        cols_to_use = window_flags_df.columns.difference(all_data.columns).tolist() + ['video_id', 'frame_number']
+        all_data = all_data.merge(window_flags_df[cols_to_use], on=['video_id', 'frame_number'], how='left')
         # --- PHASE 3A: INITIAL HIERARCHICAL CLASSIFICATION (Provides interaction_type and initial MEDIA_INTERACTION flags) ---
+        
         print("⏱️ PHASE 3: Running Initial Classification...")
         results = all_data.apply(lambda row: classify_frames(row, all_data, included_rules), axis=1)
         all_data['interaction_type'] = [r[0] for r in results]
