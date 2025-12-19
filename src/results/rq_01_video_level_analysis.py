@@ -118,7 +118,7 @@ def create_segments_for_video(video_id, video_df):
     
     return segments
 
-def merge_segments_with_small_gaps(segments_df):
+def merge_same_segments(segments_df):
     """
     Merge segments of the same category that have small gaps between them.
     
@@ -779,7 +779,7 @@ def main(output_file_path: Path, frame_data_path: Path):
         segments_df = pd.DataFrame(all_segments)
         segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)
         
-        segments_df = merge_segments_with_small_gaps(segments_df)
+        segments_df = merge_same_segments(segments_df)
         
     else:
         segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'interaction_type',
@@ -795,14 +795,14 @@ def main(output_file_path: Path, frame_data_path: Path):
 
     # Rerun merge AFTER all types have been finalized to clean up fragmentation
     print("🧹 Final consolidation: Merging reclassified segments of the same type...")
-    segments_df = merge_segments_with_small_gaps(segments_df)
+    segments_df = merge_same_segments(segments_df)
     segments_df = reclassify_ghost_segments(segments_df, frame_data)
-    segments_df = merge_segments_with_small_gaps(segments_df)
 
     # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
     #segments_df = fill_gaps_between_segments(segments_df)
     segments_df = fill_gaps_with_default(segments_df, default_type="Available")
-    
+    segments_df = merge_same_segments(segments_df)
+
     # Step 7: Generate and print summary
     print_segment_summary(segments_df)
     
