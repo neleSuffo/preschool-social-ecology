@@ -37,6 +37,7 @@ ROBUST_PERSON_FLAG = 'is_robust_person'
 ROBUST_OHS_FLAG = 'is_sustained_ohs'
 RECENT_KCDS_FLAG = 'has_recent_kcds'
 MEDIA_INTERACTION_FLAG = 'is_media_interaction'
+AUDIOBOOK_FLAG = 'is_audiobook'
 
 # configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -347,6 +348,11 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     pd.DataFrame
         DataFrame with calculated window features
     """
+    # Safeguard: ensure audiobook flag name is always available even if globals were altered
+    audiobook_flag = 'is_audiobook'
+    # If global constant exists, prefer it
+    if 'AUDIOBOOK_FLAG' in globals():
+        audiobook_flag = AUDIOBOOK_FLAG
     
     # 1. Setup Window Sizes (in samples/rows)
     samples_per_sec = fps / sample_rate
@@ -358,105 +364,56 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     N_alone = int(InferenceConfig.ROBUST_ALONE_WINDOW_SEC * samples_per_sec)
     N_media = int(InferenceConfig.MEDIA_WINDOW_SEC * samples_per_sec)
     
-    # Rule 5 Buffer size (N_buffer)
-    N_buffer = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / sample_rate)
-
-    # --- 2. Sustained KCDS (Rule 3) ---
-    # Goal: 100% presence in *any* N_sustained window that overlaps the current frame.
-    
+    # --- 1. Sustained KCDS ---
     if N_sustained > 0:
-        # a. Calculate the sum of KCDS in every possible N_sustained window ending at frame i.
-        # This gives the raw count of CDS in the lookback window.
         df['kcds_sum_lookback'] = df['has_cds'].rolling(window=N_sustained, min_periods=N_sustained).sum()
-        
-        # b. Check if the sum is equal to the window size (100% presence).
         df[SUSTAINED_KCDS_FLAG] = (df['kcds_sum_lookback'] == N_sustained)
-        
-        # c. Forward-Backward Sliding Check: If any frame is marked True in a window of size N, 
-        #    then all frames in that window should be True. This is done by checking the 
-        #    rolling *maximum* of the boolean flag itself.
-        df[SUSTAINED_KCDS_FLAG] = (
-            df[SUSTAINED_KCDS_FLAG].rolling(window=N_sustained, min_periods=1, center=True).max().fillna(False).astype(bool)
-        )
+        df[SUSTAINED_KCDS_FLAG] = df[SUSTAINED_KCDS_FLAG].rolling(window=N_sustained, min_periods=1, center=True).max().fillna(False).astype(bool)
     else:
-         df[SUSTAINED_KCDS_FLAG] = False
+        df[SUSTAINED_KCDS_FLAG] = False
 
-    # --- 3. Robust Presence/Available Check (OHS & Person) ---
-    # Goal: Check if fraction > MIN_PRESENCE_FRACTION in any overlapping N_avail window.
-    
+    # --- 2. Audiobook & Robust OHS Detection ---
     if N_avail > 0:
-        # Calculate the rolling mean (fraction) of presence for every window ending at frame i.
         df['person_frac_lookback'] = df['person_or_face_present'].rolling(window=N_avail, min_periods=1).mean()
         df['ohs_frac_lookback'] = df['has_ohs'].rolling(window=N_avail, min_periods=1).mean()
         
-        # Robust Person Presence (Rule for Available)
-        df[ROBUST_PERSON_FLAG] = (
-            df['person_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_PERSON_FRACTION
-        )
+        # Identify constant background OHS (Audiobook)
+        # Default threshold: OHS present in > 80% of the window
+        MAX_OHS_FOR_AVAILABLE = getattr(InferenceConfig, 'MAX_OHS_FRACTION_FOR_AVAILABLE', 0.80)
+        df[audiobook_flag] = df['ohs_frac_lookback'] >= MAX_OHS_FOR_AVAILABLE
         
-        # Robust OHS Presence (Rule for Available)
+        # Robust Person Presence
+        df[ROBUST_PERSON_FLAG] = df['person_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_PERSON_FRACTION
+        
+        # Robust OHS Presence (Available) 
+        # Triggered ONLY if OHS is above min threshold AND NOT constant background (audiobook)
         df[ROBUST_OHS_FLAG] = (
-            df['ohs_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_OHS_FRACTION
+            (df['ohs_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_OHS_FRACTION) &
+            (~df[audiobook_flag])
         )
-
     else:
-        df[ROBUST_PERSON_FLAG] = False
-        df[ROBUST_OHS_FLAG] = False
+        df[ROBUST_PERSON_FLAG] = df[ROBUST_OHS_FLAG] = df[audiobook_flag] = False
 
-
-    # --- 4. Robust Alone Check (Used in Hierarchical Classification) ---
-    # Goal: Confirm if the total social signal fraction is <= MAX_ALONE_FALSE_POSITIVE_FRACTION.
-    
+    # --- 3. Robust Alone Check ---
     if N_alone > 0:
-        # Total social signal (Visual + CDS + OHS)
         df['social_signal_total'] = df['person_or_face_present'] + df['has_cds'] + df['has_ohs']
-        
-        # Calculate the rolling mean of the social signal
         df['social_signal_frac'] = df['social_signal_total'].rolling(window=N_avail, min_periods=1).mean() / 3
-        
-        # Define 'is_sustained_absence' (used to determine Alone)
-        # Check if the fraction is BELOW the max tolerance in *all* overlapping windows
-        # We check the rolling *minimum* of the inverse condition over the window.
-        df[ROBUST_ALONE_FLAG] = (
-             df['social_signal_frac'].rolling(window=N_alone, min_periods=1, center=True).min().fillna(1) <= InferenceConfig.MAX_ALONE_FALSE_POSITIVE_FRACTION
-        )
+        df[ROBUST_ALONE_FLAG] = df['social_signal_frac'].rolling(window=N_alone, min_periods=1, center=True).min().fillna(1) <= InferenceConfig.MAX_ALONE_FALSE_POSITIVE_FRACTION
     else:
-        df[ROBUST_ALONE_FLAG] = True # Default to Alone if no window possible
+        df[ROBUST_ALONE_FLAG] = True
 
+    # --- 4. Recent KCDS & Media Check ---
+    df[RECENT_KCDS_FLAG] = df['has_cds'].rolling(window=max(1, N_recent_speech), min_periods=1).max().shift(1).fillna(0).astype(bool)
     
-    # --- 5. Recent KCDS (Rule 4 Component) ---
-    if N_recent_speech > 0:
-        # Check if the max KCDS in the lookback window is 1 (i.e., KCDS existed recently)
-        df[RECENT_KCDS_FLAG] = df['has_cds'].rolling(window=N_recent_speech, min_periods=1).max().fillna(0).astype(bool).shift(1).fillna(False)
-    else:
-         df[RECENT_KCDS_FLAG] = False
-         
-    # --- 6. Media Interaction Check ---
     if N_media > 0:
-        # Calculate rolling fractions
         df['book_frac'] = df['has_book'].rolling(window=N_media, min_periods=N_media).mean()
         df['cds_ohs_frac'] = (df['has_cds'] + df['has_ohs']).rolling(window=N_media, min_periods=N_media).mean() / 2
         df['kchi_frac'] = df['has_kchi'].rolling(window=N_media, min_periods=N_media).mean()
-
-        # Check for sustained book and sustained adult-like audio
-        sustained_book = (df['book_frac'] >= InferenceConfig.MIN_BOOK_PRESENCE_FRACTION)
-        sustained_adult_audio = (df['cds_ohs_frac'] >= InferenceConfig.MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA) 
-        
-        # Check for non-reciprocal audio (child is quiet)
-        non_reciprocal_kchi = (df['kchi_frac'] <= InferenceConfig.MAX_KCHI_FRACTION_FOR_MEDIA)
-        
-        # Combine conditions for the media flag
-        df[MEDIA_INTERACTION_FLAG] = (
-            sustained_book & 
-            sustained_adult_audio & 
-            non_reciprocal_kchi
-        ).rolling(window=N_media, min_periods=1, center=True).max().fillna(False).astype(bool)
-        
+        df[MEDIA_INTERACTION_FLAG] = ( (df['book_frac'] >= InferenceConfig.MIN_BOOK_PRESENCE_FRACTION) & (df['cds_ohs_frac'] >= InferenceConfig.MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA) & (df['kchi_frac'] <= InferenceConfig.MAX_KCHI_FRACTION_FOR_MEDIA) ).rolling(window=N_media, min_periods=1, center=True).max().fillna(False).astype(bool)
     else:
         df[MEDIA_INTERACTION_FLAG] = False
         
-    return df[['video_id', 'frame_number', SUSTAINED_KCDS_FLAG, ROBUST_PERSON_FLAG, 
-               ROBUST_OHS_FLAG, ROBUST_ALONE_FLAG, RECENT_KCDS_FLAG, MEDIA_INTERACTION_FLAG]].copy()
+    return df[['video_id', 'frame_number', SUSTAINED_KCDS_FLAG, ROBUST_PERSON_FLAG, ROBUST_OHS_FLAG, ROBUST_ALONE_FLAG, RECENT_KCDS_FLAG, MEDIA_INTERACTION_FLAG, audiobook_flag]].copy()
 
 def check_audio_interaction_turn_taking(df, fps):
     """
@@ -595,70 +552,47 @@ def classify_frames(row, results_df, included_rules=None):
     # --- Retrieve Pre-calculated Flags ---
     
     # Interacting Flags
+    # Flags
     rule1_turn_taking = bool(row['is_audio_interaction'])
     rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
     rule3_kcds_speaking = bool(row[SUSTAINED_KCDS_FLAG])
-    
     person_or_face_present_instant = (row['person_or_face_present'] == 1)
     rule4_person_recent_speech = bool(person_or_face_present_instant and row[RECENT_KCDS_FLAG])
     
-    # Available/Alone Flags
     is_sustained_ohs = bool(row[ROBUST_OHS_FLAG])
     is_robust_person_presence = bool(row[ROBUST_PERSON_FLAG])
     is_sustained_absence = bool(row[ROBUST_ALONE_FLAG])
     is_media_interaction = bool(row[MEDIA_INTERACTION_FLAG])
+    is_audiobook = bool(row[AUDIOBOOK_FLAG]) # New flag
     
-    # --- Rule 5: Buffered KCHI (Still needs lookahead/lookback) ---
+    # Rule 5 Buffered KCHI
     BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
-    is_kchi = (row['has_kchi'] == 1)
     rule5_buffered_kchi = False
-    
-    if 5 in included_rules and is_kchi:
-        start_buffer = max(0, current_index - BUFFER_SAMPLES)
-        end_buffer = min(len(results_df) - 1, current_index + BUFFER_SAMPLES)
-        
-        if end_buffer >= start_buffer:
-            visual_in_buffer = (
-                results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1
-            ).any()
-            rule5_buffered_kchi = visual_in_buffer
+    if 5 in included_rules and row['has_kchi'] == 1:
+        start_buffer, end_buffer = max(0, current_index - BUFFER_SAMPLES), min(len(results_df) - 1, current_index + BUFFER_SAMPLES)
+        rule5_buffered_kchi = (results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1).any()
             
-    # --- Tier 1: INTERACTING ---
+    # TIER 1: INTERACTING
     active_rules = []
-    
-    if 1 in included_rules and rule1_turn_taking:
-        active_rules.append(1)
-    if 2 in included_rules and rule2_close_proximity:
-        active_rules.append(2)
-    if 3 in included_rules and rule3_kcds_speaking:
-        active_rules.append(3)
-    if 4 in included_rules and rule4_person_recent_speech:
-        active_rules.append(4)
-    if 5 in included_rules and rule5_buffered_kchi:
-        active_rules.append(5)
+    if 1 in included_rules and rule1_turn_taking: active_rules.append(1)
+    if 2 in included_rules and rule2_close_proximity: active_rules.append(2)
+    if 3 in included_rules and rule3_kcds_speaking: active_rules.append(3)
+    if 4 in included_rules and rule4_person_recent_speech: active_rules.append(4)
+    if 5 in included_rules and rule5_buffered_kchi: active_rules.append(5)
 
     if active_rules:
         interaction_category = "Interacting"
     elif is_sustained_absence: 
         interaction_category = "Alone"
+    elif is_audiobook and not is_robust_person_presence:
+        # Constant OHS with no visual presence = ALONE
+        interaction_category = "Alone"
     elif is_sustained_ohs or is_robust_person_presence:         
-        if is_media_interaction:
-            # If the criteria for 'Available' are met, but it correlates with sustained non-reciprocal media, classify as ALONE.
-            interaction_category = "Alone"
-        else:
-            interaction_category = "Available"
-            
+        interaction_category = "Alone" if is_media_interaction else "Available"
     else:
         interaction_category = "Alone"
             
-    return (
-        interaction_category, 
-        rule1_turn_taking, 
-        rule2_close_proximity, 
-        rule3_kcds_speaking, 
-        rule4_person_recent_speech, 
-        rule5_buffered_kchi
-    )
+    return (interaction_category, rule1_turn_taking, rule2_close_proximity, rule3_kcds_speaking, rule4_person_recent_speech, rule5_buffered_kchi)
 
 def classify_face_category(row):
     """
@@ -1029,19 +963,13 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         all_data['is_audio_interaction'] = check_audio_interaction_turn_taking(all_data, FPS)
         
         # --- PHASE 2: VECTORIZED WINDOW FEATURE CALCULATION (HUGE SPEEDUP) ---
-        window_flags_df = calculate_window_features(all_data[['video_id', 'frame_number', 'has_kchi', 'has_cds', 'has_ohs', 'person_or_face_present', 'has_book']].copy(), FPS, SAMPLE_RATE)
+        window_flags_df = calculate_window_features(all_data, FPS, SAMPLE_RATE)
         # Merge the pre-calculated features back into the main DataFrame
         all_data = pd.concat([all_data, window_flags_df.drop(columns=['video_id', 'frame_number'], errors='ignore')], axis=1)
-
         # --- PHASE 3A: INITIAL HIERARCHICAL CLASSIFICATION (Provides interaction_type and initial MEDIA_INTERACTION flags) ---
-        print("⏱️ PHASE 3A: Running Initial Classification...")
-        initial_classification_results = all_data.apply(
-            lambda row: classify_frames(row, all_data, included_rules), axis=1
-        )
-
-        # Apply results to all_data
-        all_data['interaction_type'] = [result[0] for result in initial_classification_results]
-
+        print("⏱️ PHASE 3: Running Initial Classification...")
+        results = all_data.apply(lambda row: classify_frames(row, all_data, included_rules), axis=1)
+        all_data['interaction_type'] = [r[0] for r in results]
         # --- PHASE 3B: BB PERSISTENCE SMOOTHING ---
         # This modifies the 'is_media_interaction' column based on BB tracking.
         print("🧠 PHASE 3B: Running Bounding Box Persistence and Smoothing (DeepFace Check)...")
