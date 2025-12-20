@@ -897,6 +897,8 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         Path to the SQLite database containing analysis data.
     output_dir : Path
         Directory where output files will be saved.
+    hyperparameter_tuning: Bool
+        Whether script runs in hyperparmeter mode or not 
     included_rules : list, optional
         List of rule numbers to include in interaction classification (1, 2, 3, 4).
         If None, uses default rules [2, 3, 4].
