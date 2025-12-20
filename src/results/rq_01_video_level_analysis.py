@@ -3,6 +3,7 @@ import argparse
 import sys
 import sqlite3
 import pandas as pd
+import shutil
 import numpy as np
 from pathlib import Path
 
@@ -251,216 +252,6 @@ def reclassify_implicit_turn_taking(segments_df, frame_data):
     print(f"   Reclassified {reclassified_count} 'Available'/'Alone' segments to 'Interacting' (Implicit Turn-Taking).")
     return updated_segments_df
 
-def reclassify_sandwiched_alone_segments(segments_df):
-    """
-    Reclassifies 'Alone' segments shorter than InferenceConfig.MIN_ALONE_SANDWICH_DURATION_SEC
-    to 'Available' if they are sandwiched between two Interaction segments.
-
-    Parameters
-    ----------
-    segments_df : pd.DataFrame
-        DataFrame with segments after initial creation and merging.
-        
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with reclassified segments.
-    """    
-    reclassified_count = 0
-    updated_segments_df = segments_df.copy()
-
-    # Iterate over each video group to easily check neighboring segments by index
-    for video_id, video_segments in updated_segments_df.groupby('video_id'):
-        
-        # Reset index to allow for clean positional indexing (i-1, i, i+1)
-        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=False)
-        original_indices = video_segments['index'] # Map back to original segments_df index
-        
-        # Iterate from the second segment (index 1) to the second-to-last segment (index len-2)
-        for i in range(1, len(video_segments) - 1):
-            segment = video_segments.iloc[i]
-            
-            # --- Condition 1: Must be 'Alone' ---
-            if segment['interaction_type'] != 'Alone':
-                continue
-            
-            # --- Condition 2: Duration Check (must be shorter than threshold) ---
-            if segment['duration_sec'] >= InferenceConfig.MIN_ALONE_SANDWICH_DURATION_SEC:
-                continue
-
-            # --- Condition 3: Must be Sandwiched between two non-'Alone' segments ---
-            prev_segment = video_segments.iloc[i-1]
-            next_segment = video_segments.iloc[i+1]
-            
-            is_sandwiched = (
-                prev_segment['interaction_type'] == 'Interacting' and
-                next_segment['interaction_type'] == 'Interacting'
-            )
-            
-            if is_sandwiched:
-                # All conditions met: Reclassify 'Alone' to 'Available'
-                original_idx = original_indices.iloc[i]
-                
-                # Apply reclassification to the main copy
-                updated_segments_df.loc[original_idx, 'interaction_type'] = 'Available'
-                reclassified_count += 1
-
-    print(f"   Reclassified {reclassified_count} short 'Alone' segments to 'Available' (Sandwiching Rule).")
-    return updated_segments_df
-
-def reclassify_sandwiched_interacting_segments(segments_df):
-    """
-    Reclassifies 'Interacting' segments shorter than 
-    InferenceConfig.MIN_INTERACTING_SANDWICH_DURATION_SEC to 'Available' 
-    if they are sandwiched between two Alone segments.
-
-    Parameters
-    ----------
-    segments_df : pd.DataFrame
-        DataFrame with segments after initial creation and merging.
-        
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with reclassified segments.
-    """    
-    reclassified_count = 0
-    updated_segments_df = segments_df.copy()
-
-    # Iterate over each video group to easily check neighboring segments by index
-    for video_id, video_segments in updated_segments_df.groupby('video_id'):
-        
-        # Reset index to allow for clean positional indexing (i-1, i, i+1)
-        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=False)
-        original_indices = video_segments['index'] # Map back to original segments_df index
-        
-        # Iterate from the second segment (index 1) to the second-to-last segment (index len-2)
-        for i in range(1, len(video_segments) - 1):
-            segment = video_segments.iloc[i]
-            
-            # --- Condition 1: Must be 'Interacting' ---
-            if segment['interaction_type'] != 'Interacting':
-                continue
-            
-            # --- Condition 2: Duration Check (must be shorter than threshold) ---
-            if segment['duration_sec'] >= InferenceConfig.MIN_INTERACTING_SANDWICH_DURATION_SEC:
-                continue
-
-            # --- Condition 3: Must be Sandwiched between two 'Alone' segments ---
-            prev_segment = video_segments.iloc[i-1]
-            next_segment = video_segments.iloc[i+1]
-            
-            is_sandwiched = (
-                prev_segment['interaction_type'] == 'Alone' and
-                next_segment['interaction_type'] == 'Alone'
-            )
-            
-            if is_sandwiched:
-                # All conditions met: Reclassify 'Interacting' to 'Available'
-                original_idx = original_indices.iloc[i]
-                
-                # Apply reclassification to the main copy
-                updated_segments_df.loc[original_idx, 'interaction_type'] = 'Available'
-                reclassified_count += 1
-
-    print(f"   Reclassified {reclassified_count} short 'Interacting' segments to 'Available' (Sandwiching Rule).")
-    return updated_segments_df
-
-def reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present'):
-    """
-    Reclassify 'Available' segments to 'Alone' only if they meet strict criteria:
-    1. No person/face detection occurred in the segment's duration.
-    2. Segment length is longer than 10 seconds.
-    3. The segment is NOT immediately preceded AND immediately succeeded by an 'Interacting' segment.
-    
-    Parameters
-    ----------
-    segments_df : pd.DataFrame
-        DataFrame with final interaction segments.
-    frame_data : pd.DataFrame
-        Original frame-level data (used only for column existence check here).
-    detection_col : str
-        The name of the fused detection column (e.g., 'person_or_face_present').
-        
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with reclassified segments.
-    """    
-    # --- Check for Fused Detection Column ---
-    if detection_col not in frame_data.columns:
-        print(f"⚠️ Warning: Detection column '{detection_col}' not found in frame data. Skipping reclassification.")
-        return segments_df
-        
-    reclassified_count = 0
-    updated_segments_df = segments_df.copy()
-
-    # Iterate over each video group to easily check neighboring segments by index
-    for video_id, video_segments in updated_segments_df.groupby('video_id'):
-        
-        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=False)
-        original_indices = video_segments['index'] # Map back to original segments_df index
-        
-        for i in range(len(video_segments)):
-            segment = video_segments.iloc[i]
-            
-            # --- Condition 1: Must be 'Available' ---
-            if segment['interaction_type'] != 'Available':
-                continue
-            
-            # --- Condition 2: Duration Check (must be > MIN_RECLASSIFY_DURATION_SEC seconds) ---
-            if segment['duration_sec'] <= InferenceConfig.MIN_RECLASSIFY_DURATION_SEC:
-                continue
-
-            # --- Condition 3: Boundary Check (NOT between two 'Interacting' segments) ---
-            
-            # Check previous segment
-            is_preceded_by_interacting = False
-            if i > 0:
-                prev_segment = video_segments.iloc[i-1]
-                if prev_segment['interaction_type'] == 'Interacting':
-                    is_preceded_by_interacting = True
-            
-            # Check next segment
-            is_succeeded_by_interacting = False
-            if i < len(video_segments) - 1:
-                next_segment = video_segments.iloc[i+1]
-                if next_segment['interaction_type'] == 'Interacting':
-                    is_succeeded_by_interacting = True
-
-            # Reclassify only if the segment is NOT sandwiched between two 'Interacting' segments
-            if is_preceded_by_interacting and is_succeeded_by_interacting:
-                continue # Skip reclassification if sandwiched
-
-            # --- Condition 4: No Detection Check (main criterion) ---
-            
-            video_name = segment['video_name']
-            start_frame = segment['segment_start']
-            end_frame = segment['segment_end']
-            
-            # Filter frame data for the current segment's video and frame range
-            current_video_frames = frame_data[frame_data['video_name'] == video_name]
-            segment_frames = current_video_frames[
-                (current_video_frames['frame_number'] >= start_frame) & 
-                (current_video_frames['frame_number'] <= end_frame)
-            ]
-            
-            # Check if ANY detection occurred (sum > 0)
-            detection_frames = segment_frames[detection_col]
-            
-            if detection_frames.empty or detection_frames.sum() == 0:
-                # All conditions met: no detection, long duration, and not sandwiched
-                
-                # Get the original index from the temporary DataFrame's 'index' column
-                original_idx = original_indices.iloc[i]
-                
-                # Apply reclassification to the main copy
-                updated_segments_df.loc[original_idx, 'interaction_type'] = 'Alone'
-                reclassified_count += 1
-            
-    print(f"   Reclassified {reclassified_count} 'Available' segments to 'Alone'.")
-    return updated_segments_df
-
 def fill_gaps_with_default(segments_df, default_type="Alone"):
     filled_segments = []
 
@@ -489,65 +280,6 @@ def fill_gaps_with_default(segments_df, default_type="Alone"):
                         'segment_end': v_segs[i+1]['segment_start'] - 1
                     })
     return pd.DataFrame(filled_segments)
-
-def fill_gaps_between_segments(segments_df):
-    """
-    Final step: Extends the end time of every segment to meet the start time of the 
-    subsequent segment within the same video, ensuring a continuous timeline.
-    
-    Parameters
-    ----------
-    segments_df : pd.DataFrame
-        DataFrame with segments
-        
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with gaps filled
-    """
-    filled_segments = []
-    
-    for video_id, video_segments in segments_df.groupby('video_id'):
-        video_segments = video_segments.sort_values('start_time_sec').reset_index(drop=True)
-        
-        if len(video_segments) <= 1:
-            filled_segments.extend(video_segments.to_dict('records'))
-            continue
-            
-        # Iterate up to the second-to-last segment
-        for i in range(len(video_segments) - 1):
-            current_segment = video_segments.iloc[i].copy()
-            next_segment = video_segments.iloc[i+1]
-            
-            gap_duration = next_segment['start_time_sec'] - current_segment['end_time_sec']
-            
-            if gap_duration > 0:
-                # The gap exists. Extend the current segment's end time to the next segment's start time.
-                
-                # Use next segment's start frame to calculate the new end frame
-                # The end frame of the current segment becomes one frame *before* the start frame of the next.
-                # Since frames are spaced by 1/FPS (or SAMPLE_RATE/FPS), we use the next segment's start time.
-                
-                new_end_sec = next_segment['start_time_sec']
-                new_end_frame = next_segment['segment_start'] - 1 
-                
-                current_segment['segment_end'] = new_end_frame
-                current_segment['end_time_sec'] = new_end_sec
-                current_segment['duration_sec'] = new_end_sec - current_segment['start_time_sec']
-            
-            filled_segments.append(current_segment.to_dict())
-        
-        # Add the absolute last segment of the video (it has no 'next_segment' to extend into)
-        filled_segments.append(video_segments.iloc[-1].to_dict())
-        
-    if filled_segments:
-        result_df = pd.DataFrame(filled_segments)
-        # Ensure duration is correctly calculated after frame manipulation
-        result_df['duration_sec'] = result_df['end_time_sec'] - result_df['start_time_sec']
-        print("   Final step: All gaps closed to create continuous timeline.")
-        return result_df
-    else:
-        return segments_df
     
 def print_segment_summary(segments_df):
     """
@@ -738,7 +470,7 @@ def reclassify_ghost_segments(segments_df, frame_data):
     print(f"   Reclassified {reclassified_count} 'Ghost' segments to 'Alone' (Dual-Threshold Gate).")
     return updated_segments_df
 
-def main(output_file_path: Path, frame_data_path: Path):
+def main(output_file_path: Path, frame_data_path: Path, hyperparameter_tuning: False):
     """
     Main entry point for video-level segment analysis.
     Creates mutually exclusive interaction segments from frame-level data.
@@ -758,7 +490,18 @@ def main(output_file_path: Path, frame_data_path: Path):
         Path to the output CSV file for saving the segments.
     frame_data_path : Path
         Path to the CSV file containing frame-level interaction data.
-    """        
+    hyperparameter_tuning: Bool
+        Whether script runs in hyperparmeter mode or not 
+    """     
+    if hyperparameter_tuning:
+        run_dir = output_file_path.parent
+           
+        try:
+            script_path = Path(__file__)
+            shutil.copy(script_path, run_dir / script_path.name)
+        except NameError:
+            print("⚠️ __file__ not defined (likely running in notebook), skipping script copy.")
+        
     # Step 1: Load frame-level data
     frame_data = pd.read_csv(frame_data_path)
 
@@ -787,9 +530,6 @@ def main(output_file_path: Path, frame_data_path: Path):
                                         'start_time_sec', 'end_time_sec', 'duration_sec'])
 
     # Step 4a: Reclassify short, sandwiched 'Alone' segments between Alone segments to 'Available'
-    #segments_df = reclassify_sandwiched_alone_segments(segments_df)
-    #segments_df = reclassify_sandwiched_interacting_segments(segments_df)
-    #segments_df = reclassify_available_segments(segments_df, frame_data, detection_col='person_or_face_present')
     segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
     segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
 
@@ -799,7 +539,6 @@ def main(output_file_path: Path, frame_data_path: Path):
     segments_df = reclassify_ghost_segments(segments_df, frame_data)
 
     # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
-    #segments_df = fill_gaps_between_segments(segments_df)
     segments_df = fill_gaps_with_default(segments_df, default_type="Available")
     segments_df = merge_same_segments(segments_df)
 
@@ -840,13 +579,12 @@ if __name__ == "__main__":
     print(f"Using input frame-level data from: {input_path}")
 
     # Run main analysis
-    main(output_file_path=output_path, frame_data_path=input_path)
+    main(output_file_path=output_path, frame_data_path=input_path, hyperparameter_tuning=False)
 
     # Copy current script into folder for reproducibility
     try:
         current_script = Path(__file__)
         destination_script = folder_path / current_script.name
-        import shutil
         shutil.copy(current_script, destination_script)
         print(f"🧾 Copied script to {destination_script}")
     except Exception as e:
