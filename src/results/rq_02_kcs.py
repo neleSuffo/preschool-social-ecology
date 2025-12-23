@@ -124,7 +124,7 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     """
     # Load segments DataFrame
     segments_df = pd.read_csv(segments_csv_path)
-    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH, sep=';')
 
     # Connect to the SQLite database and query KCHI audio classifications with video names
     conn = sqlite3.connect(db_path)
@@ -158,7 +158,7 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     
     # Merge with age data to get age at recording
     kchi_vocs = kchi_vocs.merge(age_df[['video_name', 'age_at_recording']], on='video_name', how='left')
-    
+
     # Check video alignment
     voc_videos = set(kchi_vocs['video_id'].unique())
     seg_videos = set(segments_df['video_id'].unique())
@@ -186,7 +186,7 @@ def main():
     This script:
     1. Extracts KCHI (key child) audio classifications from the database
     2. Converts frame-level detections to frame-level time intervals  
-    3. Maps frame-level KCHI detections to interaction contexts (Alone, Co-present Silent, Interacting)  
+    3. Maps frame-level KCHI detections to interaction contexts (Alone, Available, Interacting)  
     4. Outputs mapped frame-level data with overlap durations
     5. Saves results to CSV
     
@@ -291,6 +291,20 @@ def main():
         'segment_start_time', 'segment_end_time', 
         'kchi_speech_minutes', 'segment_duration_minutes', 'speech_activity_percent'
     ]].copy()
+    
+    # Clean and convert age_at_recording to float
+    final_output['age_at_recording'] = (
+    final_output['age_at_recording']
+    .astype(str)
+    .str.replace('"', '', regex=False)
+    .str.replace(',', '.', regex=False)
+    .str.strip()
+    )
+
+    final_output['age_at_recording'] = pd.to_numeric(
+        final_output['age_at_recording'],
+        errors='coerce'
+    )
     
     # Save aggregated segment totals only
     final_output.to_csv(Inference.KCS_SUMMARY_CSV, index=False)
