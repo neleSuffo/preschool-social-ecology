@@ -35,35 +35,33 @@ from results.rq_01_video_level_analysis import main as segment_analysis_main
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""   
     HYPERPARAMETER_RANGES = {
-    # --- 1. NEW: Research-Driven Duration Thresholds ---
-    # Testing current values vs. your findings (95% thresholds)
-    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.4, 1.5, 3.0], # Best: 0.4 | Goal: 3.0
-    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4.0, 6.0, 8.0],   # Best: 8.0 | Goal: 6.0
-    'MIN_ALONE_SEGMENT_DURATION_SEC': [5.0, 8.0, 10.0],     # Best: 5.0 | Goal: 8.0
+    # --- 1. NEW Best-Driven Duration Thresholds ---
+    # Testing current bests vs. stricter research-informed goals (3s/6s/8s)
+    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.4, 1.5, 3.0], # Best: 0.4
+    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4.0, 6.0, 8.0],   # Best: 6.0
+    'MIN_ALONE_SEGMENT_DURATION_SEC': [5.0, 8.0, 10.0],     # Best: 5.0
 
-    # --- 2. NEW: Audiobook / Constant OHS Gate ---
-    'MAX_OHS_FOR_AVAILABLE': [0.60, 0.70, 0.85],            # Best: 0.70
+    # --- 2. Audiobook & Media Logic ---
+    'MAX_OHS_FOR_AVAILABLE': [0.50, 0.60, 0.75],            # Best: 0.60
+    'MEDIA_WINDOW_SEC': [10, 15, 20],                       # Best: 15
+    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.08, 0.12, 0.18],      # Best: 0.12
 
-    # --- 3. Interaction & Presence Logic (Tiers 1 & 2) ---
-    'PROXIMITY_THRESHOLD': [0.55, 0.60, 0.70],              # Best: 0.60
-    'SUSTAINED_KCDS_WINDOW_SEC': [3.0, 4.0, 5.0],           # Best: 4.0
-    'MAX_TURN_TAKING_GAP_SEC': [3, 4, 6],                   # Best: 4
-    'PERSON_AVAILABLE_WINDOW_SEC': [10, 15, 20],            # Best: 15
-    'MIN_PERSON_PRESENCE_FRACTION': [0.08, 0.12, 0.18],     # Best: 0.12
+    # --- 3. Interaction & Presence Logic (Tier 1) ---
+    'PROXIMITY_THRESHOLD': [0.50, 0.55, 0.65],              # Best: 0.55
+    'SUSTAINED_KCDS_WINDOW_SEC': [4.0, 5.0, 6.5],           # Best: 5.0
+    'MAX_TURN_TAKING_GAP_SEC': [4, 6, 8],                   # Best: 6
+    'PERSON_AVAILABLE_WINDOW_SEC': [8, 10, 15],             # Best: 10
+    'MIN_PERSON_PRESENCE_FRACTION': [0.05, 0.08, 0.12],     # Best: 0.08
 
     # --- 4. Continuity & Robustness ---
     'GAP_STRETCH_THRESHOLD': [0.5, 1.0, 2.0],               # Best: 1.0
-    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.10, 0.15, 0.20], # Best: 0.15
+    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.15, 0.20, 0.25], # Best: 0.20
     'ROBUST_ALONE_WINDOW_SEC': [6, 8, 12],                  # Best: 8
 
-    # --- 5. Media Interaction & Persistence ---
-    'MEDIA_WINDOW_SEC': [15, 20, 30],                       # Best: 20
-    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.05, 0.08, 0.12],      # Best: 0.08
-
-    # --- 6. Refinement & Ghost Gates ---
-    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.25, 0.30, 0.40], # Best: 0.30
-    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.02, 0.05, 0.10], # Best: 0.05
-    'KCHI_PERSON_BUFFER_FRAMES': [5, 10, 20],                # Best: 10
+    # --- 5. Refinement & Ghost Gates ---
+    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.20, 0.25, 0.35], # Best: 0.25
+    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.01, 0.02, 0.05], # Best: 0.02
+    'KCHI_PERSON_BUFFER_FRAMES': [3, 5, 10],                 # Best: 5
 }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
@@ -141,7 +139,8 @@ def run_pipeline_for_combo(hyperparameters, combo_dir):
         # 3. Execute Segment-Level Analysis
         segment_analysis_main(
             output_file_path=segment_output_path, 
-            frame_data_path=frame_output_path
+            frame_data_path=frame_output_path,
+            hyperparameter_tuning=True,
         )
         
         return True, frame_output_path, segment_output_path, None
