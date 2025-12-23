@@ -109,18 +109,19 @@ class Proximity:
 class Inference:
     QUANTEX_VIDEOS_LIST_FILE = Path(BasePaths.DATA_DIR/"quantex_video_list_inference.txt") # list of all quantex videos for inference
     BASE_OUTPUT_DIR = BasePaths.OUTPUT_DIR / "quantex_inference"
+    FINAL_OUTPUT_FOLDER = Path(BASE_OUTPUT_DIR/"interaction_analysis_20251222_131753")
     PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
     SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
     BOOK_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "book_processed.txt"
-    FRAME_LEVEL_INTERACTIONS_CSV = Path("01_frame_level_social_interactions.csv")
-    INTERACTION_SEGMENTS_CSV = Path("01_interaction_segments.csv")
-    UTTERANCE_SEGMENTS_CSV = BASE_OUTPUT_DIR / "01_utterance_segments.csv"
-    KCS_SUMMARY_CSV = BASE_OUTPUT_DIR / "02_kcs_summary.csv"
-    TURN_TAKING_CSV = BASE_OUTPUT_DIR / "03_turn_taking_summary.csv"
-    CDS_SUMMARY_CSV = BASE_OUTPUT_DIR / "04_cds_summary.csv"
-    PRESENCE_CSV = BASE_OUTPUT_DIR / "05_presence.csv"
-    INTERACTION_COMPOSITION_CSV = BASE_OUTPUT_DIR / "06_interaction_composition.csv"
+    FRAME_LEVEL_INTERACTIONS_CSV = Path(FINAL_OUTPUT_FOLDER/"01_frame_level_social_interactions.csv")
+    INTERACTION_SEGMENTS_CSV = Path(FINAL_OUTPUT_FOLDER/"01_interaction_segments.csv")
+    UTTERANCE_SEGMENTS_CSV = FINAL_OUTPUT_FOLDER / "01_utterance_segments.csv"
+    KCS_SUMMARY_CSV = FINAL_OUTPUT_FOLDER / "02_kcs_summary.csv"
+    TURN_TAKING_CSV = FINAL_OUTPUT_FOLDER / "03_turn_taking_summary.csv"
+    CDS_SUMMARY_CSV = FINAL_OUTPUT_FOLDER / "04_cds_summary.csv"
+    PRESENCE_CSV = FINAL_OUTPUT_FOLDER / "05_presence.csv"
+    INTERACTION_COMPOSITION_CSV = FINAL_OUTPUT_FOLDER / "06_interaction_composition.csv"
     TEMP_CUT_FACE_DIR = BASE_OUTPUT_DIR / "temp_cut_faces"
     
 class Evaluation:
