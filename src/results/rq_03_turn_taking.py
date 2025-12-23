@@ -106,7 +106,7 @@ def map_vocalizations_to_segments(db_path: Path, segments_csv_path: Path):
          'seconds', 'words', 'interaction_type', 'segment_start_time', 'segment_end_time']
     """
     segments_df = pd.read_csv(segments_csv_path)
-    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH, sep=';')
     
     conn = sqlite3.connect(db_path)
     # Query audio classifications with binary speaker columns
@@ -294,6 +294,20 @@ def main():
         how='left'
     )
     final_df[['turn_count', 'turns_per_minute']] = final_df[['turn_count', 'turns_per_minute']].fillna(0)
+    
+    # Clean and convert age_at_recording to float
+    final_df['age_at_recording'] = (
+    final_df['age_at_recording']
+    .astype(str)
+    .str.replace('"', '', regex=False)
+    .str.replace(',', '.', regex=False)
+    .str.strip()
+    )
+
+    final_df['age_at_recording'] = pd.to_numeric(
+        final_df['age_at_recording'],
+        errors='coerce'
+    )
     
     # Step 4: Save the final results
     final_df.to_csv(Inference.TURN_TAKING_CSV, index=False)
