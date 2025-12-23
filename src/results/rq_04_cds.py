@@ -121,7 +121,7 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     segments_df = pd.read_csv(segments_csv_path)
     
     # Load age data
-    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH)
+    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH, sep=';')
 
     # Connect to the SQLite database and query CDS audio classifications with video names
     conn = sqlite3.connect(db_path)
@@ -361,6 +361,19 @@ def main():
         'speech_minutes', 'segment_duration_minutes', 'exposure_percent'
     ]].copy()
         
+    # Clean and convert age_at_recording to float
+    final_df['age_at_recording'] = (
+    final_df['age_at_recording']
+    .astype(str)
+    .str.replace('"', '', regex=False)
+    .str.replace(',', '.', regex=False)
+    .str.strip()
+    )
+
+    final_df['age_at_recording'] = pd.to_numeric(
+        final_df['age_at_recording'],
+        errors='coerce'
+    )
     # Save results with both total and CDS-only exposure
     final_output.to_csv(Inference.CDS_SUMMARY_CSV, index=False)
     
