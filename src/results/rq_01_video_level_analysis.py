@@ -11,7 +11,7 @@ from pathlib import Path
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
 sys.path.append(str(src_path))
 
-from constants import Inference, Evaluation
+from constants import Inference, Evaluation, DataPaths
 from config import DataConfig, InferenceConfig
 
 # Constants
@@ -544,6 +544,12 @@ def main(output_file_path: Path, frame_data_path: Path, hyperparameter_tuning: F
 
     # Step 7: Generate and print summary
     print_segment_summary(segments_df)
+    
+    # Read age csv    
+    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH, sep=";", decimal=",")
+    age_df = age_df[["video_name", "age_at_recording", "child_id"]]
+    # Merge on video_name to get age information
+    segments_df = segments_df.merge(age_df, on="video_name", how="left")
     
     # Step 8: Save results
     segments_df.to_csv(output_file_path, index=False)
