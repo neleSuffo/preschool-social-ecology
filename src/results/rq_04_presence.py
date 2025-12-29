@@ -4,23 +4,11 @@ from constants import Inference
 
 def enhance_segments_with_presence(segments_df, frame_data_df):
     """
-    Enhance interaction segments with adult/child presence information.
-    
-    Parameters
-    ----------
-    segments_df : pd.DataFrame
-        Existing interaction segments data
-    frame_data_df : pd.DataFrame
-        Frame-level data with presence information
-        
-    Returns
-    -------
-    pd.DataFrame
-        Enhanced segments with adult_present and child_present flags
+    Enhance interaction segments with presence information using person_or_face_present.
     """
     enhanced_segments = segments_df.copy()
-    enhanced_segments['adult_present'] = 0
-    enhanced_segments['child_present'] = 0
+    # Create a single column for general presence
+    enhanced_segments['others_present'] = 0
         
     for idx, segment in enhanced_segments.iterrows():
         video_name = segment['video_name']
@@ -35,12 +23,9 @@ def enhance_segments_with_presence(segments_df, frame_data_df):
         ]
         
         if len(video_frames) > 0:
-            # Check if any frame in this segment has adult or child present
-            has_adult = video_frames['adult_present'].sum() > 0
-            has_child = video_frames['child_present'].sum() > 0
-            
-            enhanced_segments.loc[idx, 'adult_present'] = 1 if has_adult else 0
-            enhanced_segments.loc[idx, 'child_present'] = 1 if has_child else 0
+            # Check if person_or_face_present is True in any frame of the segment
+            if video_frames['person_or_face_present'].any():
+                enhanced_segments.loc[idx, 'others_present'] = 1
     
     return enhanced_segments
 
@@ -73,28 +58,15 @@ def main(frame_data_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV,
     # Enhance segments with presence information
     enhanced_segments = enhance_segments_with_presence(segments_df, frame_df)
     
-    # Add interaction_partner column based on presence flags
-    def categorize_interaction_partner(row):
-        if row['adult_present'] == 1 and row['child_present'] == 0:
-            return 'adults_only'
-        elif row['adult_present'] == 0 and row['child_present'] == 1:
-            return 'children_only'
-        elif row['adult_present'] == 1 and row['child_present'] == 1:
-            return 'both_adults_and_children'
-        else:  # adult_present == 0 and child_present == 0
-            return 'neither'
-
-    enhanced_segments['interaction_partner'] = enhanced_segments.apply(categorize_interaction_partner, axis=1)
-    
+    # Keep segments where child is NOT alone
     filtered_segments = enhanced_segments[enhanced_segments['interaction_type'] != 'Alone']
     
-    # Save enhanced segments
+    # Save output
     try:
         filtered_segments.to_csv(Inference.PRESENCE_CSV, index=False)
-        print(f"\n💾 Output saved to: {Inference.PRESENCE_CSV}")        
+        print(f"\n💾 Output saved to: {Inference.PRESENCE_CSV}") 
     except Exception as e:
         print(f"❌ Error saving enhanced segments: {e}")
-        return
     
 if __name__ == "__main__":
     main()

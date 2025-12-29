@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 from constants import DataPaths, Inference
 from utils import extract_child_id  
+from config import DataConfig
 
 def merge_overlapping_intervals(intervals):
     """
@@ -93,7 +94,7 @@ def row_wise_mapping(voc_row, video_segments_df):
         })
     return results
 
-def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV):
+def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, segments_csv_path: Path = Inference.INTERACTION_SEGMENTS_CSV, frame_metadata_csv: Path = Inference.FRAME_LEVEL_INTERACTIONS_CSV):
     """
     Retrieve both CDS and OHS classifications from the SQLite database and map them to interaction segments.
     
@@ -117,44 +118,48 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
         DataFrame with mapped frame-level CDS and OHS detections to interaction segments,
         with speech_type column indicating 'CDS' or 'OHS'
     """
-    # Load segments DataFrame
+    # 1. Load data from CSVs
     segments_df = pd.read_csv(segments_csv_path)
+    # This CSV contains the 'is_media_interaction' column
+    metadata_df = pd.read_csv(frame_metadata_csv) 
     
-    # Load age data
     age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH, sep=';')
 
-    # Connect to the SQLite database and query CDS audio classifications with video names
+    # 2. Get Audio Classifications from SQL
     conn = sqlite3.connect(db_path)
-    
-    # Get both CDS and OHS audio classifications from the AudioClassifications table
     audio_query = """
     SELECT ac.video_id, vid.video_name, ac.frame_number, ac.has_cds, ac.has_ohs
     FROM AudioClassifications ac
     JOIN Videos vid ON ac.video_id = vid.video_id
     WHERE ac.has_cds = 1 OR ac.has_ohs = 1
-    ORDER BY ac.video_id, ac.frame_number
     """
     exposure_frames = pd.read_sql_query(audio_query, conn)
     conn.close()
-    
-    # Handle case where no CDS/OHS speech is detected
-    if len(exposure_frames) == 0:
-        print("⚠️ Warning: No CDS or OHS speech frames found in audio classifications")
-        return pd.DataFrame()  # Return empty DataFrame
-    
+
+    # 3. Merge SQL data with CSV metadata to get 'is_media_interaction'
+    # We merge on video_name and frame_number to ensure a perfect match
+    exposure_frames = exposure_frames.merge(
+        metadata_df[['video_name', 'frame_number', 'is_media_interaction']], 
+        on=['video_name', 'frame_number'], 
+        how='left'
+    )
+
+    # 4. Filter out Media Interaction frames
+    # We drop any frames where is_media_interaction is 1
+    exposure_frames = exposure_frames[exposure_frames['is_media_interaction'] != 1].copy()
+
+    # 5. Handle empty data after filtering
+    if exposure_frames.empty:
+        print("⚠️ All speech frames were filtered out (media interaction).")
+        return pd.DataFrame()
+
     # Convert frame numbers to time using fps
-    from config import DataConfig
     exposure_frames['start_time_seconds'] = exposure_frames['frame_number'] / DataConfig.FPS
     exposure_frames['end_time_seconds'] = (exposure_frames['frame_number'] + 1) / DataConfig.FPS
     
-    # Extract child_id from video_name
     exposure_frames['child_id'] = exposure_frames['video_name'].apply(extract_child_id)
-    
-    # Merge with age data to get age at recording
     exposure_frames = exposure_frames.merge(age_df[['video_name', 'age_at_recording']], on='video_name', how='left')
     
-    # Convert binary speech columns to individual records with speech type labels
-    # Create one record per active speech type per frame
     all_speech_records = []
     
     for _, frame_row in exposure_frames.iterrows():
@@ -164,10 +169,9 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
             'age_at_recording': frame_row['age_at_recording'],
             'start_time_seconds': frame_row['start_time_seconds'],
             'end_time_seconds': frame_row['end_time_seconds'],
-            'vocalization_id': len(all_speech_records)  # Simple incrementing ID
+            'vocalization_id': len(all_speech_records)
         }
         
-        # Create records for each active speech type
         if frame_row['has_cds'] == 1:
             record = base_record.copy()
             record['speech_type'] = 'CDS'
@@ -180,19 +184,16 @@ def map_vocalizations_to_segments(db_path: Path = DataPaths.INFERENCE_DB_PATH, s
     
     other_vocs = pd.DataFrame(all_speech_records)
     
-    # Check video alignment
+    # [Rest of the mapping logic remains the same] ...
     voc_videos = set(other_vocs['video_id'].unique())
     seg_videos = set(segments_df['video_id'].unique())
     common_videos = voc_videos & seg_videos    
     mapped_rows = []
     
-    # Process each video separately
     for video_id in common_videos:       
-        # Filter data to this specific video
         video_vocalizations = other_vocs[other_vocs['video_id'] == video_id]
         video_segments = segments_df[segments_df['video_id'] == video_id]
 
-        # Map each vocalization in this video to segments in this video
         for _, voc_row in video_vocalizations.iterrows():
             mapped_rows.extend(row_wise_mapping(voc_row, video_segments))
     
@@ -222,111 +223,50 @@ def main():
         print("\n⚠️ No CDS or OHS speech found. Exiting analysis.")
         return
             
-    # Calculate total exposure (CDS + OHS combined)
+    exposure_categories = ['TOTAL', 'CDS_ONLY', 'OHS_ONLY']
     total_exposure_results = []
-    
-    # Process each unique segment separately to handle overlaps for total exposure
-    for segment_key, segment_data in mapped_speech.groupby([
+
+    # Get the unique segments to iterate through
+    unique_segments = mapped_speech.groupby([
         'child_id', 'age_at_recording', 'interaction_type', 
         'segment_start_time', 'segment_end_time'
-    ]):
+    ])
+    
+    for segment_key, segment_data in unique_segments:
         child_id, age_at_recording, interaction_type, seg_start, seg_end = segment_key
-        
-        # Get all frame intervals within this segment (both CDS and OHS)
-        intervals = []
-        for _, row in segment_data.iterrows():
-            # Use the actual frame times within the segment
-            frame_start = max(row['start_time_seconds'], row['segment_start_time'])
-            frame_end = min(row['end_time_seconds'], row['segment_end_time'])
-            if frame_end > frame_start:  # Valid interval
-                intervals.append((frame_start, frame_end))
-        
-        # Merge overlapping intervals to get true total speech time
-        merged_intervals, total_speech_seconds = merge_overlapping_intervals(intervals)
-        
-        # Get segment duration
         segment_duration = segment_data['total_segment_duration'].iloc[0]
-        
-        total_exposure_results.append({
-            'child_id': child_id,
-            'age_at_recording': age_at_recording,
-            'interaction_type': interaction_type,
-            'segment_start_time': seg_start,
-            'segment_end_time': seg_end,
-            'exposure_type': 'TOTAL',
-            'total_speech_seconds': total_speech_seconds,
-            'total_segment_duration': segment_duration,
-            'num_merged_intervals': len(merged_intervals)
-        })
-    
-    # Calculate CDS-only exposure
-    cds_only_data = mapped_speech[mapped_speech['speech_type'] == 'CDS']
-    
-    for segment_key, segment_data in cds_only_data.groupby([
-        'child_id', 'age_at_recording', 'interaction_type', 
-        'segment_start_time', 'segment_end_time'
-    ]):
-        child_id, age_at_recording, interaction_type, seg_start, seg_end = segment_key
-        
-        # Get all CDS frame intervals within this segment
-        intervals = []
-        for _, row in segment_data.iterrows():
-            frame_start = max(row['start_time_seconds'], row['segment_start_time'])
-            frame_end = min(row['end_time_seconds'], row['segment_end_time'])
-            if frame_end > frame_start:
-                intervals.append((frame_start, frame_end))
-        
-        # Merge overlapping intervals to get true CDS speech time
-        merged_intervals, cds_speech_seconds = merge_overlapping_intervals(intervals)
-        
-        # Get segment duration
-        segment_duration = segment_data['total_segment_duration'].iloc[0]
-        
-        total_exposure_results.append({
-            'child_id': child_id,
-            'age_at_recording': age_at_recording,
-            'interaction_type': interaction_type,
-            'segment_start_time': seg_start,
-            'segment_end_time': seg_end,
-            'exposure_type': 'CDS_ONLY',
-            'total_speech_seconds': cds_speech_seconds,
-            'total_segment_duration': segment_duration,
-            'num_merged_intervals': len(merged_intervals)
-        })
-    
-    # Handle segments with no CDS but potentially OHS (add zero CDS records for completeness)
-    total_segments = set()
-    cds_segments = set()
-    
-    for _, row in mapped_speech.iterrows():
-        total_segments.add((row['child_id'], row['age_at_recording'], row['interaction_type'], 
-                          row['segment_start_time'], row['segment_end_time']))
-    
-    for _, row in cds_only_data.iterrows():
-        cds_segments.add((row['child_id'], row['age_at_recording'], row['interaction_type'], 
-                        row['segment_start_time'], row['segment_end_time']))
-    
-    # Add zero CDS records for segments that only have OHS
-    for segment_key in total_segments - cds_segments:
-        child_id, age_at_recording, interaction_type, seg_start, seg_end = segment_key
-        # Get segment duration from any row in that segment
-        segment_sample = mapped_speech[
-            (mapped_speech['child_id'] == child_id) &
-            (mapped_speech['segment_start_time'] == seg_start) &
-            (mapped_speech['segment_end_time'] == seg_end)
-        ].iloc[0]
-        
-        total_exposure_results.append({
-            'child_id': child_id,
-            'age_at_recording': age_at_recording,
-            'interaction_type': interaction_type,
-            'segment_start_time': seg_start,
-            'segment_end_time': seg_end,
-            'exposure_type': 'CDS_ONLY',
-            'total_speech_seconds': 0.0,
-            'total_segment_duration': segment_sample['total_segment_duration'],
-            'num_merged_intervals': 0
-        })
+
+        for exp_type in exposure_categories:
+            intervals = []
+            
+            # Filter intervals based on type
+            if exp_type == 'TOTAL':
+                filtered_data = segment_data
+            elif exp_type == 'CDS_ONLY':
+                filtered_data = segment_data[segment_data['speech_type'] == 'CDS']
+            else: # OHS_ONLY
+                filtered_data = segment_data[segment_data['speech_type'] == 'OHS']
+
+            for _, row in filtered_data.iterrows():
+                frame_start = max(row['start_time_seconds'], row['segment_start_time'])
+                frame_end = min(row['end_time_seconds'], row['segment_end_time'])
+                if frame_end > frame_start:
+                    intervals.append((frame_start, frame_end))
+            
+            # Merge to get duration for this specific category
+            merged, speech_seconds = merge_overlapping_intervals(intervals)
+            
+            total_exposure_results.append({
+                'child_id': child_id,
+                'age_at_recording': age_at_recording,
+                'interaction_type': interaction_type,
+                'segment_start_time': seg_start,
+                'segment_end_time': seg_end,
+                'exposure_type': exp_type,
+                'total_speech_seconds': speech_seconds,
+                'total_segment_duration': segment_duration,
+                'num_merged_intervals': len(merged)
+            })
     
     segment_totals = pd.DataFrame(total_exposure_results)
     
@@ -342,12 +282,15 @@ def main():
     # Verify no percentages exceed 100%
     max_total_exposure = segment_totals[segment_totals['exposure_type'] == 'TOTAL']['exposure_percent'].max()
     max_cds_exposure = segment_totals[segment_totals['exposure_type'] == 'CDS_ONLY']['exposure_percent'].max()
+    max_ohs_exposure = segment_totals[segment_totals['exposure_type'] == 'OHS_ONLY']['exposure_percent'].max()
     
-    if max_total_exposure > 1.0:
-        print(f"⚠️  Warning: Maximum total exposure is {max_total_exposure:.1%}, which exceeds 100%")
-        
-    if max_cds_exposure > 1.0:
-        print(f"⚠️  Warning: Maximum CDS exposure is {max_cds_exposure:.1%}, which exceeds 100%")  
+    for exposure_check, max_value in {
+        'TOTAL': max_total_exposure,
+        'CDS_ONLY': max_cds_exposure,
+        'OHS_ONLY': max_ohs_exposure
+    }.items():
+        if max_value > 1.0:
+            print(f"⚠️ Warning: {exposure_check} exposure percentage exceeds 100% ({max_value*100:.2f}%)")
     
     # Sort and prepare final output
     segment_totals = segment_totals.sort_values([
@@ -362,16 +305,16 @@ def main():
     ]].copy()
         
     # Clean and convert age_at_recording to float
-    final_df['age_at_recording'] = (
-    final_df['age_at_recording']
+    final_output['age_at_recording'] = (
+    final_output['age_at_recording']
     .astype(str)
     .str.replace('"', '', regex=False)
     .str.replace(',', '.', regex=False)
     .str.strip()
     )
 
-    final_df['age_at_recording'] = pd.to_numeric(
-        final_df['age_at_recording'],
+    final_output['age_at_recording'] = pd.to_numeric(
+        final_output['age_at_recording'],
         errors='coerce'
     )
     # Save results with both total and CDS-only exposure
