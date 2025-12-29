@@ -114,14 +114,14 @@ class Inference:
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
     SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
     BOOK_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "book_processed.txt"
-    FRAME_LEVEL_INTERACTIONS_CSV = Path(FINAL_OUTPUT_FOLDER/"01_frame_level_social_interactions.csv")
-    INTERACTION_SEGMENTS_CSV = Path(FINAL_OUTPUT_FOLDER/"01_interaction_segments.csv")
-    UTTERANCE_SEGMENTS_CSV = FINAL_OUTPUT_FOLDER / "01_utterance_segments.csv"
-    KCS_SUMMARY_CSV = FINAL_OUTPUT_FOLDER / "02_kcs_summary.csv"
-    TURN_TAKING_CSV = FINAL_OUTPUT_FOLDER / "03_turn_taking_summary.csv"
-    CDS_SUMMARY_CSV = FINAL_OUTPUT_FOLDER / "04_cds_summary.csv"
-    PRESENCE_CSV = FINAL_OUTPUT_FOLDER / "05_presence.csv"
-    INTERACTION_COMPOSITION_CSV = FINAL_OUTPUT_FOLDER / "06_interaction_composition.csv"
+    FRAME_LEVEL_INTERACTIONS_CSV = Path(FINAL_OUTPUT_FOLDER/"00_frame_level_social_interactions_1_2_3_5.csv")
+    INTERACTION_SEGMENTS_CSV = Path(FINAL_OUTPUT_FOLDER/"00_interaction_segments.csv")
+    UTTERANCE_SEGMENTS_CSV = FINAL_OUTPUT_FOLDER / "00_utterance_segments.csv"
+    KCS_SUMMARY_CSV = FINAL_OUTPUT_FOLDER / "01_kcs_summary.csv"
+    TURN_TAKING_CSV = FINAL_OUTPUT_FOLDER / "02_turn_taking_summary.csv"
+    CDS_SUMMARY_CSV = FINAL_OUTPUT_FOLDER / "03_cds_summary.csv"
+    PRESENCE_CSV = FINAL_OUTPUT_FOLDER / "04_presence.csv"
+    INTERACTION_COMPOSITION_CSV = FINAL_OUTPUT_FOLDER / "05_interaction_composition.csv"
     TEMP_CUT_FACE_DIR = BASE_OUTPUT_DIR / "temp_cut_faces"
     
 class Evaluation:
