@@ -568,7 +568,7 @@ if __name__ == "__main__":
     folder_path.mkdir(parents=True, exist_ok=True)
 
     # Construct paths automatically
-    output_path = folder_path / Inference.INTERACTION_SEGMENTS_CSV
+    output_path = folder_path / Inference.INTERACTION_SEGMENTS_CSV.name
     prefix = Inference.FRAME_LEVEL_INTERACTIONS_CSV.stem
     matching_files = list(folder_path.glob(f"{prefix}*.csv"))
 
