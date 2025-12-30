@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 from pathlib import Path
+from config import DataConfig
 from constants import DataPaths, Inference
 from utils import extract_child_id
 
@@ -125,7 +126,6 @@ def map_vocalizations_to_segments(db_path: Path, segments_csv_path: Path):
         return pd.DataFrame()
     
     # Convert frame numbers to time intervals
-    from config import DataConfig
     audio_frames['start_time_seconds'] = audio_frames['frame_number'] / DataConfig.FPS
     audio_frames['end_time_seconds'] = (audio_frames['frame_number'] + 1) / DataConfig.FPS
     
