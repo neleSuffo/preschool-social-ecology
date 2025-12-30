@@ -695,7 +695,7 @@ if __name__ == "__main__":
     parser.add_argument('--binary', action='store_true', help='If set, combines "available" and "alone" into "not interacting" for binary classification.')
 
     args = parser.parse_args()
-    predictions_path = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV
+    predictions_path = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV.name
 
     # 1. Run evaluation (loads data, runs metrics, prints/saves results)
     output_folder = predictions_path.parent
