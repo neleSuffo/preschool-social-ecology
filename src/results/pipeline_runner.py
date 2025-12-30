@@ -7,8 +7,8 @@ from datetime import datetime
 from constants import Inference
 
 # --- Configuration ---
-FRAME_ANALYSIS_SCRIPT = Path("results/rq_01_frame_level_analysis.py")
-SEGMENT_CREATION_SCRIPT = Path("results/rq_01_video_level_analysis.py")
+FRAME_ANALYSIS_SCRIPT = Path("results/01_frame_level_analysis.py")
+SEGMENT_CREATION_SCRIPT = Path("results/01_video_level_analysis.py")
 EVALUATION_SCRIPT = Path("results/eval_segment_performance.py")
 
 def run_command(cmd, step_name):
