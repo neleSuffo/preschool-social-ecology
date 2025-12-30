@@ -1,6 +1,5 @@
 import pandas as pd
-from constants import Inference
-from config import DataConfig
+from constants import Inference, DataPaths
 
 def add_interaction_columns(frames_df, segments_df):
     """
@@ -51,6 +50,7 @@ def main():
     # Step 1: Load data
     segments_df = pd.read_csv(Inference.INTERACTION_SEGMENTS_CSV)
     frames_df = pd.read_csv(Inference.FRAME_LEVEL_INTERACTIONS_CSV)
+    age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH, sep=';')
 
     # Step 2: Add interaction columns
     frames_df = add_interaction_columns(frames_df, segments_df)
@@ -60,7 +60,20 @@ def main():
 
     # Step 3: Fill missing proximity values
     frames_df['proximity_filled'] = frames_df['proximity'].fillna(-1)
+    frames_df = frames_df.merge(age_df[['video_name', 'age_at_recording', 'child_id']], on='video_name', how='left')
 
+    frames_df['age_at_recording'] = (
+    frames_df['age_at_recording']
+    .astype(str)
+    .str.replace('"', '', regex=False)
+    .str.replace(',', '.', regex=False)
+    .str.strip()
+    )
+
+    frames_df['age_at_recording'] = pd.to_numeric(
+        frames_df['age_at_recording'],
+        errors='coerce'
+    )
     # Step 4: Save results
     output_path = Inference.INTERACTION_COMPOSITION_CSV
     frames_df.to_csv(output_path, index=False)
