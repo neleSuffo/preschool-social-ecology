@@ -379,8 +379,7 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
         
         # Identify constant background OHS (Audiobook)
         # Default threshold: OHS present in > 80% of the window
-        MAX_OHS_FOR_AVAILABLE = getattr(InferenceConfig, 'MAX_OHS_FRACTION_FOR_AVAILABLE', 0.80)
-        df[audiobook_flag] = df['ohs_frac_lookback'] >= MAX_OHS_FOR_AVAILABLE
+        df[audiobook_flag] = df['ohs_frac_lookback'] >= InferenceConfig.MAX_OHS_FOR_AVAILABLE
         
         # Robust Person Presence
         df[ROBUST_PERSON_FLAG] = df['person_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_PERSON_FRACTION
