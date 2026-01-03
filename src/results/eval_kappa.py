@@ -135,7 +135,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    PRED_FILE = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV
+    PRED_FILE = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV.name
     GT_FILE = Evaluation.GROUND_TRUTH_SEGMENTS_CSV
     
     run_evaluation(PRED_FILE, GT_FILE, Path(args.folder_path))
