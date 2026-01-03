@@ -7,8 +7,8 @@ from datetime import datetime
 from constants import Inference
 
 # --- Configuration ---
-FRAME_ANALYSIS_SCRIPT = Path("results/01_frame_level_analysis.py")
-SEGMENT_CREATION_SCRIPT = Path("results/01_video_level_analysis.py")
+FRAME_ANALYSIS_SCRIPT = Path("results/pipeline_frame_level_analysis.py")
+SEGMENT_CREATION_SCRIPT = Path("results/pipeline_video_level_analysis.py")
 EVALUATION_SCRIPT = Path("results/eval_segment_performance.py")
 
 def run_command(cmd, step_name):
@@ -55,7 +55,7 @@ def main(rules=None, plot=False):
     frame_output = run_command(frame_cmd, "Frame-Level Analysis")
     
     # Find the timestamped directory path in the output logs of step 1
-    # We look for the folder path structure created by rq_01_frame_level_analysis.py
+    # We look for the folder path structure created by pipeline_frame_level_analysis.py
     path_match = re.search(r'interaction_analysis_\d{8}_\d{6}', frame_output)
     
     if path_match:
