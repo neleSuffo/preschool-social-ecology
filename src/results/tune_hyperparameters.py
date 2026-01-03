@@ -29,39 +29,40 @@ from constants import DataPaths, Inference, Evaluation
 from config import InferenceConfig 
 from results.eval_segment_performance import run_evaluation
 # Import the main functions from the analysis scripts
-from results.rq_01_frame_level_analysis import main as frame_analysis_main
-from results.rq_01_video_level_analysis import main as segment_analysis_main
+from results.pipeline_frame_level_analysis import main as frame_analysis_main
+from results.pipeline_video_level_analysis import main as segment_analysis_main
 
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""   
     HYPERPARAMETER_RANGES = {
-    # --- 1. NEW Best-Driven Duration Thresholds ---
-    # Testing current bests vs. stricter research-informed goals (3s/6s/8s)
-    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [0.4, 1.5, 3.0], # Best: 0.4
-    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4.0, 6.0, 8.0],   # Best: 6.0
-    'MIN_ALONE_SEGMENT_DURATION_SEC': [5.0, 8.0, 10.0],     # Best: 5.0
+    # --- 1. Research-Driven Duration Thresholds ---
+    # Testing current best vs. your research findings
+    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [1.5, 2.2, 3.0], # Current: 1.5 | Goal: 3.0
+    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [6.0, 8.0, 10.0],  # Current: 8.0 | Goal: 6.0
+    'MIN_ALONE_SEGMENT_DURATION_SEC': [8.0, 10.0, 12.0],    # Current: 8.0 | Goal: 8.0+
 
     # --- 2. Audiobook & Media Logic ---
-    'MAX_OHS_FOR_AVAILABLE': [0.50, 0.60, 0.75],            # Best: 0.60
-    'MEDIA_WINDOW_SEC': [10, 15, 20],                       # Best: 15
-    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.08, 0.12, 0.18],      # Best: 0.12
+    # Centered around your new 0.5 threshold for constant background noise
+    'MAX_OHS_FOR_AVAILABLE': [0.40, 0.50, 0.65],            # Current: 0.50
+    'MEDIA_WINDOW_SEC': [15, 20, 25],                       # Current: 20
+    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.08, 0.12, 0.18],      # Current: 0.12
 
     # --- 3. Interaction & Presence Logic (Tier 1) ---
-    'PROXIMITY_THRESHOLD': [0.50, 0.55, 0.65],              # Best: 0.55
-    'SUSTAINED_KCDS_WINDOW_SEC': [4.0, 5.0, 6.5],           # Best: 5.0
-    'MAX_TURN_TAKING_GAP_SEC': [4, 6, 8],                   # Best: 6
-    'PERSON_AVAILABLE_WINDOW_SEC': [8, 10, 15],             # Best: 10
-    'MIN_PERSON_PRESENCE_FRACTION': [0.05, 0.08, 0.12],     # Best: 0.08
+    'PROXIMITY_THRESHOLD': [0.60, 0.65, 0.70],              # Current: 0.65
+    'SUSTAINED_KCDS_WINDOW_SEC': [5.0, 6.5, 8.0],           # Current: 6.5
+    'MAX_TURN_TAKING_GAP_SEC': [6, 8, 10],                  # Current: 8
+    'PERSON_AVAILABLE_WINDOW_SEC': [10, 15, 20],            # Current: 15
+    'MIN_PERSON_PRESENCE_FRACTION': [0.03, 0.05, 0.08],     # Current: 0.05
 
     # --- 4. Continuity & Robustness ---
-    'GAP_STRETCH_THRESHOLD': [0.5, 1.0, 2.0],               # Best: 1.0
-    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.15, 0.20, 0.25], # Best: 0.20
-    'ROBUST_ALONE_WINDOW_SEC': [6, 8, 12],                  # Best: 8
+    'GAP_STRETCH_THRESHOLD': [0.3, 0.5, 1.0],               # Current: 0.5
+    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.20, 0.25, 0.30], # Current: 0.25
+    'ROBUST_ALONE_WINDOW_SEC': [4, 6, 8],                   # Current: 6
 
     # --- 5. Refinement & Ghost Gates ---
-    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.20, 0.25, 0.35], # Best: 0.25
-    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.01, 0.02, 0.05], # Best: 0.02
-    'KCHI_PERSON_BUFFER_FRAMES': [3, 5, 10],                 # Best: 5
+    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.20, 0.25, 0.35], # Current: 0.25
+    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.01, 0.02, 0.05], # Current: 0.02
+    'KCHI_PERSON_BUFFER_FRAMES': [2, 3, 5],                  # Current: 3
 }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
@@ -125,8 +126,8 @@ def run_pipeline_for_combo(hyperparameters, combo_dir):
         rules = [1, 2, 3, 5]
         rule_suffix = "_1_2_3_5"
         
-        frame_output_path = combo_dir / f"01_frame_level_social_interactions{rule_suffix}.csv"
-        segment_output_path = combo_dir / "01_interaction_segments.csv"
+        frame_output_path = combo_dir / f"frame_level_social_interactions{rule_suffix}.csv"
+        segment_output_path = combo_dir / "interaction_segments.csv"
         
         # 2. Execute Frame-Level Analysis
         frame_analysis_main(
