@@ -225,45 +225,45 @@ class InferenceConfig:
     PERSON_AUDIO_WINDOW_SEC = 2.0 # window duration for rule4_person_recent_speech
 
     # -- rule5_buffered_kchi --
-    KCHI_PERSON_BUFFER_FRAMES = 3 # number of frames to look back and forward for KCHI + visual presence
+    KCHI_PERSON_BUFFER_FRAMES = 2 # number of frames to look back and forward for KCHI + visual presence
 
     # -- ROBUST_PERSON_FLAG --
     PERSON_AVAILABLE_WINDOW_SEC = 15 # window duration for is_sustained_person_or_face_present (rule available)
     MIN_PRESENCE_PERSON_FRACTION = 0.05 # #Minimum percentage of presence in PERSON_AVAILABLE_WINDOW_SEC window
     MIN_PRESENCE_OHS_FRACTION = 0.025 # # Minimum percentage of presence in PERSON_AVAILABLE_WINDOW_SEC window
-    MAX_OHS_FOR_AVAILABLE = 0.5 # Maximum percentage of OHS presence in PERSON_AVAILABLE_WINDOW_SEC window for 'Available' classification
+    MAX_OHS_FOR_AVAILABLE = 0.4 # Maximum percentage of OHS presence in PERSON_AVAILABLE_WINDOW_SEC window for 'Available' classification
     
     # -- ROBUST_ALONE_FLAG --
-    ROBUST_ALONE_WINDOW_SEC = 6  # Time window for sustained 'Alone' check (e.g., 7.5 seconds)
+    ROBUST_ALONE_WINDOW_SEC = 4  # Time window for sustained 'Alone' check (e.g., 7.5 seconds)
     MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.25  # Max fraction (5%) of social signal frames allowed in the window for classification as 'Alone'
 
     # -- MEDIA_INTERACTION_FLAG -- 
-    MEDIA_WINDOW_SEC = 20  # Time window for sustained 'Media' check
+    MEDIA_WINDOW_SEC = 25  # Time window for sustained 'Media' check
     MIN_BOOK_PRESENCE_FRACTION = 0.7  # At least 70% media presence in the MEDIA_WINDOW_SEC window
     MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA = 0.05  # At least 5% OHS/KCDS presence in the MEDIA_WINDOW_SEC window
-    MAX_KCHI_FRACTION_FOR_MEDIA = 0.12  # Maximum fraction of KCHI presence allowed for media interaction
+    MAX_KCHI_FRACTION_FOR_MEDIA = 0.08  # Maximum fraction of KCHI presence allowed for media interaction
 
     MAX_MEDIA_ALONE_GAP_SEC = 300 # Maximum gap duration to check for is_media_interaction between two initial alone segments
     MIN_MEDIA_FACE_MATCH_FRACTION = 0.1 # Minimum fraction of face matches during media interaction alone segments
    
     # -- Segment Merging Parameters --
     MIN_INTERACTING_SEGMENT_DURATION_SEC = 1.5 # minimum duration for an interacting segment
-    MIN_ALONE_SEGMENT_DURATION_SEC = 8 # minimum duration for an alone segment
-    MIN_AVAILABLE_SEGMENT_DURATION_SEC = 8 # minimum duration for an available segment
+    MIN_ALONE_SEGMENT_DURATION_SEC = 10 # minimum duration for an alone segment
+    MIN_AVAILABLE_SEGMENT_DURATION_SEC = 10 # minimum duration for an available segment
     
     MIN_RECLASSIFY_DURATION_SEC = 3.0
     ALONE_RECLASSIFY_VISUAL_THRESHOLD = 0.25 # Percentage of visual presence in segments available for reclassification to alone
     ALONE_RECLASSIFY_AUDIO_THRESHOLD = 0.24 # Percentage of audio presence in segments available for reclassification to alone
    
     KCHI_ONLY_FRACTION_THRESHOLD = 0.55 # Percentage of KCHI-only frames in segments available or alone for reclassification
-    MIN_PERSON_PRESENCE_FRACTION = 0.05 # At least 4% person presence in segments available or alone for reclassification
+    MIN_PERSON_PRESENCE_FRACTION = 0.08 # At least 4% person presence in segments available or alone for reclassification
     
-    GAP_STRETCH_THRESHOLD = 0.5 # everything below s will be extended, otherwise default
+    GAP_STRETCH_THRESHOLD = 1 # everything below s will be extended, otherwise default
     # -- Hyperparameter Tuning Parameters --
     MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
     RANDOM_SAMPLING = True # Whether to use random sampling for hyperparameter tuning
     
     MIN_GHOST_CHECK_DURATION_INTERACTING = 3.0  # Minimum duration to check for ghost presence in "Interacting" segments
     MIN_GHOST_CHECK_DURATION_AVAILABLE = 8.0  # Minimum duration to check for ghost presence in "Available" segments
-    GHOST_VISUAL_THRESHOLD_INTERACTING = 0.02 # If human presence is below this % in an "Interacting" segment, it's a ghost
+    GHOST_VISUAL_THRESHOLD_INTERACTING = 0.01 # If human presence is below this % in an "Interacting" segment, it's a ghost
     GHOST_VISUAL_THRESHOLD_AVAILABLE = 0.02 # If human presence is below this % in an "Available" segment, it's a ghost
