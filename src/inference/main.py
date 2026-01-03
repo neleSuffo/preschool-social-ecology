@@ -7,7 +7,7 @@ import run_book
 from pathlib import Path
 from setup_interaction_db import main as setup_interaction_db
 from constants import DataPaths, Inference
-from config import InferenceConfig
+from config import InferenceConfig, DataConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -56,7 +56,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
                     return False
                 logging.info(f"Loaded {len(selected_videos)} video names from the list.")
 
-            elif video_path.suffix.lower() in video_extensions:
+            elif video_path.suffix.lower() in DataConfig.VIDEO_FILE_EXTENSION:
                 # Case 2: Single video file processing
                 logging.info(f"Processing single video file: {video_path.name}")
                 selected_videos = [video_path.stem]  # Use stem (filename without extension)
@@ -66,13 +66,13 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
                 return False
             
         elif video_path.is_dir():
-            # Case 3: Directory processing - find all video files
+            # Case 3: Directory processing - find all video files (lower sufix)
             video_files = [f for f in video_path.iterdir() 
-                        if f.is_file() and f.suffix in video_extensions]
+                        if f.is_file() and f.suffix.lower() in DataConfig.VIDEO_FILE_EXTENSION]
             
             if not video_files:
                 logging.error(f"No video files found in directory: {video_path}")
-                logging.info(f"Looking for extensions: {', '.join(sorted(video_extensions))}")
+                logging.info(f"Looking for extensions: {', '.join(sorted(DataConfig.VIDEO_FILE_EXTENSION))}")
                 return False
             
             logging.info(f"Processing {len(video_files)} video files from directory: {video_path}")
