@@ -7,9 +7,9 @@ from datetime import datetime
 from constants import Inference
 
 # --- Configuration ---
-FRAME_ANALYSIS_SCRIPT = Path("results/pipeline_frame_level_analysis.py")
-SEGMENT_CREATION_SCRIPT = Path("results/pipeline_video_level_analysis.py")
-EVALUATION_SCRIPT = Path("results/eval_segment_performance.py")
+FRAME_ANALYSIS_SCRIPT = Path("analysis/pipeline_frame_level_analysis.py")
+SEGMENT_CREATION_SCRIPT = Path("analysis/pipeline_video_level_analysis.py")
+EVALUATION_SCRIPT = Path("analysis/validation/eval_segment_performance.py")
 
 def run_command(cmd, step_name):
     """Executes a subprocess command and handles errors."""
