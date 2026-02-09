@@ -40,7 +40,7 @@ class AudioClassification:
     TEST_SEGMENTS_FILE = Path(INPUT_DIR/"test_segments.jsonl")
     TEST_SECONDS_FILE = Path(INPUT_DIR/"test_segments_per_second.jsonl")
     CACHE_DIR = Path(INPUT_DIR/"feature_cache")
-    VTC_RTTM_FILE = Path(OUTPUT_DIR/"all.rttm")
+    VTC_RTTM_FILE = Path(OUTPUT_DIR/"vtc_2.0/all.rttm")
     
 class Vocalizations:
     ALICE_OUTPUT_DIR = Path(BasePaths.OUTPUT_DIR/"audio_word_counts")
@@ -101,20 +101,16 @@ class Proximity:
                         "child_ref_aspect_ratio": 0.965166908563135,
                         "adult_ref_aspect_ratio": 0.6461352657004831
                         }
-    CHILD_CLOSE_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/child_reference_proximity_value_1.jpg")
-    CHILD_FAR_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/child_reference_proximity_value_0.jpg")
-    ADULT_CLOSE_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_1.jpg")
-    ADULT_FAR_IMAGE_PATH = Path(BasePaths.OUTPUT_DIR/"proximity_sampled_frames/adult_reference_proximity_value_0.jpg")
     
 class Inference:
     QUANTEX_VIDEOS_LIST_FILE = Path(BasePaths.DATA_DIR/"quantex_video_list_inference.txt") # list of all quantex videos for inference
     BASE_OUTPUT_DIR = BasePaths.OUTPUT_DIR / "quantex_inference"
-    FINAL_OUTPUT_FOLDER = Path(BASE_OUTPUT_DIR/"interaction_analysis_20251222_131753")
+    FINAL_OUTPUT_FOLDER = Path(BASE_OUTPUT_DIR/"interaction_analysis_20260105_203523")
     PERSON_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "person_processed.txt"
     FACE_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "face_processed.txt"
     SPEECH_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "speech_processed.txt"
     BOOK_LOG_FILE_PATH = BasePaths.OUTPUT_DIR / "logs" / "book_processed.txt"
-    FRAME_LEVEL_INTERACTIONS_CSV = Path(FINAL_OUTPUT_FOLDER/"frame_level_social_interactions.csv")
+    FRAME_LEVEL_INTERACTIONS_CSV = Path(FINAL_OUTPUT_FOLDER/"frame_level_social_interactions_1_2_3_5.csv")
     INTERACTION_SEGMENTS_CSV = Path(FINAL_OUTPUT_FOLDER/"interaction_segments.csv")
     UTTERANCE_SEGMENTS_CSV = FINAL_OUTPUT_FOLDER / "00_utterance_segments.csv"
     KCS_SUMMARY_CSV = FINAL_OUTPUT_FOLDER / "01_kcs_summary.csv"
