@@ -5,7 +5,7 @@ import populate_speech_db as run_speech_type
 import run_person
 import run_book
 from pathlib import Path
-from setup_interaction_db import main as setup_interaction_db
+from setup_inference_db import main as setup_inference_db
 from constants import DataPaths, Inference
 from config import InferenceConfig, DataConfig
 
@@ -36,7 +36,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
     """
     try:
         # Setup the detection database which will hold the detection results (if it doesnt already exist)
-        setup_interaction_db(db_path = db_path)
+        setup_inference_db(db_path = db_path)
 
         # Ensure video_path is a Path object
         video_path = Path(video_path)
