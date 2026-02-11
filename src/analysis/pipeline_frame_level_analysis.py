@@ -931,15 +931,14 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         Summary statistics including interaction and presence distributions
     """
     if included_rules is None:
-        included_rules = [1, 2, 3, 4, 5]
+        included_rules = [1, 2, 3, 4]
 
     # Print which rules are being used
     rule_names = {
         1: "Turn-Taking (KCHI + KCDS)",
         2: "Very Close Proximity",
         3: "KCDS Present", 
-        4: "Face/Person + Recent KCDS",
-        5: "Buffered KCHI + Visual"
+        4: "Buffered KCHI + Visual"
     }
 
     print("🔄 Running comprehensive multimodal social interaction analysis...")
@@ -1011,8 +1010,7 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         all_data['rule1_turn_taking'] = [result[1] for result in final_classification_results]
         all_data['rule2_close_proximity'] = [result[2] for result in final_classification_results]
         all_data['rule3_kcds_speaking'] = [result[3] for result in final_classification_results]
-        all_data['rule4_person_recent_speech'] = [result[4] for result in final_classification_results]
-        all_data['rule5_buffered_kchi'] = [result[5] for result in final_classification_results]
+        all_data['rule4_buffered_kchi'] = [result[4] for result in final_classification_results]
         
         # Categorization
         all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
@@ -1031,13 +1029,13 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Frame-level social interaction analysis')
-    parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4, 5],
-                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=cds-speaking, 4=adult-face-recent-speech, 5=buffered-kchi-visual). Default: [1, 2, 3, 4, 5]') # UPDATED HELP TEXT
+    parser.add_argument('--rules', type=int, nargs='+', default=[1, 2, 3, 4],
+                    help='List of interaction rules to include (1=turn-taking, 2=proximity, 3=cds-speaking, 4=buffered-kchi-visual). Default: [1, 2, 3, 4]')
 
     args = parser.parse_args()
     
     # Validate rule numbers
-    valid_rules = [1, 2, 3, 4, 5]
+    valid_rules = [1, 2, 3, 4]
     if not all(rule in valid_rules for rule in args.rules):
         print(f"❌ Error: Invalid rule numbers. Valid options are: {valid_rules}")
         sys.exit(1)
