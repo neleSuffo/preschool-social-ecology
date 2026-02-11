@@ -27,10 +27,9 @@ sys.path.append(str(src_path))
 
 from constants import DataPaths, Inference, Evaluation
 from config import InferenceConfig 
-from results.eval_segment_performance import run_evaluation
-# Import the main functions from the analysis scripts
-from results.pipeline_frame_level_analysis import main as frame_analysis_main
-from results.pipeline_video_level_analysis import main as segment_analysis_main
+from analysis.validation.eval_segment_performance import run_evaluation
+from analysis.pipeline_frame_level_analysis import main as frame_analysis_main
+from analysis.pipeline_video_level_analysis import main as segment_analysis_main
 
 class HyperparameterConfig:
     """Configuration class for hyperparameter ranges."""   
