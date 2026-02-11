@@ -366,9 +366,15 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     
     # --- 1. Sustained KCDS ---
     if N_sustained > 0:
-        df['kcds_sum_lookback'] = df['has_cds'].rolling(window=N_sustained, min_periods=N_sustained).sum()
-        df[SUSTAINED_KCDS_FLAG] = (df['kcds_sum_lookback'] == N_sustained)
-        df[SUSTAINED_KCDS_FLAG] = df[SUSTAINED_KCDS_FLAG].rolling(window=N_sustained, min_periods=1, center=True).max().fillna(False).astype(bool)
+        # 1. Calculate the fraction of the window containing CDS
+        df['kcds_frac_lookback'] = df['has_cds'].rolling(window=N_sustained, min_periods=1).mean()
+        # 2. Use a threshold (e.g., 0.5 for 50% speech presence)         
+        df[SUSTAINED_KCDS_FLAG] = (df['kcds_frac_lookback'] >= InferenceConfig.SUSTAINED_KCDS_THRESHOLD)
+        
+        # 3. Apply the centering logic to mark the whole window as sustained
+        df[SUSTAINED_KCDS_FLAG] = df[SUSTAINED_KCDS_FLAG].rolling(
+            window=N_sustained, min_periods=1, center=True
+        ).max().fillna(False).astype(bool)
     else:
         df[SUSTAINED_KCDS_FLAG] = False
 
