@@ -382,23 +382,36 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     if N_avail > 0:
         df['person_frac_lookback'] = df['person_or_face_present'].rolling(window=N_avail, min_periods=1).mean()
         df['ohs_frac_lookback'] = df['has_ohs'].rolling(window=N_avail, min_periods=1).mean()
-        
+
         # Identify constant background OHS (Audiobook)
         # Default threshold: OHS present in > 80% of the window
         df[audiobook_flag] = df['ohs_frac_lookback'] >= InferenceConfig.MAX_OHS_FOR_AVAILABLE
-        
+
         # Robust Person Presence
         df[ROBUST_PERSON_FLAG] = df['person_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_PERSON_FRACTION
-        
-        # Robust OHS Presence (Available) 
+
+        # Robust OHS Presence (Available)
         # Triggered ONLY if OHS is above min threshold AND NOT constant background (audiobook)
         df[ROBUST_OHS_FLAG] = (
             (df['ohs_frac_lookback'].rolling(window=N_avail, min_periods=1, center=True).max().fillna(0) >= InferenceConfig.MIN_PRESENCE_OHS_FRACTION) &
             (~df[audiobook_flag])
         )
     else:
+        df['person_frac_lookback'] = 0
+        df['ohs_frac_lookback'] = 0
         df[ROBUST_PERSON_FLAG] = df[ROBUST_OHS_FLAG] = df[audiobook_flag] = False
 
+    # --- New: Visual Persistence (Memory of Adult Presence) ---
+    # Defines how long we "remember" a person after they disappear from view
+    N_persistence = int(InferenceConfig.VISUAL_PERSISTENCE_SEC * samples_per_sec)     
+        
+    if N_persistence > 0:
+        df['person_seen_recently'] = df['person_or_face_present'].rolling(
+            window=N_persistence, min_periods=1, center=True
+        ).max().fillna(0).astype(bool)
+    else:
+        df['person_seen_recently'] = df['person_or_face_present'].astype(bool)
+        
     # --- 3. Robust Alone Check ---
     if N_alone > 0:
         df['social_signal_total'] = df['person_or_face_present'] + df['has_cds'] + df['has_ohs']
@@ -418,7 +431,11 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     else:
         df[MEDIA_INTERACTION_FLAG] = False
         
-    return df[['video_id', 'frame_number', SUSTAINED_KCDS_FLAG, ROBUST_PERSON_FLAG, ROBUST_OHS_FLAG, ROBUST_ALONE_FLAG, RECENT_KCDS_FLAG, MEDIA_INTERACTION_FLAG, audiobook_flag]].copy()
+    return df[['video_id', 'frame_number', SUSTAINED_KCDS_FLAG, ROBUST_PERSON_FLAG, ROBUST_OHS_FLAG, ROBUST_ALONE_FLAG, RECENT_KCDS_FLAG, MEDIA_INTERACTION_FLAG, audiobook_flag, 
+               'person_seen_recently',  # Required for classify_frames
+               'ohs_frac_lookback',     # Required for the refined OHS flag
+               'person_frac_lookback'   # Required for the refined OHS flag
+               ]].copy()
 
 def check_audio_interaction_turn_taking(df, fps):
     """
