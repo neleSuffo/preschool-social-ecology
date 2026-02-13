@@ -531,12 +531,12 @@ def main(output_file_path: Path, frame_data_path: Path, hyperparameter_tuning: F
 
     # Step 4a: Reclassify short, sandwiched 'Alone' segments between Alone segments to 'Available'
     segments_df = reclassify_alone_segments(segments_df, frame_data, detection_col='person_or_face_present')
-    segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
+    #segments_df = reclassify_implicit_turn_taking(segments_df, frame_data)
 
     # Rerun merge AFTER all types have been finalized to clean up fragmentation
     print("🧹 Final consolidation: Merging reclassified segments of the same type...")
     segments_df = merge_same_segments(segments_df)
-    segments_df = reclassify_ghost_segments(segments_df, frame_data)
+    #segments_df = reclassify_ghost_segments(segments_df, frame_data)
 
     # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
     segments_df = fill_gaps_with_default(segments_df, default_type="Available")
