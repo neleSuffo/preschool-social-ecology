@@ -563,58 +563,57 @@ def check_audio_interaction_turn_taking(df, fps):
     return result_df['is_audio_interaction']
 
 def classify_frames(row, results_df, included_rules=None):
-    """
-    Hierarchical social interaction classifier (Optimized: uses pre-calculated flags).
-    """
     if included_rules is None:
-        included_rules = [1, 2, 3, 4, 5]
+        included_rules = [1, 2, 3, 4]
     
     current_index = row.name
     
-    # --- Retrieve Pre-calculated Flags ---
-    
-    # Interacting Flags
     # Flags
-    rule1_turn_taking = bool(row['is_audio_interaction'])
-    rule2_close_proximity = bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD) if pd.notna(row['proximity']) else False
-    rule3_kcds_speaking = bool(row[SUSTAINED_KCDS_FLAG])
-    person_or_face_present_instant = (row['person_or_face_present'] == 1)
-    rule4_person_recent_speech = bool(person_or_face_present_instant and row[RECENT_KCDS_FLAG])
+    rule1_tt = bool(row['is_audio_interaction'])
+    rule3_kcds = bool(row[SUSTAINED_KCDS_FLAG])
+    is_person_in_room = bool(row['person_seen_recently'])
+    is_visual_instant = (row['person_or_face_present'] == 1)
+    is_book_present = (row['has_book'] == 1)
     
-    is_sustained_ohs = bool(row[ROBUST_OHS_FLAG])
-    is_robust_person_presence = bool(row[ROBUST_PERSON_FLAG])
-    is_sustained_absence = bool(row[ROBUST_ALONE_FLAG])
-    is_media_interaction = bool(row[MEDIA_INTERACTION_FLAG])
-    is_audiobook = bool(row[AUDIOBOOK_FLAG]) # New flag
-    
-    # Rule 5 Buffered KCHI
-    BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_FRAMES / SAMPLE_RATE)
-    rule5_buffered_kchi = False
-    if 5 in included_rules and row['has_kchi'] == 1:
-        start_buffer, end_buffer = max(0, current_index - BUFFER_SAMPLES), min(len(results_df) - 1, current_index + BUFFER_SAMPLES)
-        rule5_buffered_kchi = (results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1).any()
-            
-    # TIER 1: INTERACTING
-    active_rules = []
-    if 1 in included_rules and rule1_turn_taking: active_rules.append(1)
-    if 2 in included_rules and rule2_close_proximity: active_rules.append(2)
-    if 3 in included_rules and rule3_kcds_speaking: active_rules.append(3)
-    if 4 in included_rules and rule4_person_recent_speech: active_rules.append(4)
-    if 5 in included_rules and rule5_buffered_kchi: active_rules.append(5)
+    # Rule 4: Buffered KCHI (Use Face/Person as anchor)
+    BUFFER_SAMPLES = int(InferenceConfig.KCHI_PERSON_BUFFER_SEC * SAMPLE_RATE)
+    rule4_buffered_kchi = False
+    if 4 in included_rules and row['has_kchi'] == 1:
+        start_buffer = max(0, current_index - BUFFER_SAMPLES)
+        end_buffer = min(len(results_df) - 1, current_index + BUFFER_SAMPLES)
+        rule4_buffered_kchi = (results_df.loc[start_buffer:end_buffer, 'person_or_face_present'] == 1).any()
 
-    if active_rules:
+    # --- HIERARCHY: Trust the Model ---
+    
+    # TIER 1: INTERACTING
+    # Rule 1 (Turn-Taking) is your best model. 
+    # Only suppress if child is clearly ALONE with a book (Tiptoi filter).
+    if 1 in included_rules and rule1_tt:
+        if is_book_present and not is_person_in_room:
+            interaction_category = "Alone"
+        else:
+            interaction_category = "Interacting"
+            
+    # Rules 3 & 4 need visual confirmation because they are more prone to OHS/Tiptoi noise
+    elif (rule3_kcds or rule4_buffered_kchi) and is_person_in_room:
         interaction_category = "Interacting"
-    elif is_sustained_absence: 
-        interaction_category = "Alone"
-    elif is_audiobook and not is_robust_person_presence:
-        # Constant OHS with no visual presence = ALONE
-        interaction_category = "Alone"
-    elif is_sustained_ohs or is_robust_person_presence:         
-        interaction_category = "Alone" if is_media_interaction else "Available"
+    
+    # Rule 2: Close Proximity (Instant visual proof of interaction)
+    elif 2 in included_rules and bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD):
+        interaction_category = "Interacting"
+
+    # TIER 2: AVAILABLE (Requires INSTANT visual detection)
+    # Definition: Person present in area but not engaged.
+    elif is_visual_instant or bool(row[ROBUST_OHS_FLAG]):
+        interaction_category = "Available"
+
+    # TIER 3: ALONE (Default)
     else:
         interaction_category = "Alone"
-            
-    return (interaction_category, rule1_turn_taking, rule2_close_proximity, rule3_kcds_speaking, rule4_person_recent_speech, rule5_buffered_kchi)
+
+    return (interaction_category, rule1_tt, 
+            bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD), 
+            rule3_kcds, rule4_buffered_kchi)
 
 def classify_face_category(row):
     """
