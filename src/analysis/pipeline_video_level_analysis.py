@@ -17,25 +17,25 @@ from config import DataConfig, InferenceConfig
 # Constants
 FPS = DataConfig.FPS # frames per second
 
-def get_min_segment_duration(interaction_type: str) -> float:
-    """
-    Returns the minimum required segment duration (in seconds) based on the interaction type.
+# def get_min_segment_duration(interaction_type: str) -> float:
+#     """
+#     Returns the minimum required segment duration (in seconds) based on the interaction type.
     
-    This function relies on the assumption that the following constants are defined
-    in InferenceConfig:
-    - MIN_INTERACTING_SEGMENT_DURATION_SEC
-    - MIN_ALONE_SEGMENT_DURATION_SEC
-    - MIN_AVAILABLE_SEGMENT_DURATION_SEC
-    """
-    # Assuming the interaction_type is properly capitalized (e.g., 'Interacting', 'Alone')
-    type_map = {
-        'Interacting': InferenceConfig.MIN_INTERACTING_SEGMENT_DURATION_SEC,
-        'Alone': InferenceConfig.MIN_ALONE_SEGMENT_DURATION_SEC,
-        'Available': InferenceConfig.MIN_AVAILABLE_SEGMENT_DURATION_SEC,
-    }
-    # Use a default minimum (e.g., the largest) if the type is unexpected
-    default_min = getattr(InferenceConfig, 'MIN_ALONE_SEGMENT_DURATION_SEC', 15.0) 
-    return type_map.get(interaction_type, default_min)
+#     This function relies on the assumption that the following constants are defined
+#     in InferenceConfig:
+#     - MIN_INTERACTING_SEGMENT_DURATION_SEC
+#     - MIN_ALONE_SEGMENT_DURATION_SEC
+#     - MIN_AVAILABLE_SEGMENT_DURATION_SEC
+#     """
+#     # Assuming the interaction_type is properly capitalized (e.g., 'Interacting', 'Alone')
+#     type_map = {
+#         'Interacting': InferenceConfig.MIN_INTERACTING_SEGMENT_DURATION_SEC,
+#         'Alone': InferenceConfig.MIN_ALONE_SEGMENT_DURATION_SEC,
+#         'Available': InferenceConfig.MIN_AVAILABLE_SEGMENT_DURATION_SEC,
+#     }
+#     # Use a default minimum (e.g., the largest) if the type is unexpected
+#     default_min = getattr(InferenceConfig, 'MIN_ALONE_SEGMENT_DURATION_SEC', 15.0) 
+#     return type_map.get(interaction_type, default_min)
 
 def extract_child_id(video_name):
     match = re.search(r'id(\d{6})', video_name)
@@ -62,60 +62,46 @@ def create_segments_for_video(video_id, video_df):
     if len(video_df) == 0:
         return []
                 
-    # Get interaction states and frame numbers
     states = video_df['interaction_type'].values
     frame_numbers = video_df['frame_number'].values
     video_name = video_df['video_name'].iloc[0]
     
-    # Buffer short state changes
-    buffered_states = states.copy()  # Disable buffering for now
-    
     segments = []
-    current_state = buffered_states[0]
+    current_state = states[0]
     segment_start_frame = frame_numbers[0]
     
-    # Process state changes
-    for i in range(1, len(buffered_states)):
-        if buffered_states[i] != current_state:
+    for i in range(1, len(states)):
+        if states[i] != current_state:
             segment_end_frame = frame_numbers[i-1]
-            
-            required_min_duration = get_min_segment_duration(current_state)
-            
             segment_duration = (segment_end_frame - segment_start_frame) / FPS
-            if segment_duration >= required_min_duration:
-                
-                segments.append({
-                    'video_id': video_id,
-                    'video_name': video_name,
-                    'interaction_type': current_state,
-                    'segment_start': segment_start_frame,
-                    'segment_end': segment_end_frame,
-                    'start_time_sec': segment_start_frame / FPS,
-                    'end_time_sec': segment_end_frame / FPS,
-                    'duration_sec': segment_duration
-                })
             
-            current_state = buffered_states[i]
+            segments.append({
+                'video_id': video_id,
+                'video_name': video_name,
+                'interaction_type': current_state,
+                'segment_start': segment_start_frame,
+                'segment_end': segment_end_frame,
+                'start_time_sec': segment_start_frame / FPS,
+                'end_time_sec': segment_end_frame / FPS,
+                'duration_sec': segment_duration
+            })
+            
+            current_state = states[i]
             segment_start_frame = frame_numbers[i]
     
-    # Handle the final segment
+    # Final segment
     segment_end_frame = frame_numbers[-1]
-    
-    required_min_duration = get_min_segment_duration(current_state)
-    
     segment_duration = (segment_end_frame - segment_start_frame) / FPS
-    if segment_duration >= required_min_duration:
-        
-        segments.append({
-            'video_id': video_id,
-            'video_name': video_name,
-            'interaction_type': current_state,
-            'segment_start': segment_start_frame,
-            'segment_end': segment_end_frame,
-            'start_time_sec': segment_start_frame / FPS,
-            'end_time_sec': segment_end_frame / FPS,
-            'duration_sec': segment_duration
-        })
+    segments.append({
+        'video_id': video_id,
+        'video_name': video_name,
+        'interaction_type': current_state,
+        'segment_start': segment_start_frame,
+        'segment_end': segment_end_frame,
+        'start_time_sec': segment_start_frame / FPS,
+        'end_time_sec': segment_end_frame / FPS,
+        'duration_sec': segment_duration
+    })
     
     return segments
 
@@ -239,40 +225,59 @@ def print_segment_summary(segments_df):
     else:
         print("\n📊 No segments created")
 
-def main(output_file_path: Path, frame_data_path: Path, hyperparameter_tuning: False):
+def biased_conservative_mode(window):
+    """
+    1 = Interacting, 2 = Available, 3 = Alone
+    Goal: Protect Interacting recall while forcing Available to prove itself.
+    """
+    counts = pd.Series(window).value_counts(normalize=True)
+    
+    # Keep Interacting protection at 20%
+    if 1 in counts and counts[1] >= 0.20:
+        return 1
+    
+    # Lower the Available bar from 65% to 45%
+    # This helps recover the 28.6% leak to Alone
+    if 2 in counts and counts[2] > 0.45:
+        return 2
+    
+    return 3
+
+def main(output_file_path: Path, frame_data_path: Path, hyperparameter_tuning: bool = False):
     """
     Main entry point for video-level segment analysis.
     Creates mutually exclusive interaction segments from frame-level data.
     
-    This function processes frame-level interaction data through several steps:
-    1. Load and process frame-level data
-    2. Create initial segments for each video
-    3. Merge segments with small gaps
-    4. Reclassify 'Available' segments if no detection occurred (NEW STEP)
-    5. Add metadata (child_id, age)
-    6. Generate summary statistics
-    7. Save results to CSV
-    
-    Parameters
-    ----------
-    output_file_path : Path
-        Path to the output CSV file for saving the segments.
-    frame_data_path : Path
-        Path to the CSV file containing frame-level interaction data.
-    hyperparameter_tuning: Bool
-        Whether script runs in hyperparmeter mode or not 
+    Adjusted Workflow:
+    1. Load frame-level data.
+    2. Apply Rolling Mode Smoothing (3-second window) to remove jitter.
+    3. Create initial segments (without hard-drop duration filters).
+    4. Fill gaps with "Alone" as the default conservative state.
+    5. Final consolidation merge.
     """     
     if hyperparameter_tuning:
         run_dir = output_file_path.parent
-           
         try:
             script_path = Path(__file__)
             shutil.copy(script_path, run_dir / script_path.name)
         except NameError:
-            print("⚠️ __file__ not defined (likely running in notebook), skipping script copy.")
+            print("⚠️ __file__ not defined, skipping script copy.")
         
     # Step 1: Load frame-level data
     frame_data = pd.read_csv(frame_data_path)
+
+    # --- ROLLING MODE SMOOTHING ---
+    # Center=True ensures transitions aren't shifted in time.
+    window_size = int(InferenceConfig.ROLLING_SMOOTH_WINDO_SEC * (DataConfig.FPS / InferenceConfig.SAMPLE_RATE)) 
+    
+    # We use a custom lambda to find the mode of the numeric window
+    # frame_data['interaction_type'] = frame_data.groupby('video_id')['interaction_type'].transform(
+    #     lambda x: x.rolling(window=window_size, center=True, min_periods=1).apply(
+    #         lambda y: pd.Series(y).mode()[0]))
+
+    # Apply the weighted transformation
+    frame_data['interaction_type'] = frame_data.groupby('video_id')['interaction_type'].transform(
+        lambda x: x.rolling(window=window_size, center=True, min_periods=1).apply(biased_conservative_mode))
 
     # Step 2: Create segments for each video
     all_segments = []
@@ -280,46 +285,40 @@ def main(output_file_path: Path, frame_data_path: Path, hyperparameter_tuning: F
         video_segments = create_segments_for_video(video_id, video_df)
         all_segments.extend(video_segments)
     
-    # save intermediate segments for debugging
-    intermediate_segments_path = output_file_path.parent / f"intermediate_segments_{output_file_path.name}"
-    if all_segments:
-        intermediate_df = pd.DataFrame(all_segments)
-        intermediate_df.to_csv(intermediate_segments_path, index=False)
-        print(f"✅ Saved intermediate segments to {intermediate_segments_path}")
-    # Step 3: Convert to DataFrame and merge segments with small gaps
+    # Step 3: Convert to DataFrame
     if all_segments:
         segments_df = pd.DataFrame(all_segments)
         segments_df = segments_df.sort_values(['video_id', 'start_time_sec']).reset_index(drop=True)
-        
-        segments_df = merge_same_segments(segments_df)
-        
     else:
         segments_df = pd.DataFrame(columns=['video_id', 'video_name', 'interaction_type',
                                         'segment_start', 'segment_end', 
                                         'start_time_sec', 'end_time_sec', 'duration_sec'])
 
-    # Rerun merge AFTER all types have been finalized to clean up fragmentation
+    # Step 4: Fill all remaining gaps to create a continuous timeline
+    print("⏳ Filling gaps with default type: Alone")
+    segments_df = fill_gaps_with_default(segments_df, default_type="Alone")
+
+    # Step 5: Final consolidation merge
     print("🧹 Final consolidation: Merging reclassified segments of the same type...")
     segments_df = merge_same_segments(segments_df)
 
-    # Step 6: Final Step: Fill all remaining gaps to create a continuous timeline
-    segments_df = fill_gaps_with_default(segments_df, default_type="Available")
-    segments_df = merge_same_segments(segments_df)
-
-    # Step 7: Generate and print summary
+    # Step 6: Generate and print summary
     print_segment_summary(segments_df)
     
-    # Read age csv    
+    # Merge age and child metadata
     age_df = pd.read_csv(DataPaths.SUBJECTS_CSV_PATH, sep=";", decimal=",")
     age_df = age_df[["video_name", "age_at_recording", "child_id"]]
-    # Merge on video_name to get age information
     segments_df = segments_df.merge(age_df, on="video_name", how="left")
     
-    # Step 8: Save results
+    # Map back to strings only for the final output report
+    int_to_state = {1: 'Interacting', 2: 'Available', 3: 'Alone'}
+    segments_df['interaction_type'] = segments_df['interaction_type'].map(int_to_state)
+    
+    # Step 7: Save final results
     segments_df.to_csv(output_file_path, index=False)
     segments_df.to_csv(Evaluation.PRED_SECONDWISE_FILE_PATH, index=False)
+    
     print(f"✅ Saved {len(segments_df)} interaction segments to {output_file_path}")
-    print(f" Saved interaction segments gt to {Evaluation.PRED_SECONDWISE_FILE_PATH}")
 
 if __name__ == "__main__":    
     parser = argparse.ArgumentParser(description='Video-level social interaction segment analysis')
