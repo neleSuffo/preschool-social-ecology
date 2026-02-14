@@ -209,56 +209,50 @@ class InferenceConfig:
     # -- General Analysis Settings --
     EXCLUSION_SECONDS = 30           # Seconds to exclude at start and end of videos
     INTERACTION_CLASSES = ['Interacting', 'Available', 'Alone']
+    STATE_MAP = {"Interacting": 1, "Available": 2, "Alone": 3}
     SAMPLE_RATE = 10                 # Processing interval (only every n-th frame is analyzed)
     
     # -- Audio-Lead Interaction (Rule 1: Turn-Taking) --
-    MAX_TURN_TAKING_GAP_SEC = 6      # Max gap to link KCHI and CDS into an interaction window
+    MAX_TURN_TAKING_GAP_SEC = 8      # Max gap to link KCHI and CDS into an interaction window
     MAX_SAME_SPEAKER_GAP_SEC = 1.5   # Max silence allowed between same-speaker segments before splitting
     
     # -- Visual Interaction (Rule 2: Proximity) --
     PROXIMITY_THRESHOLD = 0.8        # Min face proximity score to trigger "Interacting" via Rule 2
-    INSTANT_CONFIDENCE_THRESHOLD = 0.3 # Min confidence for a single-frame detection to be "real" (Rule 2/Memory)
+    INSTANT_CONFIDENCE_THRESHOLD = 0.4 # Min confidence for a single-frame detection to be "real" (Rule 2/Memory)
 
     # -- Sustained Audio Interaction (Rule 3: KCDS & Rule 4: KCHI + Visual) --
-    SUSTAINED_KCDS_WINDOW_SEC = 1    # Rolling window size to check for sustained adult speech
-    SUSTAINED_KCDS_THRESHOLD = 0.85  # % of KCDS required in window to activate Rule 3
-    VISUAL_PERSISTENCE_SEC = 1.0     # Temporal buffer to maintain visual presence (Memory/Rule 4)
+    SUSTAINED_KCDS_WINDOW_SEC = 1.0    # Rolling window size to check for sustained adult speech
+    SUSTAINED_KCDS_THRESHOLD = 0.8  # % of KCDS required in window to activate Rule 3
+    VISUAL_PERSISTENCE_SEC = 0.0     # Temporal buffer to maintain visual presence (Memory/Rule 4)
     PERSON_AUDIO_WINDOW_SEC = 2.0    # Window size for checking recent child speech in Rule 4
 
     # -- Presence & Hysteresis Logic (Available vs. Alone) --
-    MIN_PRESENCE_CONFIDENCE_THRESHOLD = 0.25 # Entry threshold: Presence score must reach this to start "Available"
-    STANDARD_EXIT_MULTIPLIER = 0.7   # Exit threshold multiplier for standard drop to "Alone" (% of entry)
-    SOCIAL_COOLDOWN_EXIT_MULTIPLIER = 0.2 # Exit multiplier during social context (% of entry; bridges gaps)
+    MIN_PRESENCE_CONFIDENCE_THRESHOLD = 0.28 # Entry threshold: Presence score must reach this to start "Available"
+    STANDARD_EXIT_MULTIPLIER = 0.55   # Exit threshold multiplier for standard drop to "Alone" (% of entry)
+    SOCIAL_COOLDOWN_EXIT_MULTIPLIER = 0.15 # Exit multiplier during social context (% of entry; bridges gaps)
     SOCIAL_CONTEXT_THRESHOLD = 0.5   # Weighted interaction history required to trigger Social Cooldown exit
-    SOCIAL_COOLDOWN_SEC = 15         # Duration of the "social echo" window following an interaction
+    SOCIAL_COOLDOWN_SEC = 45         # Duration of the "social echo" window following an interaction
     EDGE_MARGIN = 0.05               # Normalized frame margin (%) for exit tripwire kill-switch
     
     # -- Presence Detection Gating (Robust Person Flag) --
-    PERSON_AVAILABLE_WINDOW_SEC = 35 # Window size for calculating the average presence (Confidence Mass)
+    PERSON_AVAILABLE_WINDOW_SEC = 45 # Window size for calculating the average presence (Confidence Mass)
     MIN_PRESENCE_PERSON_FRACTION = 0.15 # Min % of detection in window for person-based availability
-    MIN_PRESENCE_OHS_FRACTION = 0.05 # Min % of OHS in window for audio-based availability
-    AUDIO_VISUAL_GATING_FLOOR = 0.12 # Min visual presence score required to validate OHS as "Available"
-    MAX_OHS_FOR_AVAILABLE = 0.5      # % OHS above which audio is treated as noise/audiobook rather than presence
+    MIN_PRESENCE_OHS_FRACTION = 0.03 # Min % of OHS in window for audio-based availability
+    AUDIO_VISUAL_GATING_FLOOR = 0.18 # Min visual presence score required to validate OHS as "Available"
+    MAX_OHS_FOR_AVAILABLE = 0.65      # % OHS above which audio is treated as noise/audiobook rather than presence
 
     # -- Alone Signal Robustness --
     ROBUST_ALONE_WINDOW_SEC = 2      # Window to check for consistent lack of social signals
-    MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.35 # Max social signals allowed in window to maintain "Alone" status
-
-    # -- Media Interaction Logic (Book Gating) --
-    #MEDIA_WINDOW_SEC = 15            # Rolling window for sustained book-interaction detection
-    #MIN_BOOK_PRESENCE_FRACTION = 0.95 # Min book detection density required for Media status
-    #MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA = 0.1 # Min adult audio required to signify reading/interaction
-    #MAX_KCHI_FRACTION_FOR_MEDIA = 0.12 # Max child speech allowed (prevents non-reading speech from being Media)
-    #MAX_MEDIA_ALONE_GAP_SEC = 300    # Max gap between media anchors to persist state via DeepFace
-    #MIN_MEDIA_FACE_MATCH_FRACTION = 0.1 # Min face match % required to bridge Media-Alone gaps
+    MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.45 # Max social signals allowed in window to maintain "Alone" status
 
     # -- Segment Post-Processing & Reclassification --
-    MIN_INTERACTING_SEGMENT_DURATION_SEC = 2 # Min duration for an interacting segment to be kept
-    MIN_ALONE_SEGMENT_DURATION_SEC = 30      # Min duration for an alone segment to be kept
-    MIN_AVAILABLE_SEGMENT_DURATION_SEC = 8    # Min duration for an available segment to be kept
-    GAP_STRETCH_THRESHOLD = 0.25     # Max gap (0.25s) to automatically bridge/fill between segments
+    #MIN_INTERACTING_SEGMENT_DURATION_SEC = 2 # Min duration for an interacting segment to be kept
+    #MIN_ALONE_SEGMENT_DURATION_SEC = 30     # Min duration for an alone segment to be kept
+    #MIN_AVAILABLE_SEGMENT_DURATION_SEC = 12    # Min duration for an available segment to be kept
+    ROLLING_SMOOTH_WINDO_SEC = 3.0          # Window size for rolling mode smoothing to remove jitter
+    GAP_STRETCH_THRESHOLD = 0.1     # Max gap to automatically bridge/fill between segments
         
-    INTERACTION_PERMISSION_GATE = 1.05 # Multiplier (105%) for Presence Mass required to upgrade to "Interacting"
+    INTERACTION_PERMISSION_GATE = 1.15 # Multiplier (%) for Presence Mass required to upgrade to "Interacting"
 
     # -- Hyperparameter Tuning Settings --
     MAX_COMBINATIONS_TUNING = 20      # Max hyperparameter combinations to test per run
