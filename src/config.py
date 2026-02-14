@@ -211,56 +211,52 @@ class InferenceConfig:
     SAMPLE_RATE = 10 # every n-th frame is processed
     
     # -- rule1_turn_taking --
-    MAX_TURN_TAKING_GAP_SEC = 4 # maximum gap duration for turn-taking analysis
+    MAX_TURN_TAKING_GAP_SEC = 6 # maximum gap duration for turn-taking analysis
     MAX_SAME_SPEAKER_GAP_SEC = 1.5 # maximum gap duration to consider same speaker segment
     
     # -- rule2_close_proximity --
-    PROXIMITY_THRESHOLD = 0.9 # face proximity so that frame is counted as interaction
+    PROXIMITY_THRESHOLD = 0.8 # face proximity so that frame is counted as interaction
 
     
     # -- rule3_kcds_speaking & rule4_person_recent_speech --
-    SUSTAINED_KCDS_WINDOW_SEC = 2 # consecutive seconds of KCDS to activate SUSTAINED_KCDS_FLAG rule3_kcds_speaking 
-    SUSTAINED_KCDS_THRESHOLD = 0.95 # percentage of KCDS presence in SUSTAINED_KCDS_WINDOW_SEC window to activate rule3_kcds_speaking
-    VISUAL_PERSISTENCE_SEC = 0.0 # maximum gap duration to check for visual presence after KCDS presence for rule3_kcds_speaking and rule4_person_recent_speech
+    SUSTAINED_KCDS_WINDOW_SEC = 1 # consecutive seconds of KCDS to activate SUSTAINED_KCDS_FLAG rule3_kcds_speaking 
+    SUSTAINED_KCDS_THRESHOLD = 0.85 # percentage of KCDS presence in SUSTAINED_KCDS_WINDOW_SEC window to activate rule3_kcds_speaking
+    VISUAL_PERSISTENCE_SEC = 1.0 # maximum gap duration to check for visual presence after KCDS presence for rule3_kcds_speaking and rule4_person_recent_speech
     
     # -- rule4_person_recent_speech --
     PERSON_AUDIO_WINDOW_SEC = 2.0 # window duration for rule4_person_recent_speech
-
-    # -- rule5_buffered_kchi --
-    KCHI_PERSON_BUFFER_SEC = 10 # seconds to look back and forward for KCHI + visual presence
-
+    MIN_PRESENCE_CONFIDENCE_THRESHOLD = 0.18 # Minimum confidence threshold for person presence in rule4_person_recent_speech
+    HYSTERESIS_EXIT_MULTIPLIER = 0.4 # Multiplier for exit threshold in hysteresis logic (e.g., 60% of entry threshold)
+    INSTANT_CONFIDENCE_THRESHOLD = 0.3 #  Threshold for a single-frame detection to be considered 'real'
+    
+    INTERACTION_PERMISSION_GATE = 1.2
+    SOCIAL_COOLDOWN_SEC = 30 # cooldown period after an interaction segment during which alone segments are less likely
+    
     # -- ROBUST_PERSON_FLAG --
-    PERSON_AVAILABLE_WINDOW_SEC = 10 # window duration for is_sustained_person_or_face_present (rule available)
+    PERSON_AVAILABLE_WINDOW_SEC = 35 # window duration for is_sustained_person_or_face_present (rule available)
     MIN_PRESENCE_PERSON_FRACTION = 0.15 # #Minimum percentage of presence in PERSON_AVAILABLE_WINDOW_SEC window
-    MIN_PRESENCE_OHS_FRACTION = 0.2 # # Minimum percentage of presence in PERSON_AVAILABLE_WINDOW_SEC window
-    MAX_OHS_FOR_AVAILABLE = 0.65 # Maximum percentage of OHS presence in PERSON_AVAILABLE_WINDOW_SEC window for 'Available' classification
+    MIN_PRESENCE_OHS_FRACTION = 0.05 # Minimum percentage of presence in PERSON_AVAILABLE_WINDOW_SEC window
+    MAX_OHS_FOR_AVAILABLE = 0.5 # Maximum percentage of OHS presence in PERSON_AVAILABLE_WINDOW_SEC window for 'Available' classification
     
     # -- ROBUST_ALONE_FLAG --
-    ROBUST_ALONE_WINDOW_SEC = 4  # Time window for sustained 'Alone' check (e.g., 7.5 seconds)
-    MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.25  # Max fraction (5%) of social signal frames allowed in the window for classification as 'Alone'
+    ROBUST_ALONE_WINDOW_SEC = 2  # Time window for sustained 'Alone' check (e.g., 7.5 seconds)
+    MAX_ALONE_FALSE_POSITIVE_FRACTION = 0.35  # Max fraction (5%) of social signal frames allowed in the window for classification as 'Alone'
 
     # -- MEDIA_INTERACTION_FLAG -- 
     MEDIA_WINDOW_SEC = 15  # Time window for sustained 'Media' check
-    MIN_BOOK_PRESENCE_FRACTION = 0.85  # At least 70% media presence in the MEDIA_WINDOW_SEC window
-    MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA = 0.05  # At least 5% OHS/KCDS presence in the MEDIA_WINDOW_SEC window
+    MIN_BOOK_PRESENCE_FRACTION = 0.95  # At least 70% media presence in the MEDIA_WINDOW_SEC window
+    MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA = 0.1  # At least 5% OHS/KCDS presence in the MEDIA_WINDOW_SEC window
     MAX_KCHI_FRACTION_FOR_MEDIA = 0.12  # Maximum fraction of KCHI presence allowed for media interaction
 
     MAX_MEDIA_ALONE_GAP_SEC = 300 # Maximum gap duration to check for is_media_interaction between two initial alone segments
     MIN_MEDIA_FACE_MATCH_FRACTION = 0.1 # Minimum fraction of face matches during media interaction alone segments
    
     # -- Segment Merging Parameters --
-    MIN_INTERACTING_SEGMENT_DURATION_SEC = 1 # minimum duration for an interacting segment
-    MIN_ALONE_SEGMENT_DURATION_SEC = 8 # minimum duration for an alone segment
+    MIN_INTERACTING_SEGMENT_DURATION_SEC = 2 # minimum duration for an interacting segment
+    MIN_ALONE_SEGMENT_DURATION_SEC = 30 # minimum duration for an alone segment
     MIN_AVAILABLE_SEGMENT_DURATION_SEC = 8 # minimum duration for an available segment
-    
-    MIN_RECLASSIFY_DURATION_SEC = 3.0
-    ALONE_RECLASSIFY_VISUAL_THRESHOLD = 0.25 # Percentage of visual presence in segments available for reclassification to alone
-    ALONE_RECLASSIFY_AUDIO_THRESHOLD = 0.24 # Percentage of audio presence in segments available for reclassification to alone
-   
-    KCHI_ONLY_FRACTION_THRESHOLD = 0.55 # Percentage of KCHI-only frames in segments available or alone for reclassification
-    MIN_PERSON_PRESENCE_FRACTION = 0.15 # At least 4% person presence in segments available or alone for reclassification
-    
-    GAP_STRETCH_THRESHOLD = 0.5 # everything below s will be extended, otherwise default
+           
+    GAP_STRETCH_THRESHOLD = 0.25 # everything below s will be extended, otherwise default
     # -- Hyperparameter Tuning Parameters --
     MAX_COMBINATIONS_TUNING = 20 # Maximum number of hyperparameter combinations to tune
     RANDOM_SAMPLING = True # Whether to use random sampling for hyperparameter tuning
