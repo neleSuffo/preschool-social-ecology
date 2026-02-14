@@ -331,47 +331,58 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     """
     samples_per_sec = fps / sample_rate
     
-    # Setup Window Sizes
+    # Setup Window Sizes from InferenceConfig
     sustained_window = int(InferenceConfig.SUSTAINED_KCDS_WINDOW_SEC * samples_per_sec)
     avail_window = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * samples_per_sec)
     audio_window = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * samples_per_sec)
     alone_window = int(InferenceConfig.ROBUST_ALONE_WINDOW_SEC * samples_per_sec)
     media_window = int(InferenceConfig.MEDIA_WINDOW_SEC * samples_per_sec)
     persistence_window = int(InferenceConfig.VISUAL_PERSISTENCE_SEC * samples_per_sec)
-    
-    # 1. Presence Score (Confidence Mass)
+    cooldown_frames = int(InferenceConfig.SOCIAL_COOLDOWN_SEC * samples_per_sec)
+
+    # 1. Presence Score (Rule 9 Lead Signal)
     df['presence_score'] = df['instant_presence_conf'].rolling(
         window=avail_window, min_periods=1, center=True
     ).mean().fillna(0)
 
-    # 2. HYSTERESIS LOGIC
-    # Start Available if score is High, Stay Available if score is Medium/Low
-    # Entry is fixed to MIN_PRESENCE_CONFIDENCE_THRESHOLD
+    # 2. TEMPORAL COOLDOWN LOGIC
+    # Identify if there was a Turn-Taking interaction recently
+    df['was_interacting_recently'] = df['is_audio_interaction'].rolling(
+        window=cooldown_frames, min_periods=1
+    ).max().astype(bool)
+
+    # 3. DYNAMIC HYSTERESIS (Fixing Available -> Alone leak)
+    # entry is fixed to MIN_PRESENCE_CONFIDENCE_THRESHOLD
     is_high_entry = df['presence_score'] >= InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD
     
-    # exit is now a tunable multiplier of the entry threshold
-    exit_thresh = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * InferenceConfig.HYSTERESIS_EXIT_MULTIPLIER
-    is_low_exit = df['presence_score'] >= exit_thresh
-        
-    # Vectorized Hysteresis: Spread high-confidence permission across low-exit adjacent frames
+    # If interacting recently, use an ultra-low exit (0.1x) to bridge visual gaps
+    standard_exit = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * InferenceConfig.HYSTERESIS_EXIT_MULTIPLIER
+    cooldown_exit = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * 0.1
+    
+    df['effective_exit_threshold'] = np.where(
+        df['was_interacting_recently'], 
+        cooldown_exit, 
+        standard_exit
+    )
+    
+    is_low_exit = df['presence_score'] >= df['effective_exit_threshold']
+    
+    # Vectorized Hysteresis
     df['is_robust_person'] = is_high_entry.rolling(
         window=avail_window, min_periods=1, center=True
-        ).max().astype(bool) & is_low_exit
-    
-    # 3. AUDIOBOOK LOGIC
-    # Determine if OHS is constant background noise
+    ).max().astype(bool) & is_low_exit
+
+    # 4. AUDIOBOOK & VISUAL ANCHOR FOR OHS
     df['ohs_frac_lookback'] = df['has_ohs'].rolling(window=avail_window, min_periods=1).mean()
     df['is_audiobook'] = df['ohs_frac_lookback'] >= InferenceConfig.MAX_OHS_FOR_AVAILABLE
 
-    # 4. VISUAL ANCHOR FOR AUDIO
-    # Gating audio-based Available by a 5% visual confidence floor
     df['is_sustained_ohs'] = (
         (df['ohs_frac_lookback'] >= InferenceConfig.MIN_PRESENCE_OHS_FRACTION) &
-        (df['presence_score'] >= 0.10) & 
+        (df['presence_score'] >= 0.05) &  # Visual Floor for OHS
         (~df['is_audiobook'])
     )
 
-    # 5. Sustained KCDS (Rule 3)
+    # 5. Rule 3: Sustained Adult Speech
     if sustained_window > 0:
         df['kcds_frac_lookback'] = df['has_cds'].rolling(window=sustained_window, min_periods=1).mean()
         df['is_sustained_kcds'] = (df['kcds_frac_lookback'] >= InferenceConfig.SUSTAINED_KCDS_THRESHOLD)
@@ -381,7 +392,7 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     else:
         df['is_sustained_kcds'] = False
 
-    # 6. Memory/Persistence Logic
+    # 6. Memory/Persistence & Rule 4 Prep
     df['is_confident_instant'] = df['instant_presence_conf'] >= InferenceConfig.INSTANT_CONFIDENCE_THRESHOLD
     if persistence_window > 0:
         df['person_seen_recently'] = df['is_confident_instant'].rolling(
@@ -390,12 +401,11 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     else:
         df['person_seen_recently'] = df['is_confident_instant'].astype(bool)
 
-    # 7. Rule 4 Prep: Recent Child Speech (KCHI)
     df['recent_kchi_presence'] = df['has_kchi'].rolling(
         window=audio_window, min_periods=1, center=True
     ).max().fillna(0).astype(bool)
 
-    # 8. Robust Alone Check
+    # 7. Robust Alone & Media
     if alone_window > 0:
         df['social_signal_total'] = df['presence_score'] + df['has_cds'] + df['has_ohs']
         df['social_signal_frac'] = df['social_signal_total'].rolling(window=avail_window, min_periods=1).mean() / 3
@@ -405,22 +415,19 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     else:
         df['is_robust_alone'] = True
 
-    # 9. Media Check
     if media_window > 0:
-        df['book_frac'] = df['has_book'].rolling(window=media_window, min_periods=media_window).mean()
-        df['cds_ohs_frac'] = (df['has_cds'] + df['has_ohs']).rolling(window=media_window, min_periods=media_window).mean() / 2
-        df['kchi_frac'] = df['has_kchi'].rolling(window=media_window, min_periods=media_window).mean()
         df['is_media_interaction'] = (
-            (df['book_frac'] >= InferenceConfig.MIN_BOOK_PRESENCE_FRACTION) & 
-            (df['cds_ohs_frac'] >= InferenceConfig.MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA) & 
-            (df['kchi_frac'] <= InferenceConfig.MAX_KCHI_FRACTION_FOR_MEDIA)
+            (df['has_book'].rolling(window=media_window, min_periods=media_window).mean() >= InferenceConfig.MIN_BOOK_PRESENCE_FRACTION) & 
+            ((df['has_cds'] + df['has_ohs']).rolling(window=media_window, min_periods=media_window).mean() / 2 >= InferenceConfig.MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA) & 
+            (df['has_kchi'].rolling(window=media_window, min_periods=media_window).mean() <= InferenceConfig.MAX_KCHI_FRACTION_FOR_MEDIA)
         ).rolling(window=media_window, min_periods=1, center=True).max().fillna(False).astype(bool)
     else:
         df['is_media_interaction'] = False
     
     return df[['video_id', 'frame_number', 'is_sustained_kcds', 'is_robust_person', 
                'is_sustained_ohs', 'is_robust_alone', 'is_media_interaction', 'is_audiobook', 
-               'person_seen_recently', 'presence_score', 'instant_presence_conf', 'recent_kchi_presence']].copy()
+               'person_seen_recently', 'presence_score', 'instant_presence_conf', 
+               'recent_kchi_presence', 'was_interacting_recently']].copy()
 
 def check_audio_interaction_turn_taking(df, fps):
     """
@@ -563,13 +570,12 @@ def classify_frames(row, results_df, included_rules=None):
     if included_rules is None:
         included_rules = [1, 2, 3, 4]
     
-    # Tunable Interaction Permission Gate
-    # Requires higher presence_score to be 'Interacting' than just 'Available'
+    # Permission Gate Multipliers
     interact_thresh = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * InferenceConfig.INTERACTION_PERMISSION_GATE
+    
     is_person_interacting = row['presence_score'] >= interact_thresh
-    
     is_person_available = bool(row['is_robust_person'])
-    
+    was_interacting_recently = bool(row['was_interacting_recently'])
     is_visual_confident = row['instant_presence_conf'] >= InferenceConfig.INSTANT_CONFIDENCE_THRESHOLD
     
     rule1_tt = bool(row['is_audio_interaction'])
@@ -578,13 +584,13 @@ def classify_frames(row, results_df, included_rules=None):
     is_book_present = (row['has_book'] == 1)
 
     # --- HIERARCHY ---
+    # TIER 1: INTERACTING
     if 1 in included_rules and rule1_tt:
         if is_book_present and not is_person_available:
             interaction_category = "Alone"
         else:
             interaction_category = "Interacting"
             
-    # Rules 3 & 4 now strictly gated by Interaction Permission Mass
     elif (3 in included_rules and rule3_kcds and is_person_interacting):
         interaction_category = "Interacting"
         
@@ -594,9 +600,17 @@ def classify_frames(row, results_df, included_rules=None):
     elif 2 in included_rules and is_visual_confident and bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD):
         interaction_category = "Interacting"
 
+    # TIER 2: AVAILABLE
+    # 1. Direct sensory evidence (Visual presence or OHS)
     elif is_person_available or bool(row['is_sustained_ohs']):
         interaction_category = "Available"
+    
+    # 2. TEMPORAL COOLDOWN: 'Social Echo' protection
+    # Prevents dropping to Alone if an interaction just ended
+    elif was_interacting_recently:
+        interaction_category = "Available"
 
+    # TIER 3: ALONE (Default)
     else:
         interaction_category = "Alone"
 
