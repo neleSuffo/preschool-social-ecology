@@ -581,34 +581,17 @@ def classify_frames(row, included_rules=None):
     # --- HIERARCHY ---
     # TIER 1: INTERACTING
     if 1 in included_rules and rule1_tt:
-        if is_book_present and not is_person_available:
-            interaction_category = "Alone"
-        else:
-            interaction_category = "Interacting"
+        interaction_category = 3 if (is_book_present and not is_person_available) else 1 # Alone or Interacting
             
-    elif (3 in included_rules and rule3_kcds and is_person_interacting):
-        interaction_category = "Interacting"
-        
-    elif (4 in included_rules and rule4_kchi_visual and is_person_interacting):
-        interaction_category = "Interacting"
-    
-    elif 2 in included_rules and is_visual_confident and bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD):
-        interaction_category = "Interacting"
-
-    # TIER 2: AVAILABLE
-    # 1. Direct sensory evidence (Visual presence or OHS)
-    elif is_person_available or bool(row['is_sustained_ohs']):
-        interaction_category = "Available"
-    
-    # 2. TEMPORAL COOLDOWN: 'Social Echo' protection
-    # Prevents dropping to Alone if an interaction just ended
-    elif was_interacting_recently:
-        interaction_category = "Available"
-
-    # TIER 3: ALONE (Default)
+    elif (3 in included_rules and rule3_kcds and is_person_interacting) or \
+         (4 in included_rules and rule4_kchi_visual and is_person_interacting) or \
+         (2 in included_rules and is_visual_confident and bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD)):
+        interaction_category = 1 # Interacting
+    elif is_person_available or bool(row['is_sustained_ohs']) or was_interacting_recently:
+        interaction_category = 2 # Available
     else:
-        interaction_category = "Alone"
-
+        interaction_category = 3 # Alone
+        
     return (interaction_category, rule1_tt, 
             bool(row['proximity'] >= InferenceConfig.PROXIMITY_THRESHOLD), 
             rule3_kcds, rule4_kchi_visual)
