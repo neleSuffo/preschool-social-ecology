@@ -32,37 +32,48 @@ from analysis.pipeline_frame_level_analysis import main as frame_analysis_main
 from analysis.pipeline_video_level_analysis import main as segment_analysis_main
 
 class HyperparameterConfig:
-    """Configuration class for hyperparameter ranges."""   
     HYPERPARAMETER_RANGES = {
-    # --- 1. Research-Driven Duration Thresholds ---
-    # Testing current best vs. your research findings
-    'MIN_INTERACTING_SEGMENT_DURATION_SEC': [1.5, 2.2, 3.0], # Current: 1.5 | Goal: 3.0
-    'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [6.0, 8.0, 10.0],  # Current: 8.0 | Goal: 6.0
-    'MIN_ALONE_SEGMENT_DURATION_SEC': [8.0, 10.0, 12.0],    # Current: 8.0 | Goal: 8.0+
+        # --- 1. Audio-Lead Interaction (Rule 1, 3, & 4) ---
+        # Goal: Sharpen the distinction between 'Interacting' and 'Available'
+        'MAX_TURN_TAKING_GAP_SEC': [4.0, 6.0, 8.0],                # Current: 6.0
+        'MAX_SAME_SPEAKER_GAP_SEC': [1.0, 1.5, 2.0],               # Current: 1.5
+        'SUSTAINED_KCDS_THRESHOLD': [0.80, 0.85, 0.95],            # Current: 0.85
+        'SUSTAINED_KCDS_WINDOW_SEC': [1.0, 2.0],                   # Current: 1.0
+        'INTERACTION_PERMISSION_GATE': [1.0, 1.05, 1.15],          # Current: 1.05
 
-    # --- 2. Audiobook & Media Logic ---
-    # Centered around your new 0.5 threshold for constant background noise
-    'MAX_OHS_FOR_AVAILABLE': [0.40, 0.50, 0.65],            # Current: 0.50
-    'MEDIA_WINDOW_SEC': [15, 20, 25],                       # Current: 20
-    'MAX_KCHI_FRACTION_FOR_MEDIA': [0.08, 0.12, 0.18],      # Current: 0.12
+        # --- 2. Presence & Hysteresis (Available vs. Alone) ---
+        # Goal: Reduce the 38.9% leak from Alone -> Available
+        'MIN_PRESENCE_CONFIDENCE_THRESHOLD': [0.20, 0.25, 0.35],   # Current: 0.25
+        'STANDARD_EXIT_MULTIPLIER': [0.6, 0.7, 0.8],               # Current: 0.7
+        'SOCIAL_COOLDOWN_EXIT_MULTIPLIER': [0.1, 0.2, 0.3],        # Current: 0.2
+        'SOCIAL_CONTEXT_THRESHOLD': [0.3, 0.5, 0.7],               # Current: 0.5
+        'SOCIAL_COOLDOWN_SEC': [15.0, 30.0, 45.0],                 # Current: 15.0
+        'EDGE_MARGIN': [0.03, 0.05, 0.08],                         # Current: 0.05
+        'PERSON_AVAILABLE_WINDOW_SEC': [25, 35, 45],               # Current: 35
 
-    # --- 3. Interaction & Presence Logic (Tier 1) ---
-    'PROXIMITY_THRESHOLD': [0.60, 0.65, 0.70],              # Current: 0.65
-    'SUSTAINED_KCDS_WINDOW_SEC': [5.0, 6.5, 8.0],           # Current: 6.5
-    'MAX_TURN_TAKING_GAP_SEC': [6, 8, 10],                  # Current: 8
-    'PERSON_AVAILABLE_WINDOW_SEC': [10, 15, 20],            # Current: 15
-    'MIN_PERSON_PRESENCE_FRACTION': [0.03, 0.05, 0.08],     # Current: 0.05
+        # --- 3. Audio Gating & Suppression ---
+        # Goal: Filter out background "ghost" voices
+        'AUDIO_VISUAL_GATING_FLOOR': [0.08, 0.12, 0.20],           # Current: 0.12
+        'MAX_OHS_FOR_AVAILABLE': [0.35, 0.50, 0.65],               # Current: 0.5
+        'MIN_PRESENCE_OHS_FRACTION': [0.03, 0.05, 0.10],           # Current: 0.05
 
-    # --- 4. Continuity & Robustness ---
-    'GAP_STRETCH_THRESHOLD': [0.3, 0.5, 1.0],               # Current: 0.5
-    'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.20, 0.25, 0.30], # Current: 0.25
-    'ROBUST_ALONE_WINDOW_SEC': [4, 6, 8],                   # Current: 6
+        # --- 4. Visual Interaction & Persistence ---
+        'PROXIMITY_THRESHOLD': [0.75, 0.80, 0.90],                 # Current: 0.8
+        'INSTANT_CONFIDENCE_THRESHOLD': [0.25, 0.30, 0.40],        # Current: 0.3
+        'VISUAL_PERSISTENCE_SEC': [0.0, 1.0, 2.0],                 # Current: 1.0
 
-    # --- 5. Refinement & Ghost Gates ---
-    'ALONE_RECLASSIFY_VISUAL_THRESHOLD': [0.20, 0.25, 0.35], # Current: 0.25
-    'GHOST_VISUAL_THRESHOLD_INTERACTING': [0.01, 0.02, 0.05], # Current: 0.02
-    'KCHI_PERSON_BUFFER_FRAMES': [2, 3, 5],                  # Current: 3
-}
+        # --- 5. Media Logic ---
+        #'MIN_BOOK_PRESENCE_FRACTION': [0.90, 0.95, 0.98],          # Current: 0.95
+        #'MEDIA_WINDOW_SEC': [10, 15, 20],                          # Current: 15
+
+        # --- 6. Segment Robustness ---
+        # Goal: Stabilize the timeline and prevent flicker
+        'MIN_ALONE_SEGMENT_DURATION_SEC': [15, 30, 45],            # Current: 30
+        'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4, 8, 12],          # Current: 8.0
+        'MIN_INTERACTING_SEGMENT_DURATION_SEC': [1.0, 2.0, 3.0],   # Current: 2.0
+        'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.25, 0.35, 0.45],   # Current: 0.35
+        'GAP_STRETCH_THRESHOLD': [0.1, 0.25, 0.5]                  # Current: 0.25
+    }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
     """
@@ -122,8 +133,8 @@ def run_pipeline_for_combo(hyperparameters, combo_dir):
                 setattr(InferenceConfig, key, value)
                 
         # Assuming all rules are active for consistency in tuning
-        rules = [1, 2, 3, 5]
-        rule_suffix = "_1_2_3_5"
+        rules = [1, 2, 3, 4]
+        rule_suffix = "_1_2_3_4"
         
         frame_output_path = combo_dir / f"frame_level_social_interactions{rule_suffix}.csv"
         segment_output_path = combo_dir / "interaction_segments.csv"
