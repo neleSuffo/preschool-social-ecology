@@ -133,7 +133,7 @@ def get_all_analysis_data(conn, video_list: list):
     """, (SAMPLE_RATE,))
 
     # ====================================================================
-    # STEP 1C (NEW): BOOK DETECTION AGGREGATION
+    # STEP 1C: BOOK DETECTION AGGREGATION
     # ====================================================================
     conn.execute("""
     CREATE TEMP TABLE IF NOT EXISTS BookAgg AS
@@ -146,6 +146,26 @@ def get_all_analysis_data(conn, video_list: list):
         bd.frame_number % ? = 0;
     """, (SAMPLE_RATE,))
 
+    # ====================================================================
+    # STEP 1D: UNIFIED COORDINATE AGGREGATION
+    # ====================================================================
+    conn.execute("""
+    CREATE TEMP TABLE IF NOT EXISTS PresenceCoords AS
+    SELECT 
+        frame_number, 
+        video_id,
+        MIN(x_min) AS x_min, 
+        MIN(y_min) AS y_min, 
+        MAX(x_max) AS x_max, 
+        MAX(y_max) AS y_max
+    FROM (
+        SELECT frame_number, video_id, x_min, y_min, x_max, y_max FROM FaceDetections
+        UNION ALL
+        SELECT frame_number, video_id, x_min, y_min, x_max, y_max FROM PersonDetections
+    )
+    GROUP BY frame_number, video_id;
+    """)
+    
     # ====================================================================
     # STEP 2: MAIN DATA INTEGRATION QUERY - GENERATE DENSE FRAME GRID
     # ====================================================================
@@ -190,9 +210,12 @@ def get_all_analysis_data(conn, video_list: list):
         COALESCE(af.has_ohs, 0) AS has_ohs,
         COALESCE(af.has_cds, 0) AS has_cds,
         COALESCE(ba.has_book, 0) AS has_book,
-
-        -- This is the lead signal for Rule 9
-        MAX(COALESCE(pa.person_conf, 0), COALESCE(fa.face_conf, 0)) AS instant_presence_conf
+        MAX(COALESCE(pa.person_conf, 0), COALESCE(fa.face_conf, 0)) AS instant_presence_conf,
+        
+        COALESCE(pc.x_min, -1) AS last_x_min,
+        COALESCE(pc.y_min, -1) AS last_y_min,
+        COALESCE(pc.x_max, -1) AS last_x_max,
+        COALESCE(pc.y_max, -1) AS last_y_max
 
     FROM FrameGrid fg
     LEFT JOIN AudioClassifications af 
@@ -204,6 +227,8 @@ def get_all_analysis_data(conn, video_list: list):
     -- NEW JOIN: Join to Book Aggregation
     LEFT JOIN BookAgg ba
         ON fg.frame_number = ba.frame_number AND fg.video_id = ba.video_id
+    LEFT JOIN PresenceCoords pc
+        ON fg.frame_number = pc.frame_number AND fg.video_id = pc.video_id
     ORDER BY fg.video_id, fg.frame_number
     """
     
@@ -231,36 +256,64 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     """
     samples_per_sec = fps / sample_rate
     
-    # Setup Window Sizes from InferenceConfig
+    # 1. Setup Window Sizes from InferenceConfig
     sustained_window = int(InferenceConfig.SUSTAINED_KCDS_WINDOW_SEC * samples_per_sec)
     avail_window = int(InferenceConfig.PERSON_AVAILABLE_WINDOW_SEC * samples_per_sec)
     audio_window = int(InferenceConfig.PERSON_AUDIO_WINDOW_SEC * samples_per_sec)
     alone_window = int(InferenceConfig.ROBUST_ALONE_WINDOW_SEC * samples_per_sec)
-    media_window = int(InferenceConfig.MEDIA_WINDOW_SEC * samples_per_sec)
     persistence_window = int(InferenceConfig.VISUAL_PERSISTENCE_SEC * samples_per_sec)
     cooldown_frames = int(InferenceConfig.SOCIAL_COOLDOWN_SEC * samples_per_sec)
 
-    # 1. Presence Score (Rule 9 Lead Signal)
+    # 2. Presence Score (Confidence Mass)
     df['presence_score'] = df['instant_presence_conf'].rolling(
         window=avail_window, min_periods=1, center=True
     ).mean().fillna(0)
 
-    # 2. TEMPORAL COOLDOWN LOGIC
-    # Identify if there was a Turn-Taking interaction recently
-    df['was_interacting_recently'] = df['is_audio_interaction'].rolling(
-        window=cooldown_frames, min_periods=1
-    ).max().astype(bool)
+    # 3. INTERACTION HISTORY & DECAY LOGIC
+    # Calculate how much interaction happened in the last 60 seconds
+    history_window = int(60 * samples_per_sec)
+    df['interaction_history_mass'] = df['is_audio_interaction'].rolling(
+        window=history_window, min_periods=1
+    ).sum() / history_window
 
-    # 3. DYNAMIC HYSTERESIS (Fixing Available -> Alone leak)
-    # entry is fixed to MIN_PRESENCE_CONFIDENCE_THRESHOLD
+    # Calculate frames since the last interaction event
+    df['is_not_interacting'] = (~df['is_audio_interaction']).astype(int)
+    df['frames_since_interaction'] = df['is_not_interacting'].groupby(
+        (df['is_audio_interaction']).cumsum()
+    ).cumsum()
+
+    # Calculate History Boost: long interactions (high mass) sustain the state longer
+    # Short drive-bys get a 0.2 multiplier; long sessions get 1.0
+    df['history_boost'] = (df['interaction_history_mass'] * 5).clip(0.2, 1.0) 
+    
+    # Linear Decay: 1.0 at start of cooldown, 0.0 at the end
+    df['decay_factor'] = (1.0 - (df['frames_since_interaction'] / cooldown_frames)).clip(0, 1)
+    df['weighted_cooldown'] = df['decay_factor'] * df['history_boost']
+
+    # 4. EDGE-OF-FRAME TRIPWIRE (Kill Switch)
+    edge_margin = getattr(InferenceConfig, 'EDGE_MARGIN', 0.05)
+    df['is_at_edge'] = (
+        ((df['last_x_min'] >= 0) & (df['last_x_min'] < edge_margin)) | 
+        (df['last_x_max'] > (1.0 - edge_margin))
+    ).astype(bool)
+
+    # Exit event: person was at edge and instant detection dropped
+    df['is_exit_event'] = (df['is_at_edge']) & (df['instant_presence_conf'] == 0)
+
+    # 5. DYNAMIC SOCIAL COOLDOWN
+    # Cooldown is active if weighted decay is above threshold and NO exit event
+    df['was_interacting_recently'] = (df['weighted_cooldown'] > 0.1) & (~df['is_exit_event'])
+
+    # 6. HYSTERESIS LOGIC
+    # Entry threshold is fixed; Exit threshold scales with cooldown strength
     is_high_entry = df['presence_score'] >= InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD
     
-    # If interacting recently, use an ultra-low exit (0.1x) to bridge visual gaps
-    standard_exit = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * InferenceConfig.HYSTERESIS_EXIT_MULTIPLIER
-    cooldown_exit = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * 0.1
+    standard_exit = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * InferenceConfig.STANDARD_EXIT_MULTIPLIER
+    # Ultra-low exit if there is strong social context (cooldown > 0.5)
+    cooldown_exit = InferenceConfig.MIN_PRESENCE_CONFIDENCE_THRESHOLD * InferenceConfig.SOCIAL_COOLDOWN_EXIT_MULTIPLIER
     
     df['effective_exit_threshold'] = np.where(
-        df['was_interacting_recently'], 
+        df['weighted_cooldown'] > InferenceConfig.SOCIAL_CONTEXT_THRESHOLD, 
         cooldown_exit, 
         standard_exit
     )
@@ -272,17 +325,18 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
         window=avail_window, min_periods=1, center=True
     ).max().astype(bool) & is_low_exit
 
-    # 4. AUDIOBOOK & VISUAL ANCHOR FOR OHS
+    # 7. AUDIOBOOK & VISUAL ANCHOR FOR OHS
     df['ohs_frac_lookback'] = df['has_ohs'].rolling(window=avail_window, min_periods=1).mean()
     df['is_audiobook'] = df['ohs_frac_lookback'] >= InferenceConfig.MAX_OHS_FOR_AVAILABLE
 
+    # Available triggers if OHS is present AND there is a baseline visual floor
     df['is_sustained_ohs'] = (
         (df['ohs_frac_lookback'] >= InferenceConfig.MIN_PRESENCE_OHS_FRACTION) &
-        (df['presence_score'] >= 0.05) &  # Visual Floor for OHS
+        (df['presence_score'] >= InferenceConfig.AUDIO_VISUAL_GATING_FLOOR) & 
         (~df['is_audiobook'])
     )
 
-    # 5. Rule 3: Sustained Adult Speech
+    # 8. RULE 3: SUSTAINED ADULT SPEECH (KCDS)
     if sustained_window > 0:
         df['kcds_frac_lookback'] = df['has_cds'].rolling(window=sustained_window, min_periods=1).mean()
         df['is_sustained_kcds'] = (df['kcds_frac_lookback'] >= InferenceConfig.SUSTAINED_KCDS_THRESHOLD)
@@ -292,20 +346,17 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
     else:
         df['is_sustained_kcds'] = False
 
-    # 6. Memory/Persistence & Rule 4 Prep
+    # 9. MEMORY & RULE 4 PREP
     df['is_confident_instant'] = df['instant_presence_conf'] >= InferenceConfig.INSTANT_CONFIDENCE_THRESHOLD
-    if persistence_window > 0:
-        df['person_seen_recently'] = df['is_confident_instant'].rolling(
-            window=persistence_window, min_periods=1, center=True
-        ).max().fillna(0).astype(bool)
-    else:
-        df['person_seen_recently'] = df['is_confident_instant'].astype(bool)
+    df['person_seen_recently'] = df['is_confident_instant'].rolling(
+        window=max(1, persistence_window), min_periods=1, center=True
+    ).max().fillna(0).astype(bool)
 
     df['recent_kchi_presence'] = df['has_kchi'].rolling(
         window=audio_window, min_periods=1, center=True
     ).max().fillna(0).astype(bool)
 
-    # 7. Robust Alone & Media
+    # 10. ROBUST ALONE
     if alone_window > 0:
         df['social_signal_total'] = df['presence_score'] + df['has_cds'] + df['has_ohs']
         df['social_signal_frac'] = df['social_signal_total'].rolling(window=avail_window, min_periods=1).mean() / 3
@@ -314,20 +365,66 @@ def calculate_window_features(df: pd.DataFrame, fps: int, sample_rate: int) -> p
         ).min().fillna(1) <= InferenceConfig.MAX_ALONE_FALSE_POSITIVE_FRACTION
     else:
         df['is_robust_alone'] = True
-
-    if media_window > 0:
-        df['is_media_interaction'] = (
-            (df['has_book'].rolling(window=media_window, min_periods=media_window).mean() >= InferenceConfig.MIN_BOOK_PRESENCE_FRACTION) & 
-            ((df['has_cds'] + df['has_ohs']).rolling(window=media_window, min_periods=media_window).mean() / 2 >= InferenceConfig.MIN_PRESENCE_OHS_KCDS_FRACTION_MEDIA) & 
-            (df['has_kchi'].rolling(window=media_window, min_periods=media_window).mean() <= InferenceConfig.MAX_KCHI_FRACTION_FOR_MEDIA)
-        ).rolling(window=media_window, min_periods=1, center=True).max().fillna(False).astype(bool)
-    else:
-        df['is_media_interaction'] = False
     
-    return df[['video_id', 'frame_number', 'is_sustained_kcds', 'is_robust_person', 
-               'is_sustained_ohs', 'is_robust_alone', 'is_media_interaction', 'is_audiobook', 
-               'person_seen_recently', 'presence_score', 'instant_presence_conf', 
-               'recent_kchi_presence', 'was_interacting_recently']].copy()
+    return df[['video_id', 'frame_number', 'is_sustained_kcds', 'is_robust_person', 'is_sustained_ohs', 
+               'is_robust_alone', 'is_audiobook', 'person_seen_recently', 'presence_score', 
+               'instant_presence_conf', 'recent_kchi_presence', 'was_interacting_recently', 'is_exit_event']].copy()
+
+def find_segments(video_df: pd.DataFrame, column_name: str) -> List[Dict]:
+    """
+    Identifies continuous segments using vectorized operations.
+    (Optimized: Replaced Python loop with NumPy diff)
+    """
+    segments = []
+
+    if column_name not in video_df.columns:
+        return segments
+
+    speech_frames = video_df[video_df[column_name] == 1]
+    if speech_frames.empty:
+        return segments
+
+    # Determine frame numbers: use index if frame_number isn't explicit
+    if 'frame_number' in speech_frames.columns:
+        frame_numbers = speech_frames['frame_number'].values.astype(int)
+    else:
+        frame_numbers = speech_frames.index.values.astype(int)
+
+    if len(frame_numbers) < 2:
+        # Handle the single-frame or single-segment case
+        return [{
+            'start': int(frame_numbers[0]),
+            'end': int(frame_numbers[-1]),
+            'type': column_name.split('_')[-1]
+        }]
+
+    # Vectorized gap calculation (difference between consecutive frames)
+    gaps = np.diff(frame_numbers) 
+
+    # Identify indices where the gap exceeds SAMPLE_RATE (segment breaks)
+    # np.where returns a tuple, take the first element (the array of indices)
+    break_indices = np.where(gaps > SAMPLE_RATE)[0]
+    
+    # Segment boundaries reconstruction
+    current_start = frame_numbers[0]
+    
+    # Loop over break indices
+    for i in break_indices:
+        segments.append({
+            'start': int(current_start),
+            'end': int(frame_numbers[i]),
+            'type': column_name.split('_')[-1]
+        })
+        current_start = frame_numbers[i + 1]
+
+    # Append last segment
+    segments.append({
+        'start': int(current_start),
+        'end': int(frame_numbers[-1]),
+        'type': column_name.split('_')[-1]
+    })
+
+    return segments
 
 def check_audio_interaction_turn_taking(df, fps):
     """
@@ -454,7 +551,7 @@ def check_audio_interaction_turn_taking(df, fps):
     
     return result_df['is_audio_interaction']
 
-def classify_frames(row, results_df, included_rules=None):
+def classify_frames(row, included_rules=None):
     """
     Frame-level classification into "Interacting", "Available", or "Alone" based on hierarchical rules.
     
@@ -462,8 +559,6 @@ def classify_frames(row, results_df, included_rules=None):
     ----------
     row : pd.Series
         A row from the DataFrame containing all necessary features for classification.
-    results_df : pd.DataFrame
-        The full DataFrame with all calculated features, used for any necessary lookups.
     included_rules : list, optional
         List of rule numbers to include in the classification. If None, all rules are included.
     """
@@ -606,35 +701,22 @@ def main(db_path: Path, output_dir: Path, hyperparameter_tuning: False, included
         
         # --- PHASE 2: VECTORIZED WINDOW FEATURE CALCULATION (HUGE SPEEDUP) ---
         window_flags_df = calculate_window_features(all_data, FPS, SAMPLE_RATE)
+        
         # Merge the pre-calculated features back into the main DataFrame
         cols_to_use = window_flags_df.columns.difference(all_data.columns).tolist() + ['video_id', 'frame_number']
         all_data = all_data.merge(window_flags_df[cols_to_use], on=['video_id', 'frame_number'], how='left')
-        # --- PHASE 3A: INITIAL HIERARCHICAL CLASSIFICATION (Provides interaction_type and initial MEDIA_INTERACTION flags) ---
         
+        # --- PHASE 3: HIERARCHICAL CLASSIFICATION ---
         print("⏱️ PHASE 3: Running Initial Classification...")
-        results = all_data.apply(lambda row: classify_frames(row, all_data, included_rules), axis=1)
+        results = all_data.apply(lambda row: classify_frames(row, included_rules), axis=1)
         all_data['interaction_type'] = [r[0] for r in results]
-        # --- PHASE 3B: BB PERSISTENCE SMOOTHING ---
-        # This modifies the 'is_media_interaction' column based on BB tracking.
-        print("🧠 PHASE 3B: Running Bounding Box Persistence and Smoothing (DeepFace Check)...")
-        all_data = smooth_media_persistence(all_data, conn)
 
-        # --- PHASE 4: FINAL HIERARCHICAL CLASSIFICATION (Applies final interaction_type based on smoothed flag) ---
-        print("🔄 PHASE 4: Applying Final Classification based on persistence...")
-        final_classification_results = all_data.apply(
-            lambda row: classify_frames(row, all_data, included_rules), axis=1
-        )
-
-        all_data['interaction_type'] = [result[0] for result in final_classification_results]
-        all_data['rule1_turn_taking'] = [result[1] for result in final_classification_results]
-        all_data['rule2_close_proximity'] = [result[2] for result in final_classification_results]
-        all_data['rule3_kcds_speaking'] = [result[3] for result in final_classification_results]
-        all_data['rule4_kchi_visual'] = [result[4] for result in final_classification_results]
-
-        # Categorization
-        all_data['face_frame_category'] = all_data.apply(classify_face_category, axis=1)
-        all_data['person_frame_category'] = all_data.apply(classify_person_category, axis=1)
-        all_data['fused_frame_category'] = all_data.apply(classify_fused_category, axis=1)
+        # Update only the classification column
+        all_data['interaction_type'] = [result[0] for result in results]
+        all_data['rule1_turn_taking'] = [result[1] for result in results]
+        all_data['rule2_close_proximity'] = [result[2] for result in results]
+        all_data['rule3_kcds_speaking'] = [result[3] for result in results]
+        all_data['rule4_kchi_visual'] = [result[4] for result in results]
 
         # ------------------------------------------------------------------
         # 💾 Save frame-level CSV to the timestamped output folder
