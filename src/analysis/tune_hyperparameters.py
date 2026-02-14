@@ -35,44 +35,45 @@ class HyperparameterConfig:
     HYPERPARAMETER_RANGES = {
         # --- 1. Audio-Lead Interaction (Rule 1, 3, & 4) ---
         # Goal: Sharpen the distinction between 'Interacting' and 'Available'
-        'MAX_TURN_TAKING_GAP_SEC': [4.0, 6.0, 8.0],                # Current: 6.0
-        'MAX_SAME_SPEAKER_GAP_SEC': [1.0, 1.5, 2.0],               # Current: 1.5
-        'SUSTAINED_KCDS_THRESHOLD': [0.80, 0.85, 0.95],            # Current: 0.85
-        'SUSTAINED_KCDS_WINDOW_SEC': [1.0, 2.0],                   # Current: 1.0
-        'INTERACTION_PERMISSION_GATE': [1.0, 1.05, 1.15],          # Current: 1.05
+        'MAX_TURN_TAKING_GAP_SEC': [6.0, 8.0, 10.0],
+        'MAX_SAME_SPEAKER_GAP_SEC': [1.0, 1.5, 2.0],
+        'SUSTAINED_KCDS_THRESHOLD': [0.75, 0.80, 0.90],
+        'SUSTAINED_KCDS_WINDOW_SEC': [0.5, 1.0, 1.5],
+        'PERSON_AUDIO_WINDOW_SEC': [1.5, 2.0, 3.0],
 
-        # --- 2. Presence & Hysteresis (Available vs. Alone) ---
-        # Goal: Reduce the 38.9% leak from Alone -> Available
-        'MIN_PRESENCE_CONFIDENCE_THRESHOLD': [0.20, 0.25, 0.35],   # Current: 0.25
-        'STANDARD_EXIT_MULTIPLIER': [0.6, 0.7, 0.8],               # Current: 0.7
-        'SOCIAL_COOLDOWN_EXIT_MULTIPLIER': [0.1, 0.2, 0.3],        # Current: 0.2
-        'SOCIAL_CONTEXT_THRESHOLD': [0.3, 0.5, 0.7],               # Current: 0.5
-        'SOCIAL_COOLDOWN_SEC': [15.0, 30.0, 45.0],                 # Current: 15.0
-        'EDGE_MARGIN': [0.03, 0.05, 0.08],                         # Current: 0.05
-        'PERSON_AVAILABLE_WINDOW_SEC': [25, 35, 45],               # Current: 35
+        # --- 2. Visual & Proximity Rules (Rule 2) ---
+        'PROXIMITY_THRESHOLD': [0.75, 0.80, 0.85],
+        'INSTANT_CONFIDENCE_THRESHOLD': [0.35, 0.40, 0.45],
+        'VISUAL_PERSISTENCE_SEC': [0.0, 0.5, 1.0],
 
-        # --- 3. Audio Gating & Suppression ---
-        # Goal: Filter out background "ghost" voices
-        'AUDIO_VISUAL_GATING_FLOOR': [0.08, 0.12, 0.20],           # Current: 0.12
-        'MAX_OHS_FOR_AVAILABLE': [0.35, 0.50, 0.65],               # Current: 0.5
-        'MIN_PRESENCE_OHS_FRACTION': [0.03, 0.05, 0.10],           # Current: 0.05
+        # --- 3. Presence & Hysteresis (Available vs. Alone) ---
+        # Goal: "Harden" the entry and exit boundaries to reduce 'Alone' false positives
+        'MIN_PRESENCE_CONFIDENCE_THRESHOLD': [0.26, 0.28, 0.32],
+        'STANDARD_EXIT_MULTIPLIER': [0.45, 0.55, 0.65],
+        'SOCIAL_COOLDOWN_EXIT_MULTIPLIER': [0.10, 0.15, 0.25],
+        'SOCIAL_CONTEXT_THRESHOLD': [0.4, 0.5, 0.6],
+        'SOCIAL_COOLDOWN_SEC': [30, 45, 60],
+        'EDGE_MARGIN': [0.03, 0.05, 0.07],
 
-        # --- 4. Visual Interaction & Persistence ---
-        'PROXIMITY_THRESHOLD': [0.75, 0.80, 0.90],                 # Current: 0.8
-        'INSTANT_CONFIDENCE_THRESHOLD': [0.25, 0.30, 0.40],        # Current: 0.3
-        'VISUAL_PERSISTENCE_SEC': [0.0, 1.0, 2.0],                 # Current: 1.0
+        # --- 4. Gating & Robustness (Presence Mass) ---
+        # Goal: Ensure 'Available' requires significant visual evidence
+        'INTERACTION_PERMISSION_GATE': [1.12, 1.15, 1.25],
+        'PERSON_AVAILABLE_WINDOW_SEC': [35, 45, 55],
+        'MIN_PRESENCE_PERSON_FRACTION': [0.10, 0.15, 0.20],
+        'AUDIO_VISUAL_GATING_FLOOR': [0.15, 0.18, 0.22],
+        'MAX_OHS_FOR_AVAILABLE': [0.55, 0.65, 0.75],
+        'MIN_PRESENCE_OHS_FRACTION': [0.02, 0.03, 0.05],
 
-        # --- 5. Media Logic ---
-        #'MIN_BOOK_PRESENCE_FRACTION': [0.90, 0.95, 0.98],          # Current: 0.95
-        #'MEDIA_WINDOW_SEC': [10, 15, 20],                          # Current: 15
-
-        # --- 6. Segment Robustness ---
-        # Goal: Stabilize the timeline and prevent flicker
-        'MIN_ALONE_SEGMENT_DURATION_SEC': [15, 30, 45],            # Current: 30
-        'MIN_AVAILABLE_SEGMENT_DURATION_SEC': [4, 8, 12],          # Current: 8.0
-        'MIN_INTERACTING_SEGMENT_DURATION_SEC': [1.0, 2.0, 3.0],   # Current: 2.0
-        'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.25, 0.35, 0.45],   # Current: 0.35
-        'GAP_STRETCH_THRESHOLD': [0.1, 0.25, 0.5]                  # Current: 0.25
+        # --- 5. Segment Post-Processing & Smoothing ---
+        # Goal: Optimize 'Biased Mode' thresholds to reduce jitter/flicker
+        'ROLLING_SMOOTH_WINDO_SEC': [2.0, 3.0, 4.0],
+        'GAP_STRETCH_THRESHOLD': [0.05, 0.10, 0.20],
+        'ROBUST_ALONE_WINDOW_SEC': [1.0, 2.0, 3.0],
+        'MAX_ALONE_FALSE_POSITIVE_FRACTION': [0.35, 0.45, 0.55],
+        
+        # Internal Thresholds for biased_conservative_mode (if parameterized in your script)
+        'AVAILABLE_MAJORITY_THRESHOLD': [0.40, 0.45, 0.55],
+        'INTERACTING_PROTECTION_THRESHOLD': [0.15, 0.20, 0.30]
     }
 
 def generate_hyperparameter_combinations(max_combinations=None, random_sample=False):
