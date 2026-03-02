@@ -34,7 +34,7 @@ def merge_overlapping_intervals(intervals):
     return merged, sum(end - start for start, end in merged)
 
 def main():
-    print("🗣️ RQ 04: SPEECH EXPOSURE ANALYSIS")
+    print("🗣️ RESEARCH QUESTION 03: SPEECH EXPOSURE ANALYSIS")
     print("="*70)
     
     segments_df = pd.read_csv(Inference.INTERACTION_SEGMENTS_CSV)
@@ -90,11 +90,35 @@ def main():
 
     final_df = pd.DataFrame(final_rows)
     final_df['exposure_percent'] = (final_df['total_speech_seconds'] / final_df['total_segment_duration']).fillna(0)
-    
+        
     # Final cleanup and sort
     final_df = final_df.sort_values(['video_name', 'segment_start_time', 'exposure_type'])
     final_df.to_csv(Inference.CDS_SUMMARY_CSV, index=False)
     print(f"✅ Clean results saved to {Inference.CDS_SUMMARY_CSV}")
+    
+    
+    # ----- PART 3A: Child-Level Aggregation ------
+    # We group by both child_id and exposure_type to see the breakdown per child
+    child_exposure_summary = final_df.groupby(['child_id', 'exposure_type']).agg({
+        'total_speech_seconds': 'sum',
+        'total_segment_duration': 'sum',
+        'age_at_recording': 'min'
+    }).reset_index()
+
+    # Calculate global percentage for that specific exposure type
+    child_exposure_summary['exposure_percent'] = (
+        child_exposure_summary['total_speech_seconds'] / 
+        child_exposure_summary['total_segment_duration']
+    ).fillna(0)
+
+    # Convert to minutes for easier reporting
+    child_exposure_summary['total_speech_minutes'] = child_exposure_summary['total_speech_seconds'] / 60
+    child_exposure_summary['total_recording_minutes'] = child_exposure_summary['total_segment_duration'] / 60
+
+    # Save child-level results
+    child_exposure_summary.to_csv(Inference.GLOBAL_CDS_SUMMARY_CSV, index=False)
+    
+    print(f"✅ Child-level exposure summary saved to: {Inference.GLOBAL_CDS_SUMMARY_CSV}")
 
 if __name__ == "__main__":
     main()

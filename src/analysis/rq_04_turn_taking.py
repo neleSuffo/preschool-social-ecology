@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from typing import Tuple
 from constants import DataPaths, Inference, AudioClassification
 from config import InferenceConfig
 
@@ -55,8 +56,38 @@ def process_block(block):
             
     return turns, succ_init, succ_resp, fail_init, fail_resp
 
-def count_directional_turns(vocalizations, segments_df):
+def count_directional_turns(vocalizations, segments_df) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Counts directional turn-taking within each interacting segment and measures individual child turn durations.
+    
+    Parameters:
+    ----------
+    vocalizations: DataFrame
+        containing vocalization data with columns:
+        - video_name
+        - start_time_seconds
+        - end_time_seconds
+        - speaker (KCHI or KCDS)
+    segments_df: DataFrame
+        containing interaction segment data with columns:
+        - child_id
+        - video_name
+        - age_at_recording
+        - start_time_sec
+        - end_time_sec
+        - duration_sec
+        - interaction_type
+    
+    Returns:
+    --------
+    results_df: DataFrame
+        containing turn-taking counts and proportions for each segment
+    raw_turns_df: DataFrame
+        containing individual child turn durations and metadata for further analysis
+    """
     results = []
+    # list to store individual child turns
+    raw_turns_df = []
     MAX_TURN_GAP = InferenceConfig.MAX_TURN_TAKING_GAP_SEC
     MAX_SAME_GAP = InferenceConfig.MAX_SAME_SPEAKER_GAP_SEC
 
@@ -75,6 +106,17 @@ def count_directional_turns(vocalizations, segments_df):
         # Filter for the Dyad (KCHI and KCDS)
         seg_vocs = seg_vocs[seg_vocs['speaker'].isin(['KCHI', 'KCDS'])].reset_index(drop=True)
 
+        # Capture Individual Turn Durations
+        child_only = seg_vocs[seg_vocs['speaker'] == 'KCHI']
+        for _, voc in child_only.iterrows():
+            raw_turns_df.append({
+                'child_id': seg['child_id'],
+                'age_at_recording': seg['age_at_recording'],
+                'video_name': seg['video_name'],
+                'vocalization_duration_sec': voc['duration'],
+                'start_time': voc['start_time_seconds']
+            })
+            
         total_turns = 0
         s_init, s_resp, f_init, f_resp = 0, 0, 0, 0
         
@@ -115,7 +157,7 @@ def count_directional_turns(vocalizations, segments_df):
             'segment_duration_minutes': seg['duration_sec'] / 60
         })
         
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), pd.DataFrame(raw_turns_df)
 
 def main():
     print("🗣️ RESEARCH QUESTION 3: MULTIDIMENSIONAL SOCIAL DYNAMICS")
@@ -126,7 +168,7 @@ def main():
     all_vocalizations = parse_rttm()
     
     # 2. Categorize Social Blocks
-    final_df = count_directional_turns(all_vocalizations, segments_df)
+    final_df, raw_turns_df = count_directional_turns(all_vocalizations, segments_df)
     
     # 3. Calculate Global Totals and Proportions
     final_df['total_attempts'] = (
@@ -150,6 +192,16 @@ def main():
     # 5. Save Results
     final_output.to_csv(Inference.TURN_TAKING_CSV, index=False)
     print(f"✅ Full four-category analysis saved to {Inference.TURN_TAKING_CSV}")
+    
+    
+    # ----- Part 2: Save Raw Child Turn Details for Further Analysis -----
+    # Cleanup raw_turns_df
+    raw_turns_df['age_at_recording'] = (
+        raw_turns_df['age_at_recording'].astype(str).str.replace('"', '').str.replace(',', '.').str.strip()
+    )
+    # Define a path for the new granular output
+    raw_turns_df.to_csv(Inference.TURN_DURATION_CSV, index=False)
+    print(f"✅ Raw child vocalization durations saved to {Inference.TURN_DURATION_CSV}")
 
 if __name__ == "__main__":
     main()
