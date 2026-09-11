@@ -20,6 +20,7 @@ class DataConfig:
     FPS = 30
     FRAME_WIDTH = 2304
     FRAME_HEIGHT = 1296
+    HORIZONTAL_FOV_DEG = 140.0 #wide lens
     VIDEO_BATCH_SIZE = 16
     VALID_EXTENSIONS = [".jpg", ".PNG"]
     CUT_VIDEO = ['quantex_at_home_id255237_2022_05_08_04']
@@ -189,6 +190,10 @@ class FaceConfig:
     FINAL_CONFIRMATION_DISTANCE_THRESHOLD = 0.6
     VERIFIED_DISTANCE_THRESHOLD = 0.68
     CONFIDENCE_THRESHOLD = 0.55
+    
+    PROXIMITY_MIN_DISTANCE = 0.30 # proximity of 1 corresponds to 0.3m distance
+    PROXIMITY_MAX_DISTANCE = 5.00 # proximity of 0 corresponds to 5m distance
+    PLOT_HORIZON_METERS = 3.0 # maximum distance to plot in proximity plots (in meters)
 
 class AudioConfig:
     """Configuration for audio classification."""

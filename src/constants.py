@@ -125,7 +125,7 @@ class Analysis:
     
     # -- Dynamic Folder Logic --
     # 1. Define the default fallback
-    DEFAULT_RUN_NAME = "analysis_20260409_232600"
+    DEFAULT_RUN_NAME = "analysis_20260410_202054_tertiary_final"
     # 2. Look for the environment variable 'RUN_FOLDER_NAME'
     # os.getenv returns the string from the system, or the default if not found
     active_run_name = os.getenv("RUN_FOLDER_NAME", DEFAULT_RUN_NAME)
@@ -146,3 +146,9 @@ class Analysis:
     TURN_DURATION_CSV = FINAL_OUTPUT_FOLDER / "04b_turn_durations_summary.csv"
     INTERACTION_COMPOSITION_CSV = FINAL_OUTPUT_FOLDER / "05_interaction_composition.csv"
     TEMP_CUT_FACE_DIR = BASE_OUTPUT_DIR / "temp_cut_faces"
+    
+class Visualization:
+    FACE_HEATMAP_PATH = Analysis.FINAL_OUTPUT_FOLDER / "face_heatmaps_per_state.png"
+    HEATMAP_SUBFOLDER = "heatmaps"
+    FULL_MATCHED_FACES_DETECTIONS = Analysis.FINAL_OUTPUT_FOLDER / HEATMAP_SUBFOLDER / "full_matched_faces_detections.csv"
+    GT_MATCHED_FACES_DETECTIONS = Analysis.FINAL_OUTPUT_FOLDER / HEATMAP_SUBFOLDER / "gt_matched_faces_detections.csv"
