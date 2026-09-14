@@ -128,7 +128,7 @@ def process_frame(frame_path: Path, video_id: int, frame_number: int,
         return 0
     
     # Run YOLO face detection
-    results = model.predict(frame, conf=FaceConfig.CONFIDENCE_THRESHOLD, verbose=False)
+    results = model.predict(frame, verbose=False)
     
     face_count = 0
     for result in results:
