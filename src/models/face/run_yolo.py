@@ -39,6 +39,7 @@ def process_image(model: YOLO, image_path: Path) -> Tuple[np.ndarray, Detections
 
 def draw_detections_and_ground_truth(image: np.ndarray, 
                                      predictions: Detections,
+                                     proximities: list = None,
                                      ground_truth_boxes: np.ndarray = None,
                                      ground_truth_classes: np.ndarray = None) -> np.ndarray:
     """Draw predictions and (optionally) ground truth boxes on image
@@ -72,13 +73,51 @@ def draw_detections_and_ground_truth(image: np.ndarray,
     
     # Draw prediction boxes in green
     for i, (bbox, conf, class_id) in enumerate(zip(predictions.xyxy, predictions.confidence, predictions.class_id)):
-        x1, y1, x2, y2 = map(int, bbox)
-        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
         #label = f"Child" if int(class_id) == 0 else f"Adult"
-        label = "Face"
-        cv2.putText(annotated_image, f"{label} {conf:.2f}", (x1+10, y2-10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    
+        label = f"Face ({conf:.2f})"
+        prox_val = None
+        if proximities is not None and i < len(proximities):
+            prox_val = proximities[i][0] if isinstance(proximities[i], (list, tuple, np.ndarray)) else proximities[i]
+            label += f", proximity: {prox_val:.2f}"
+
+        x1, y1, x2, y2 = map(int, bbox)
+        box_color = (51, 22, 105)   # #691633 in BGR
+        outer_thickness = 2 if (prox_val is not None and prox_val < 0.2) else 6
+        inner_thickness = 1 if (prox_val is not None and prox_val < 0.2) else 2
+
+        # 1. Outer thicker white bounding box
+        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (255, 255, 255), outer_thickness)
+        # 2. Inner/top thinner red bounding box (BGR: (0, 0, 255))
+        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), box_color, inner_thickness)
+        
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1 if (prox_val is not None and prox_val < 0.2) else 1.5
+        thickness = 2 if (prox_val is not None and prox_val < 0.2) else 3
+        text_color = box_color
+        white_color = (255, 255, 255)
+        pad = 6
+
+        (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+
+        text_x = x1 + 5
+        text_y = y2 + text_h + pad + 10
+
+        # Draw solid white rectangle behind text with padding
+        bg_pt1 = (text_x - pad, text_y - text_h - pad)
+        bg_pt2 = (text_x + text_w + pad, text_y + baseline + pad)
+        cv2.rectangle(annotated_image, bg_pt1, bg_pt2, white_color, -1)
+
+        # Draw the text on top
+        cv2.putText(
+            annotated_image,
+            label,
+            (text_x, text_y),
+            font,
+            font_scale,
+            text_color,
+            thickness,
+            cv2.LINE_AA
+        )  
     return annotated_image
 
 def calculate_iou(boxA: np.ndarray, boxB: np.ndarray) -> float:
@@ -186,10 +225,12 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
     else:
         # Only save annotated image if at least one face passes proximity filter
         keep_indices = []
+        proximities = []
         for i, (bbox, class_id) in enumerate(zip(results.xyxy, results.class_id)):
             x1, y1, x2, y2 = map(int, bbox)
             proximity = calculate_proximity([x1, y1, x2, y2], class_id)
             keep_indices.append(i)
+            proximities.append(proximity)
             if results.xyxy is None or len(results.xyxy) == 0:
                 logging.info("No detections in this image.")
                 return
@@ -203,7 +244,8 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
                 confidence=np.array([results.confidence[i] for i in keep_indices]),
                 class_id=np.array([results.class_id[i] for i in keep_indices])
             )
-            annotated_image = draw_detections_and_ground_truth(image, filtered_results, ground_truth_boxes, ground_truth_classes)
+            filtered_proximities = [proximities[i] for i in keep_indices]
+            annotated_image = draw_detections_and_ground_truth(image, filtered_results, proximities=filtered_proximities, ground_truth_boxes=ground_truth_boxes, ground_truth_classes=ground_truth_classes)
             output_filename = image_path.stem + "_annotated.jpg"
             output_path = output_dir / output_filename
             output_path.parent.mkdir(parents=True, exist_ok=True)
