@@ -182,15 +182,7 @@ class FaceConfig:
     MODEL_ID = 1
     NUM_WORKERS = 12
     DEGREES = 15
-    
-    CLUSTER_CONSECUTIVE_FRAMES = 1
-    REPRESENTATIVE_BLUR_THRESHOLD = 60
-    MIN_BLUR_THRESHOLD = 20
-    DEEPFACE_BACKEND = "retinaface"
-    FINAL_CONFIRMATION_DISTANCE_THRESHOLD = 0.6
-    VERIFIED_DISTANCE_THRESHOLD = 0.68
-    CONFIDENCE_THRESHOLD = 0.55
-    
+        
     PROXIMITY_MIN_DISTANCE = 0.30 # proximity of 1 corresponds to 0.3m distance
     PROXIMITY_MAX_DISTANCE = 5.00 # proximity of 0 corresponds to 5m distance
     PLOT_HORIZON_METERS = 3.0 # maximum distance to plot in proximity plots (in meters)

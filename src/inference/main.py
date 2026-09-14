@@ -6,8 +6,8 @@ import run_person
 import run_book
 from pathlib import Path
 from setup_inference_db import main as setup_inference_db
-from constants import DataPaths, Inference
-from config import InferenceConfig, DataConfig, FaceConfig, PersonConfig
+from constants import DataPaths, Inference, Analysis
+from config import DataConfig, FaceConfig, PersonConfig, AnalysisConfig
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -98,7 +98,7 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
             run_book.main(selected_videos)
         
         if 'face_proximity' in models_to_run:
-            logging.info("Running face model with proximity heuristic using confidence threshold of " + str(FaceConfig.CONFIDENCE_THRESHOLD))
+            logging.info("Running face model with proximity estimation") #using confidence threshold of " + str(FaceConfig.CONFIDENCE_THRESHOLD))
             run_face_proximity.main(selected_videos, frame_step)
         
         if 'speech_type' in models_to_run:
@@ -115,9 +115,9 @@ def main(video_path: Path, db_path: Path, frame_step: int, models: list = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run inference pipeline with selectable models")
 
-    parser.add_argument("--video_path", type=Path, default=Inference.QUANTEX_VIDEOS_LIST_FILE, help="Path to video file or directory containing videos")
+    parser.add_argument("--video_path", type=Path, default=Analysis.QUANTEX_VIDEOS_LIST_FILE, help="Path to video file or directory containing videos")
     parser.add_argument("--db_path", type=Path, default=DataPaths.INFERENCE_DB_PATH, help="Path to the database where results will be stored")
-    parser.add_argument("--frame_step", type=int, default=InferenceConfig.SAMPLE_RATE, help="Frame step size for processing videos")
+    parser.add_argument("--frame_step", type=int, default=AnalysisConfig.SAMPLE_RATE, help="Frame step size for processing videos")
     parser.add_argument("--models", nargs='+', choices=['person', 'face_proximity', 'speech_type', 'book', 'all'], default=['all'],  help="Select which models to run. Options: person, face_proximity, speech_type, book, all")
     args = parser.parse_args()
     

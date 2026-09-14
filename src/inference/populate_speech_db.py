@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from constants import AudioClassification, DataPaths, Inference
-from config import AudioConfig, DataConfig, InferenceConfig
+from config import AudioConfig, DataConfig
 from utils import get_video_id, load_processed_videos, save_processed_video
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
