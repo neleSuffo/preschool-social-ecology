@@ -87,8 +87,8 @@ class BookConfig:
 # Specific Task Configurations
 class PersonConfig:
     """Configuration for person detection and classification."""
-    MODEL_SIZE = 'x'
-    MODEL_NAME = f"yolo26{MODEL_SIZE}"
+    MODEL_SIZE = 'l'
+    MODEL_NAME = f"yolo12{MODEL_SIZE}"
     # Ratio of training data to use for training
     TRAIN_SPLIT_RATIO = 0.6
     # Ratio of class-to-class samples in each dataset split
