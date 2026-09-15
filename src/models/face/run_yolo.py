@@ -13,6 +13,11 @@ from models.proximity.estimate_proximity import calculate_proximity
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     
+BOX_THICKNESS = 10  # Increase to 8 or 10 for very heavy lines
+BACKING_OFFSET = 6  # Extra width for the white backing border
+PAD = 10  # Badge padding (increased so thicker borders don't touch text)
+TEXT_THICKNESS = 6  # Text stroke thickness = 6
+
 def process_image(model: YOLO, image_path: Path) -> Tuple[np.ndarray, Detections]:
     """Process image with YOLO model
     
@@ -37,11 +42,48 @@ def process_image(model: YOLO, image_path: Path) -> Tuple[np.ndarray, Detections
     logging.info(f"{len(results.xyxy)} face detection(s)")
     return image, results
 
+def draw_dashed_rect(
+    img, pt1, pt2, color, thickness=2, dash_length=10, gap_length=6
+):
+    """Draw a dashed rectangle using line segments."""
+    x1, y1 = pt1
+    x2, y2 = pt2
+
+    # Define the 4 sides as line segments
+    lines = [
+        ((x1, y1), (x2, y1)),  # Top
+        ((x2, y1), (x2, y2)),  # Right
+        ((x2, y2), (x1, y2)),  # Bottom
+        ((x1, y2), (x1, y1)),  # Left
+    ]
+
+    for start, end in lines:
+        dist = np.hypot(end[0] - start[0], end[1] - start[1])
+        dashes = int(dist / (dash_length + gap_length))
+        for i in range(dashes + 1):
+            s = i * (dash_length + gap_length)
+            e = s + dash_length
+            if s >= dist:
+                break
+            e = min(e, dist)
+
+            p1 = (
+                int(start[0] + (end[0] - start[0]) * (s / dist)),
+                int(start[1] + (end[1] - start[1]) * (s / dist)),
+            )
+            p2 = (
+                int(start[0] + (end[0] - start[0]) * (e / dist)),
+                int(start[1] + (end[1] - start[1]) * (e / dist)),
+            )
+            cv2.line(img, p1, p2, color, thickness)
+            
 def draw_detections_and_ground_truth(image: np.ndarray, 
                                      predictions: Detections,
+                                     print_proximity,
                                      proximities: list = None,
                                      ground_truth_boxes: np.ndarray = None,
-                                     ground_truth_classes: np.ndarray = None) -> np.ndarray:
+                                     ground_truth_classes: np.ndarray = None,           
+                                     iou_threshold: float = 0.3):
     """Draw predictions and (optionally) ground truth boxes on image
     
     Parameters
@@ -61,63 +103,182 @@ def draw_detections_and_ground_truth(image: np.ndarray,
         The annotated image with predictions and ground truth boxes drawn.
     """
     annotated_image = image.copy()
+    # --- Unified BGR Color Palette ---
+    COLOR_TP = (40, 160, 40)  # Vivid Green for True Positives
+    COLOR_GT = (180, 140, 0)  # Bright Cyan/Teal for Matched Ground Truth
+    COLOR_ERR = (0, 70, 230)  # High-Contrast Red-Orange for Errors (FP & FN)
     
-    # Draw ground truth boxes in blue (if provided)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    default_font_scale = 2.5
+    
+    # -------------------------------------------------------------
+    # 1. GROUND TRUTH (Missed GT = FN -> DASHED BOX)
+    # -------------------------------------------------------------
     if ground_truth_boxes is not None and len(ground_truth_boxes) > 0:
-        for i, (gt_box, gt_class) in enumerate(zip(ground_truth_boxes, ground_truth_classes)):
+        for gt_box in ground_truth_boxes:
             x1, y1, x2, y2 = map(int, gt_box)
-            cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            gt_label = "GT-Child" if gt_class == 0 else "GT-Adult"
-            cv2.putText(annotated_image, gt_label, (x1+10, y1+20), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+
+            # Check if any prediction matches this GT
+            max_iou = 0.0
+            if predictions is not None and len(predictions.xyxy) > 0:
+                iou_scores = [
+                    calculate_iou(gt_box, pred_box)
+                    for pred_box in predictions.xyxy
+                ]
+                max_iou = max(iou_scores) if iou_scores else 0.0
+
+            is_fn = max_iou < iou_threshold
+
+            font = cv2.FONT_HERSHEY_SIMPLEX
+
+            if is_fn:
+                label = "FN: GT Face"
+                box_color_gt = COLOR_ERR
+                # Draw white outline backing first, then dashed error box
+                draw_dashed_rect(
+                    annotated_image,
+                    (x1, y1),
+                    (x2, y2),
+                    (255, 255, 255),
+                    thickness=BOX_THICKNESS + BACKING_OFFSET,
+                    dash_length=10,
+                    gap_length=14,
+                )
+                draw_dashed_rect(
+                    annotated_image,
+                    (x1, y1),
+                    (x2, y2),
+                    box_color_gt,
+                    thickness=BOX_THICKNESS,
+                    dash_length=10,
+                    gap_length=14,
+                )
+            else:
+                label = "GT Face"
+                box_color_gt = COLOR_GT
+                cv2.rectangle(
+                    annotated_image, 
+                    (x1, y1), 
+                    (x2, y2), 
+                    (255, 255, 255), 
+                    BOX_THICKNESS + BACKING_OFFSET,
+                )
+                cv2.rectangle(
+                    annotated_image, 
+                    (x1, y1), 
+                    (x2, y2), 
+                    box_color_gt, 
+                    BOX_THICKNESS,
+                )
+
+            # Badge Text
+            (text_w, text_h), baseline = cv2.getTextSize(
+                label, font, default_font_scale, TEXT_THICKNESS
+            )
+            img_w = annotated_image.shape[1]
+            text_x = min(x1 + 4, img_w - text_w - PAD - 6)
+            # Offset by baseline + PAD so bottom of badge sits cleanly above y1 with a 6px gap
+            text_y = y1 - baseline - PAD - BOX_THICKNESS
+            #text_y = max(y1 - PAD - 10, text_h + PAD + 5)
+            
+            # If the face is flush with the top frame edge, flip label inside the box
+            if text_y - text_h - PAD < 0:
+                text_y = y1 + text_h + PAD + BOX_THICKNESS + 4
+    
+            bg_pt1 = (text_x - PAD, text_y - text_h - PAD)
+            bg_pt2 = (text_x + text_w + PAD, text_y + baseline + PAD)
+            cv2.rectangle(annotated_image, bg_pt1, bg_pt2, (255, 255, 255), -1)
+            cv2.putText(
+                annotated_image,
+                label,
+                (text_x, text_y),
+                font,
+                default_font_scale,
+                box_color_gt,
+                TEXT_THICKNESS,
+                cv2.LINE_AA,
+            )
     
     # Draw prediction boxes in green
-    for i, (bbox, conf, class_id) in enumerate(zip(predictions.xyxy, predictions.confidence, predictions.class_id)):
-        #label = f"Child" if int(class_id) == 0 else f"Adult"
-        label = f"Face ({conf:.2f})"
-        prox_val = None
-        if proximities is not None and i < len(proximities):
-            prox_val = proximities[i][0] if isinstance(proximities[i], (list, tuple, np.ndarray)) else proximities[i]
-            label += f", proximity: {prox_val:.2f}"
+    # -------------------------------------------------------------
+    # 2. MODEL PREDICTIONS (Unmatched Pred = FP -> SOLID BOX)
+    # -------------------------------------------------------------
+    if predictions is not None and len(predictions.xyxy) > 0:
+        for i, (bbox, conf) in enumerate(
+            zip(predictions.xyxy, predictions.confidence)
+        ):
+            x1, y1, x2, y2 = map(int, bbox)
 
-        x1, y1, x2, y2 = map(int, bbox)
-        box_color = (51, 22, 105)   # #691633 in BGR
-        outer_thickness = 2 if (prox_val is not None and prox_val < 0.2) else 6
-        inner_thickness = 1 if (prox_val is not None and prox_val < 0.2) else 2
+            # Check if this prediction matches any GT
+            max_iou = 0.0
+            if ground_truth_boxes is not None and len(ground_truth_boxes) > 0:
+                iou_scores = [
+                    calculate_iou(bbox, gt_box) for gt_box in ground_truth_boxes
+                ]
+                max_iou = max(iou_scores) if iou_scores else 0.0
 
-        # 1. Outer thicker white bounding box
-        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (255, 255, 255), outer_thickness)
-        # 2. Inner/top thinner red bounding box (BGR: (0, 0, 255))
-        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), box_color, inner_thickness)
-        
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1 if (prox_val is not None and prox_val < 0.2) else 1.5
-        thickness = 2 if (prox_val is not None and prox_val < 0.2) else 3
-        text_color = box_color
-        white_color = (255, 255, 255)
-        pad = 6
+            is_fp = (
+                (ground_truth_boxes is None)
+                or (len(ground_truth_boxes) == 0)
+                or (max_iou < iou_threshold)
+            )
 
-        (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+            prox_val = None
+            if proximities is not None and i < len(proximities):
+                prox_val = (
+                    proximities[i][0]
+                    if isinstance(proximities[i], (list, tuple, np.ndarray))
+                    else proximities[i]
+                )
 
-        text_x = x1 + 5
-        text_y = y2 + text_h + pad + 10
+            # Dynamic styling & labels
+            if is_fp:
+                label = f"FP: Face ({conf:.2f})"
+                box_color_pred = COLOR_ERR
+            else:
+                label = f"TP: Face ({conf:.2f})"
+                box_color_pred = COLOR_TP
 
-        # Draw solid white rectangle behind text with padding
-        bg_pt1 = (text_x - pad, text_y - text_h - pad)
-        bg_pt2 = (text_x + text_w + pad, text_y + baseline + pad)
-        cv2.rectangle(annotated_image, bg_pt1, bg_pt2, white_color, -1)
+            if prox_val is not None and print_proximity:
+                label += f", proximity: {prox_val:.2f}"
 
-        # Draw the text on top
-        cv2.putText(
-            annotated_image,
-            label,
-            (text_x, text_y),
-            font,
-            font_scale,
-            text_color,
-            thickness,
-            cv2.LINE_AA
-        )  
+            # Solid box with white backing outline
+            cv2.rectangle(
+                annotated_image,
+                (x1, y1),
+                (x2, y2),
+                (255, 255, 255),
+                BOX_THICKNESS + BACKING_OFFSET,
+            )
+            cv2.rectangle(
+                annotated_image,
+                (x1, y1),
+                (x2, y2),
+                box_color_pred,
+                BOX_THICKNESS,
+            )
+
+            (text_w, text_h), baseline = cv2.getTextSize(
+                label, font, default_font_scale, TEXT_THICKNESS
+            )            
+            img_w = annotated_image.shape[1]
+            text_x = min(x1 + 4, img_w - text_w - PAD - 6)
+            text_y = y2 + text_h + PAD + 10
+
+            bg_pt1 = (text_x - PAD, text_y - text_h - PAD)
+            bg_pt2 = (text_x + text_w + PAD, text_y + baseline + PAD)
+            cv2.rectangle(annotated_image, bg_pt1, bg_pt2, (255, 255, 255), -1)
+            cv2.putText(
+                annotated_image,
+                label,
+                (text_x, text_y),
+                font,
+                default_font_scale,
+                box_color_pred,
+                TEXT_THICKNESS,
+                cv2.LINE_AA,
+            )
+
     return annotated_image
 
 def calculate_iou(boxA: np.ndarray, boxB: np.ndarray) -> float:
@@ -178,7 +339,10 @@ def load_ground_truth(label_path: str, img_width: int, img_height: int) -> Tuple
     
     return np.array(ground_truth_boxes), np.array(ground_truth_classes)
 
-def process_and_save(image_path, output_dir, cut_face, filter_proximity):
+def process_and_save(image_path,
+                     output_dir, 
+                     cut_face, 
+                     print_proximity):
     """
     Process the image for face detection and save the results.
     The function can either save cropped face images or an annotated image
@@ -192,8 +356,8 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
         Directory to save the output (annotated image or face crops).
     cut_face : bool
         If True, save each detected face as a PNG in the output directory.
-    filter_proximity : bool
-        If True, only save faces/images with proximity > 0.3.
+    print_proximity : bool
+        If True, show proximity score on bounding box.
     """
     label_name = image_path.stem + ".txt"
     label_path = FaceDetection.LABELS_INPUT_DIR / label_name
@@ -223,47 +387,50 @@ def process_and_save(image_path, output_dir, cut_face, filter_proximity):
             logging.info(f"Saved face crop: {face_path} (proximity={proximity:.2f})")
             saved_any = True
     else:
-        # Only save annotated image if at least one face passes proximity filter
-        keep_indices = []
+        # Prepare annotations
+        output_filename = image_path.stem + "_annotated.jpg"
+        output_path = output_dir / output_filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         proximities = []
-        for i, (bbox, class_id) in enumerate(zip(results.xyxy, results.class_id)):
-            x1, y1, x2, y2 = map(int, bbox)
-            proximity = calculate_proximity([x1, y1, x2, y2], class_id)
-            keep_indices.append(i)
-            proximities.append(proximity)
-            if results.xyxy is None or len(results.xyxy) == 0:
-                logging.info("No detections in this image.")
-                return
+        if len(results.xyxy) > 0:
+            for bbox, class_id in zip(results.xyxy, results.class_id):
+                x1, y1, x2, y2 = map(int, bbox)
+                prox = calculate_proximity([x1, y1, x2, y2], class_id)
+                proximities.append(prox)
 
-            if not keep_indices:
-                logging.info(f"No faces found in {image_path}")
-                return
+        # Draw detections AND ground truth (works even if results is empty!)
+        annotated_image = draw_detections_and_ground_truth(
+            image,
+            results,
+            print_proximity,
+            proximities=proximities,
+            ground_truth_boxes=ground_truth_boxes,
+            ground_truth_classes=ground_truth_classes,
+        )
 
-            filtered_results = Detections(
-                xyxy=np.array([results.xyxy[i] for i in keep_indices]),
-                confidence=np.array([results.confidence[i] for i in keep_indices]),
-                class_id=np.array([results.class_id[i] for i in keep_indices])
+        # Save if there is at least one detection OR at least one ground-truth face
+        has_gt = ground_truth_boxes is not None and len(ground_truth_boxes) > 0
+        has_pred = len(results.xyxy) > 0
+
+        if has_pred or has_gt:
+            cv2.imwrite(
+                str(output_path),
+                annotated_image,
+                [cv2.IMWRITE_JPEG_QUALITY, 95],
             )
-            filtered_proximities = [proximities[i] for i in keep_indices]
-            annotated_image = draw_detections_and_ground_truth(image, filtered_results, proximities=filtered_proximities, ground_truth_boxes=ground_truth_boxes, ground_truth_classes=ground_truth_classes)
-            output_filename = image_path.stem + "_annotated.jpg"
-            output_path = output_dir / output_filename
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            success = cv2.imwrite(str(output_path), annotated_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            if not success:
-                success = cv2.imwrite(str(output_path), annotated_image)
-                if not success:
-                    raise RuntimeError(f"Failed to save image to {output_path}")
             logging.info(f"Annotated image saved to: {output_path}")
         else:
-            logging.info(f"No faces found in {image_path}")
+            logging.info(
+                f"Skipping {image_path.name}: No detections and no ground truth."
+            )
             
 def main():
     parser = argparse.ArgumentParser(description='YOLO Face Detection Inference')
     parser.add_argument('--image_path', type=str, required=True,
                         help='Image filename or folder')
     parser.add_argument('--cut_face', action='store_true', help='Save each detected face as a PNG in the output directory')
-    parser.add_argument('--filter_proximity', action='store_true', help='Only save faces/images with proximity > 0.3')
+    parser.add_argument('--print_proximity', action='store_true', help='Whether to show proximity score on bounding box')
     args = parser.parse_args()
     
     input_path = Path(args.image_path)
@@ -277,9 +444,9 @@ def main():
             folder_output_dir.mkdir(parents=True, exist_ok=True)
             image_files = list(input_path.glob("*.jpg")) + list(input_path.glob("*.PNG"))
             for img_file in image_files:
-                process_and_save(img_file, folder_output_dir, args.cut_face, args.filter_proximity)
+                process_and_save(img_file, folder_output_dir, args.cut_face, args.print_proximity)
         else:
-            process_and_save(input_path, output_dir, args.cut_face, args.filter_proximity)
+            process_and_save(input_path, output_dir, args.cut_face, args.print_proximity)
     except Exception as e:
         logging.error(f"Processing failed: {e}")
         return 1
