@@ -38,7 +38,7 @@ def main():
     
     task_label = "det" if args.type == "detection" else "cls"
     iou_suffix = f"_{str(args.iou).replace('.', '_')}" if args.type == "detection" else ""
-    folder_name = f"{PersonConfig.MODEL_NAME}_{task_label}_validation_{timestamp}{iou_suffix}"
+    folder_name = f"{PersonConfig.MODEL_NAME}_{task_label}_validation_{timestamp}_iou_{iou_suffix}"
 
     model = YOLO(weights_path)
 
