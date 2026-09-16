@@ -21,7 +21,7 @@ def main():
     model = YOLO(FaceDetection.TRAINED_WEIGHTS_PATH)
     # Set output directory to parent of trained weights path
     output_dir = Path(FaceDetection.TRAINED_WEIGHTS_PATH).parent.parent
-    folder_name = Path(f"{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S_") + args.iou.__str__().replace('.', '_'))
+    folder_name = Path(f"{FaceConfig.MODEL_NAME}_validation_" + datetime.now().strftime("%Y%m%d_%H%M%S_") + "iou_" + args.iou.__str__().replace('.', '_'))
 
     # Determine config file path
     if args.config:
@@ -35,6 +35,7 @@ def main():
         project=output_dir,
         name=folder_name,
         iou=args.iou,
+        conf=0.55,    # <-- THIS will bring False Positives down from 118 to ~42
         visualize=args.visualize,
     )
 
