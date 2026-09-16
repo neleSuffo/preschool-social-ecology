@@ -80,7 +80,7 @@ def reclassify_to_binary(df: pd.DataFrame) -> pd.DataFrame:
     df_copy['interaction_type'] = df_copy['interaction_type'].map(mapping).fillna('not interacting')
     return df_copy
 
-def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path, binary_mode=False):
+def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path, mode='tertiary'):
     """
     Plots the segment timelines (GT vs Prediction) for a specific video.
     
@@ -97,17 +97,19 @@ def plot_segment_timeline(predictions_df, ground_truth_df, video_name, save_path
     binary_mode : bool
         If True, use binary classification color mapping.
     """
+    is_binary = (mode == 'binary')
+
     # Define colors based on mode
-    if binary_mode:
+    if is_binary:
         INTERACTION_COLORS = {
             'interacting': '#d62728',       # Red
             'not interacting': '#1f77b4',   # Blue
         }
     else:
         INTERACTION_COLORS = {
-            'interacting': '#d62728', # Red
-            'available': '#ff7f0e',   # Orange
-            'alone': '#1f77b4',       # Blue
+            'interacting': '#d62728',       # Red
+            'available': '#ff7f0e',         # Orange
+            'alone': '#1f77b4',             # Blue
         }
     
     # Filter data for the specific video
@@ -676,7 +678,6 @@ def run_evaluation(predictions_path: Path, output_folder: Path, mode: str, video
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate social interaction predictions against ground truth.")
-    parser.add_argument('--folder_path', type=str, required=True, help='Path to the folder containing the predictions CSV file (e.g. 02_interaction_segments.csv)')
     parser.add_argument('--plot', nargs='?', const='all', default=None, help=('If omitted: no plotting.\n' 
                                                                               'If specified without value: plots all videos.\n' 
                                                                               'If a video name is given: plots only that video.'))
@@ -684,7 +685,7 @@ if __name__ == "__main__":
     parser.add_argument('--video_list', type=str, nargs='+', default=None, 
                         help='List of video names to include in this specific evaluation.')
     args = parser.parse_args()
-    predictions_path = Path(args.folder_path) / Inference.INTERACTION_SEGMENTS_CSV.name
+    predictions_path = Analysis.INTERACTION_SEGMENTS_CSV
 
     # 1. Run evaluation (loads data, runs metrics, prints/saves results)
     output_folder = predictions_path.parent    
