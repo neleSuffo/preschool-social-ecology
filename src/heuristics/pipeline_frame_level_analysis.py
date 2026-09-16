@@ -157,28 +157,41 @@ def calculate_window_features(df: pd.DataFrame) -> pd.DataFrame:
     sr = AnalysisConfig.SAMPLE_RATE
     samples_per_sec = fps / sr
     
-    # Rolling presence signal for CPD
-    df['presence_score'] = df['instant_presence_conf'].rolling(
-        window=int(samples_per_sec), min_periods=1, center=True
-    ).mean().fillna(0)
+    # Grouped rolling presence signal
+    df['presence_score'] = df.groupby('video_id')['instant_presence_conf'].transform(
+        lambda s: s.rolling(window=int(samples_per_sec), min_periods=1, center=True).mean()
+    ).fillna(0)
 
     # Visual Persistence
-    df['is_high_conf_anchor'] = ((df['proximity'] > AnalysisConfig.HIGH_CONFIDENCE_PROXIMITY_THRESHOLD) | (df['face_conf'] > AnalysisConfig.HIGH_CONFIDENCE_FACE_CONFIDENCE)).astype(int)  
-    long_mem = df['is_high_conf_anchor'].rolling(
-        window=int(AnalysisConfig.VISUAL_PERSISTENCE_SEC * samples_per_sec), 
-        min_periods=1, center=True
-    ).max().fillna(0)
+    df['is_high_conf_anchor'] = (
+        (df['proximity'] > AnalysisConfig.HIGH_CONFIDENCE_PROXIMITY_THRESHOLD) | 
+        (df['face_conf'] > AnalysisConfig.HIGH_CONFIDENCE_FACE_CONFIDENCE)
+    ).astype(int)    
     
-    short_mem = df['instant_presence_conf'].rolling(
-        window=int(AnalysisConfig.SHORT_TERM_VISUAL_MEMORY_SEC * samples_per_sec), min_periods=1, center=True
-    ).max().fillna(0) >= AnalysisConfig.INSTANT_CONFIDENCE_THRESHOLD
+    # Calculate visual persistence
+    long_win = int(AnalysisConfig.VISUAL_PERSISTENCE_SEC * samples_per_sec)
+    long_mem = df.groupby('video_id')['is_high_conf_anchor'].transform(
+        lambda s: s.rolling(window=long_win, min_periods=1, center=True).max()
+    ).fillna(0)
+    
+    # Calculate short-term memory for visual presence
+    short_win = int(AnalysisConfig.SHORT_TERM_VISUAL_MEMORY_SEC * samples_per_sec)
+    short_mem = df.groupby('video_id')['instant_presence_conf'].transform(
+        lambda s: s.rolling(window=short_win, min_periods=1, center=True).max()
+    ).fillna(0) >= AnalysisConfig.INSTANT_CONFIDENCE_THRESHOLD
+    
+    # Combine long-term and short-term memory to determine if a person has been seen recently
+    df['person_seen_recently'] = (long_mem == 1) | short_mem
 
-    df['person_seen_recently'] = (long_mem == 1) | (short_mem)
-
-    # Sustained Audio Windowing
+#    Sustained Audio Windowing
     sustained_win = int(AnalysisConfig.SUSTAINED_KCDS_WINDOW_SEC * samples_per_sec)
-    df['is_sustained_kcds'] = df['has_cds'].rolling(window=sustained_win).mean() >= AnalysisConfig.SUSTAINED_KCDS_THRESHOLD
-    df['is_sustained_ohs'] = df['has_ohs'].rolling(window=sustained_win).mean() >= AnalysisConfig.MIN_PRESENCE_OHS_FRACTION
+    df['is_sustained_kcds'] = df.groupby('video_id')['has_cds'].transform(
+        lambda s: s.rolling(window=sustained_win).mean()
+    ) >= AnalysisConfig.SUSTAINED_KCDS_THRESHOLD
+
+    df['is_sustained_ohs'] = df.groupby('video_id')['has_ohs'].transform(
+        lambda s: s.rolling(window=sustained_win).mean()
+    ) >= AnalysisConfig.MIN_PRESENCE_OHS_FRACTION
 
     return df
 
