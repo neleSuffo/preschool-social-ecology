@@ -318,45 +318,44 @@ def check_audio_interaction_turn_taking(df: pd.DataFrame,
     if df is None or df.empty:
         return pd.Series(False, index=df.index if df is not None else [], name='is_audio_interaction')
     
+    # Ensure the DataFrame is sorted by video_id and frame_number
+    orig_index = df.index
     MAX_GAP_FRAMES = AnalysisConfig.MAX_TURN_TAKING_GAP_SEC * fps
     MAX_SAME_SPEAKER_GAP_FRAMES = AnalysisConfig.MAX_SAME_SPEAKER_GAP_SEC * fps
     all_results = []
 
+    # Loop thorugh videos
     for video_id, video_df in df.groupby('video_id'):
-        video_df = video_df.copy() 
-        video_df.set_index('frame_number', inplace=True) 
+        video_df = video_df.copy()
+        video_df['orig_idx'] = video_df.index
+        video_df.set_index('frame_number', inplace=True)
         video_df['is_audio_interaction'] = False
         
-        # Identify KCHI and KCDS segments
+        # find segments with kchi and cds
         kchi_segments = find_segments(video_df, 'has_kchi')
         kcds_segments = find_segments(video_df, 'has_cds')
         all_segments = sorted(kchi_segments + kcds_segments, key=lambda x: x['start'])
         
         if not all_segments:
-            video_df.reset_index(inplace=True)
-            all_results.append(video_df[['frame_number', 'is_audio_interaction']])
+            all_results.append(video_df[['orig_idx', 'is_audio_interaction']])
             continue
             
         interaction_windows = []
-        
-        # Phase: Merge Segments and Filter for Dual Speakers
         current_window = {
             'start': all_segments[0]['start'],
             'end': all_segments[0]['end'],
             'types': {all_segments[0]['type']}
         }
 
+        # loop through segments and check whether gaps match the criteria
         for seg in all_segments[1:]:
             is_same_type = seg['type'] in current_window['types']
             gap = seg['start'] - current_window['end']
             
             if is_same_type:
-                # Prevent merging identical segments across gaps larger than allowed
                 if gap > MAX_SAME_SPEAKER_GAP_FRAMES:
-                    # Finalize current window (it's not turn-taking if it's only one speaker type)
                     if 'kchi' in current_window['types'] and 'cds' in current_window['types']:
                         interaction_windows.append(current_window)
-                    
                     current_window = {'start': seg['start'], 'end': seg['end'], 'types': {seg['type']}}
                 else:
                     current_window['end'] = seg['end']
@@ -368,23 +367,20 @@ def check_audio_interaction_turn_taking(df: pd.DataFrame,
                 else:
                     if 'kchi' in current_window['types'] and 'cds' in current_window['types']:
                         interaction_windows.append(current_window)
-                    
                     current_window = {'start': seg['start'], 'end': seg['end'], 'types': {seg['type']}}
 
         if 'kchi' in current_window['types'] and 'cds' in current_window['types']:
             interaction_windows.append(current_window)
 
-        # Mark frames within the validated interaction windows
+        # Mark the entire conversational exchange (including intra-turn gaps) as True
         for window in interaction_windows:
-            audio_mask = (video_df.loc[window['start'] : window['end'], 'has_kchi'] == 1) | \
-                         (video_df.loc[window['start'] : window['end'], 'has_cds'] == 1)
-            video_df.loc[audio_mask.index[audio_mask], 'is_audio_interaction'] = True
+            video_df.loc[window['start'] : window['end'], 'is_audio_interaction'] = True
         
-        video_df.reset_index(inplace=True)
-        all_results.append(video_df[['frame_number', 'video_id', 'is_audio_interaction']])
+        all_results.append(video_df[['orig_idx', 'is_audio_interaction']])
 
-    result_df = pd.concat(all_results, ignore_index=True)
-    return result_df['is_audio_interaction']
+    # Perfectly re-align back onto original df indices
+    result_df = pd.concat(all_results, ignore_index=True).set_index('orig_idx')
+    return result_df.reindex(orig_index)['is_audio_interaction'].fillna(False)
 
 def main(db_path: Path, 
          output_dir: Path, 
