@@ -66,7 +66,8 @@ def filter_initial_setup_frames(
 def load_or_create_matched_full_data(
     segments_csv_path: Path = None,
     cache_path: Path = None,
-    db_path: Path = Path("/home/nele_pauline_suffo/outputs/quantex_inference/inference_first_submission.db"),
+    #db_path: Path = Path("/home/nele_pauline_suffo/outputs/quantex_inference/inference_first_submission.db"),
+    db_path: Path = Path("/home/nele_pauline_suffo/outputs/quantex_inference/inference.db"),
     sample_rate: int = AnalysisConfig.SAMPLE_RATE,
     force_recompute: bool = False,
 ) -> pd.DataFrame:
