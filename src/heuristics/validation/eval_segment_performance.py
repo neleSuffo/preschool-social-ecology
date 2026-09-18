@@ -7,6 +7,7 @@ import seaborn as sns
 import numpy as np
 from pathlib import Path
 from collections import defaultdict
+from sklearn.metrics import cohen_kappa_score
 
 # Add the src directory to path for imports
 src_path = Path(__file__).parent.parent.parent if '__file__' in globals() else Path.cwd().parent.parent
@@ -223,8 +224,11 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df, video_subse
     category_stats = {category: {'total': 0, 'correct': 0} for category in gt_interaction_types}
     confusion_matrix = defaultdict(lambda: defaultdict(int))
     misclassifications = defaultdict(int)
-
     video_results = []
+    
+    # Lists to collect second-by-second vectors for Cohen's Kappa
+    all_gt_seconds = []
+    all_pred_seconds = []
 
     # Evaluate each video individually
     for video in videos_to_evaluate:
@@ -273,13 +277,19 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df, video_subse
             pred_label = pred_labels[sec]
 
             if gt_label is not None and gt_label != 'unclassified':
+                # Force unpredicted seconds to unclassified/fallback
+                effective_pred = pred_label if pred_label is not None else UNCLASSIFIED_LABEL
+                
+                # Append to vectors for Kappa computation
+                all_gt_seconds.append(str(gt_label).lower())
+                all_pred_seconds.append(str(effective_pred).lower())
+                
                 video_total_seconds += 1
                 total_seconds_all += 1
                 
                 # Check if category is already tracked (essential for binary mode)
                 if gt_label not in category_stats:
                     category_stats[gt_label] = {'total': 0, 'correct': 0}
-                    
                 category_stats[gt_label]['total'] += 1
 
                 if pred_label is not None:
@@ -301,6 +311,12 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df, video_subse
             'accuracy': video_accuracy
         })
 
+    # Compute second-by-second Cohen's Kappa
+    if all_gt_seconds and all_pred_seconds:
+        overall_kappa = cohen_kappa_score(all_gt_seconds, all_pred_seconds)
+    else:
+        overall_kappa = 0.0
+        
     overall_accuracy = correct_seconds_all / total_seconds_all if total_seconds_all > 0 else 0
     category_accuracies = {
         category: {
@@ -316,6 +332,7 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df, video_subse
 
     results = {
         'overall_accuracy': overall_accuracy,
+        'overall_kappa': overall_kappa,
         'total_seconds': total_seconds_all,
         'correct_seconds': correct_seconds_all,
         'category_accuracies': category_accuracies,
@@ -386,68 +403,87 @@ def calculate_detailed_metrics(results):
             }
     return detailed_metrics
 
-def generate_confusion_matrix_plots(results, output_folder: Path):
-    confusion_matrix = results['confusion_matrix']
-    interaction_types = results['interaction_types']
-    
-    # Force specific order for binary vs tertiary
+def generate_confusion_matrix_plot(results: dict, output_folder: Path):
+    confusion_matrix = results["confusion_matrix"]
+    interaction_types = results["interaction_types"]
+
+    # Canonical order
     if len(interaction_types) <= 2:
-        preferred_order = ['not interacting', 'interacting']
+        labels = ["not interacting", "interacting"]
     else:
-        preferred_order = ['alone', 'available', 'interacting']
+        labels = ["alone", "available", "interacting"]
 
-    # Filter labels present in data
-    sorted_gt_labels = [l for l in preferred_order if l in interaction_types]
-    # Prediction labels on X-axis usually follow the same order
-    sorted_pred_labels = sorted_gt_labels
+    ordered_labels = [l for l in labels if l in interaction_types]
+    n_classes = len(ordered_labels)
 
-    matrix_array = np.array([
-        [confusion_matrix[gt_label].get(pred_label, 0)
-         for pred_label in sorted_pred_labels]
-        for gt_label in sorted_gt_labels
-    ])
+    # 1. Build original matrix: Rows = True (GT), Cols = Predicted
+    cm_counts_gt_rows = np.array(
+        [
+            [confusion_matrix[gt].get(pred, 0) for pred in ordered_labels]
+            for gt in ordered_labels
+        ],
+        dtype=float,
+    )
 
-    # Convert to percentages
-    matrix_percentages = np.zeros_like(matrix_array, dtype=float)
-    for i in range(len(sorted_gt_labels)):
-        row_sum = np.sum(matrix_array[i])
-        if row_sum > 0:
-            matrix_percentages[i] = (matrix_array[i] / row_sum) * 100
+    # 2. Normalize by row (Ground Truth totals) so percentages reflect class recall
+    row_sums = cm_counts_gt_rows.sum(axis=1, keepdims=True)
+    cm_pct_gt_rows = np.divide(
+        cm_counts_gt_rows * 100.0,
+        row_sums,
+        out=np.zeros_like(cm_counts_gt_rows),
+        where=row_sums != 0,
+    )
 
-    # --- Save plots ---
+    # 3. Flip axes so True Label is on X-axis (Cols) and Predicted Label is on Y-axis (Rows)
+    cm_pct = cm_pct_gt_rows.T
+    cm_counts = cm_counts_gt_rows.T.astype(int)
+
+    # 4. Generate combined annotations: "XX.X%\n(Count)"
+    annot_labels = np.empty((n_classes, n_classes), dtype=object)
+    for i in range(n_classes):
+        for j in range(n_classes):
+            pct_val = cm_pct[i, j]
+            cnt_val = cm_counts[i, j]
+            annot_labels[i, j] = f"{pct_val:.1f}%\n({cnt_val:,})"
+
+    # Display labels capitalized
+    display_names = [label.capitalize() for label in ordered_labels]
+
+    # --- Plotting ---
+    fig, ax = plt.subplots(figsize=(9, 7.5))
+
+    sns.heatmap(
+        cm_pct,
+        annot=annot_labels,
+        fmt="",
+        cmap="Blues",
+        cbar=True,
+        cbar_kws={"label": "Percentage (%)"},
+        xticklabels=display_names,
+        yticklabels=display_names,
+        annot_kws={"fontsize": 17, "weight": "bold"},
+        ax=ax,
+    )
+
+    # Style colorbar font
+    cbar = ax.collections[0].colorbar
+    cbar.ax.yaxis.label.set_size(16)
+    cbar.ax.tick_params(labelsize=14)
+
+    # Axes styling (True on X, Predicted on Y)
+    ax.set_xlabel("True", fontsize=18, fontweight="bold", labelpad=12)
+    ax.set_ylabel("Predicted", fontsize=18, fontweight="bold", labelpad=12)
+    ax.tick_params(axis="both", which="major", labelsize=15)
+
+    # No headline
+    plt.title("")
+    plt.tight_layout()
+
     output_folder.mkdir(parents=True, exist_ok=True)
-    conf_matrix_counts_path = output_folder / Analysis.CONF_MATRIX_COUNTS
-    conf_matrix_percentages_path = output_folder / Analysis.CONF_MATRIX_PERCENTAGES
-
-    # Absolute counts
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(matrix_array, annot=True, fmt='d', cmap='Blues',
-                xticklabels=[label.capitalize() for label in sorted_pred_labels],
-                yticklabels=[label.capitalize() for label in sorted_gt_labels],
-                cbar_kws={'label': 'Number of GT Seconds'})
-    plt.title(f'Confusion Matrix (Counts)')
-    
-    plt.xlabel('Predicted Label', fontsize=14, labelpad=10)
-    plt.ylabel('True Label (Ground Truth)', fontsize=14, labelpad=10)
-    
-    plt.tight_layout()
-    plt.savefig(conf_matrix_counts_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
-    # Percentages
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(matrix_percentages, annot=True, fmt='.1f', cmap='Blues',
-                xticklabels=[label.capitalize() for label in sorted_pred_labels],
-                yticklabels=[label.capitalize() for label in sorted_gt_labels],
-                cbar_kws={'label': 'Percentage (%)'})
-    plt.title(f'Confusion Matrix (Percentages)')
-    
-    plt.xlabel('Predicted Label', fontsize=14, labelpad=10)
-    plt.ylabel('True Label (Ground Truth)', fontsize=14, labelpad=10)
-    
-    plt.tight_layout()
-    plt.savefig(conf_matrix_percentages_path, dpi=300, bbox_inches='tight')
-    plt.close()
+    save_path = output_folder / "social_states_confusion_matrix.png"
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"✅ Confusion matrix successfully saved to: {save_path}")
 
 def save_performance_results(results, detailed_metrics, total_seconds, total_hours, filename: Path):
     """Save performance summary and detailed metrics to a text file."""
@@ -463,6 +499,7 @@ def save_performance_results(results, detailed_metrics, total_seconds, total_hou
             f.write("OVERALL PERFORMANCE METRICS (Macro Average)\n")
             f.write("=" * 70 + "\n")
             f.write(f"Accuracy (second-level):  {results['overall_accuracy']:.4f}\n")
+            f.write(f"Cohen's Kappa (κ):        {results['overall_kappa']:.4f}\n")
             f.write(f"Macro Average Precision:  {detailed_metrics['macro_avg']['precision']:.4f}\n")
             f.write(f"Macro Average Recall:     {detailed_metrics['macro_avg']['recall']:.4f}\n")
             f.write(f"Macro Average F1-Score:   {detailed_metrics['macro_avg']['f1_score']:.4f}\n\n")
@@ -661,7 +698,7 @@ def run_evaluation(predictions_path: Path, output_folder: Path, mode: str, video
         df_misclassified.to_csv(misclassified_path, index=False)
         
     # Generate Plots and Results
-    generate_confusion_matrix_plots(results, output_folder)
+    generate_confusion_matrix_plot(results, output_folder)
     performance_path = output_folder / (Analysis.PERFORMANCE_RESULTS_TXT.stem + Analysis.PERFORMANCE_RESULTS_TXT.suffix)
     save_performance_results(results, detailed_metrics, total_seconds, total_hours, filename=performance_path)
     
@@ -673,7 +710,9 @@ def run_evaluation(predictions_path: Path, output_folder: Path, mode: str, video
             
     if 'macro_avg' in detailed_metrics:
         print(f"\nMacro Average F1: {detailed_metrics['macro_avg']['f1_score']:.4f}")
-
+    
+    print(f"Cohen's Kappa (κ): {results['overall_kappa']:.4f}")
+    
     return predictions_df, ground_truth_df, detailed_metrics
 
 if __name__ == "__main__":
