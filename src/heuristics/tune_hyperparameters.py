@@ -264,9 +264,15 @@ def save_final_results(all_results: list,
     """
     summary_data = []
     for res in all_results:
+        metrics = res['evaluation']['detailed_metrics']
+        
+        # Safely grab kappa from macro_avg or top-level detailed_metrics
+        kappa_val = metrics.get('overall_kappa', metrics.get('macro_avg', {}).get('kappa', None))
+        
         row = {
             'combo_id': res['combo_id'],
             'macro_f1': res['evaluation']['detailed_metrics']['macro_avg']['f1_score'],
+            'cohen_kappa': kappa_val,
             **res['hyperparameters']
         }
         summary_data.append(row)
@@ -287,11 +293,15 @@ def print_results_summary(all_results: list,
     best_config: dict
         The best configuration found.
     """
+    metrics = best_config['evaluation']['detailed_metrics']
+    f1_val = metrics['macro_avg']['f1_score']
+    kappa_val = metrics.get('overall_kappa', metrics.get('macro_avg', {}).get('kappa', 0.0))
+    
     print("\n" + "=" * 30 + "\n🏆 WINNER: Combo", best_config['combo_id'])
     for k, v in best_config['hyperparameters'].items():
         print(f"  {k}: {v}")
     print(f"  F1: {best_config['evaluation']['detailed_metrics']['macro_avg']['f1_score']:.4f}")
-
+    
 def main(max_combinations=None, 
          video_list=None, 
          social_state_mode="tertiary",

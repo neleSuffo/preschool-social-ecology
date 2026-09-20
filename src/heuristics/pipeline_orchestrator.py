@@ -55,13 +55,17 @@ def run_cross_validation(mode="validation", social_state_mode="tertiary", max_co
     fold_results = []
 
     def flatten_metrics(detailed_metrics):
-        """Converts nested metrics into a single-level dict for CSV rows."""
         flat = {}
         for category, scores in detailed_metrics.items():
-            # clean name (e.g. 'macro_avg' or 'interacting')
             cat_clean = category.lower().replace(" ", "_")
+
+            # If scores is a float/scalar (e.g. overall_kappa = 0.48)
+            if not isinstance(scores, dict):
+                flat[cat_clean] = scores
+                continue
+
+            # If scores is a dict (e.g. 'interacting': {'precision': ..., 'recall': ...})
             for metric, value in scores.items():
-                # Create key like: interacting_f1
                 metric_clean = metric.replace("_score", "")
                 flat[f"{cat_clean}_{metric_clean}"] = value
         return flat
@@ -116,7 +120,7 @@ def run_cross_validation(mode="validation", social_state_mode="tertiary", max_co
             
             if success:
                 final_res = evaluate_combination(seg_path, video_list=test_videos, social_state_mode=social_state_mode)
-                fold_results.append(final_res['detailed_metrics'])
+                fold_results.append(flatten_metrics(final_res['detailed_metrics']))
         else:
             print(f"📊 Validating on: {len(test_videos)} videos")
 
@@ -151,7 +155,7 @@ def run_cross_validation(mode="validation", social_state_mode="tertiary", max_co
                     flat_row = flatten_metrics(eval_res['detailed_metrics'])
                     fold_results.append(flat_row)
                 else:
-                    print(f"⚠️ Eval failed for fold {fold_id}: {res['error']}")
+                    print(f"⚠️ Eval failed for fold {fold_id}: {eval_res['error']}")
             else:
                 print(f"❌ Pipeline failed for fold {fold_id}: {error}")
             

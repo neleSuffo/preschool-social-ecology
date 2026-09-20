@@ -345,63 +345,87 @@ def evaluate_performance_by_seconds(predictions_df, ground_truth_df, video_subse
     return results
 
 def calculate_detailed_metrics(results):
-    """
-    Calculate precision, recall, and F1-score for each class from confusion matrix.
-    This function ensures all ground truth categories are included in metrics,
-    even if they were never predicted (resulting in zero precision/recall).
-    Parameters
-    ----------
-    results : dict
-        Results dictionary containing confusion_matrix and interaction_types
-    Returns
-    -------
-    dict
-        Dictionary with detailed metrics for each class
-    """
-    confusion_matrix = results['confusion_matrix']
-    interaction_types = results['interaction_types']
-    detailed_metrics = {}
-    for class_name in interaction_types:
-        tp = confusion_matrix[class_name].get(class_name, 0) if class_name in confusion_matrix else 0
-        fp = 0
-        for gt_class in confusion_matrix:
-            if gt_class != class_name:
-                fp += confusion_matrix[gt_class].get(class_name, 0)
-        fn = 0
-        if class_name in confusion_matrix:
-            for pred_class in confusion_matrix[class_name]:
-                if pred_class != class_name:
-                    fn += confusion_matrix[class_name][pred_class]
-        category_stats = results.get('category_accuracies', {})
-        if class_name in category_stats:
-            total_gt_instances = category_stats[class_name]['total_seconds']
-            fn = total_gt_instances - tp
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-        total_actual = tp + fn
-        detailed_metrics[class_name] = {
-            'precision': precision,
-            'recall': recall,
-            'f1_score': f1,
-            'support': total_actual,
-            'true_positives': tp,
-            'false_positives': fp,
-            'false_negatives': fn
-        }
-    if detailed_metrics and len(detailed_metrics) > 0:
-        # Calculate macro average only over non-macro categories
-        non_macro_metrics = [m for k, m in detailed_metrics.items() if k != 'macro_avg']
-        if non_macro_metrics:
-            macro_precision = np.mean([m['precision'] for m in non_macro_metrics])
-            macro_recall = np.mean([m['recall'] for m in non_macro_metrics])
-            macro_f1 = np.mean([m['f1_score'] for m in non_macro_metrics])
-            detailed_metrics['macro_avg'] = {
-                'precision': macro_precision,
-                'recall': macro_recall,
-                'f1_score': macro_f1,
-            }
-    return detailed_metrics
+  """Calculate precision, recall, and F1-score for each class from confusion matrix.
+
+  This function ensures all ground truth categories are included in metrics,
+  even if they were never predicted (resulting in zero precision/recall).
+
+  Parameters
+  ----------
+  results : dict
+      Results dictionary containing confusion_matrix and interaction_types
+
+  Returns
+  -------
+  dict
+      Dictionary with detailed metrics for each class
+  """
+  confusion_matrix = results['confusion_matrix']
+  interaction_types = results['interaction_types']
+  detailed_metrics = {}
+
+  for class_name in interaction_types:
+    tp = (
+        confusion_matrix[class_name].get(class_name, 0)
+        if class_name in confusion_matrix
+        else 0
+    )
+    fp = 0
+    for gt_class in confusion_matrix:
+      if gt_class != class_name:
+        fp += confusion_matrix[gt_class].get(class_name, 0)
+    fn = 0
+    if class_name in confusion_matrix:
+      for pred_class in confusion_matrix[class_name]:
+        if pred_class != class_name:
+          fn += confusion_matrix[class_name][pred_class]
+    category_stats = results.get('category_accuracies', {})
+    if class_name in category_stats:
+      total_gt_instances = category_stats[class_name]['total_seconds']
+      fn = total_gt_instances - tp
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (
+        2 * (precision * recall) / (precision + recall)
+        if (precision + recall) > 0
+        else 0.0
+    )
+    total_actual = tp + fn
+    detailed_metrics[class_name] = {
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'support': total_actual,
+        'true_positives': tp,
+        'false_positives': fp,
+        'false_negatives': fn,
+    }
+
+  overall_k = results.get('overall_kappa', 0.0)
+
+  if detailed_metrics and len(detailed_metrics) > 0:
+    # Safely select ONLY dictionary entries that are not macro_avg
+    non_macro_metrics = [
+        m
+        for k, m in detailed_metrics.items()
+        if isinstance(m, dict) and k not in ['macro_avg', 'overall_kappa']
+    ]
+
+    if non_macro_metrics:
+      macro_precision = float(
+          np.mean([m['precision'] for m in non_macro_metrics])
+      )
+      macro_recall = float(np.mean([m['recall'] for m in non_macro_metrics]))
+      macro_f1 = float(np.mean([m['f1_score'] for m in non_macro_metrics]))
+      detailed_metrics['macro_avg'] = {
+          'precision': macro_precision,
+          'recall': macro_recall,
+          'f1_score': macro_f1,
+          'kappa': float(overall_k),
+      }
+
+  detailed_metrics['overall_kappa'] = float(overall_k)
+  return detailed_metrics
 
 def generate_confusion_matrix_plot(results: dict, output_folder: Path):
     confusion_matrix = results["confusion_matrix"]
@@ -494,36 +518,55 @@ def save_performance_results(results, detailed_metrics, total_seconds, total_hou
         f.write(f"Total seconds analyzed: {total_seconds:,}\n")
         f.write(f"Total time analyzed: {total_hours:.2f} hours\n\n")
 
+        # Safely grab kappa value
+        kappa_val = detailed_metrics.get('overall_kappa', results.get('overall_kappa', 0.0))
+        if isinstance(detailed_metrics.get('macro_avg'), dict):
+            kappa_val = detailed_metrics['macro_avg'].get('kappa', kappa_val)
+            
         # Write overall performance metrics from detailed_metrics
         if 'macro_avg' in detailed_metrics:
             f.write("OVERALL PERFORMANCE METRICS (Macro Average)\n")
             f.write("=" * 70 + "\n")
             f.write(f"Accuracy (second-level):  {results['overall_accuracy']:.4f}\n")
-            f.write(f"Cohen's Kappa (κ):        {results['overall_kappa']:.4f}\n")
+            f.write(f"Cohen's Kappa (κ):        {kappa_val:.4f}\n")
             f.write(f"Macro Average Precision:  {detailed_metrics['macro_avg']['precision']:.4f}\n")
             f.write(f"Macro Average Recall:     {detailed_metrics['macro_avg']['recall']:.4f}\n")
-            f.write(f"Macro Average F1-Score:   {detailed_metrics['macro_avg']['f1_score']:.4f}\n\n")
+            f.write(f"Macro Average F1-Score:   {detailed_metrics['macro_avg']['f1_score']:.4f}\n")
+            f.write(f"Macro Average Kappa:      {kappa_val:.4f}\n\n")
 
         # Write category-specific performance
         f.write("CATEGORY-SPECIFIC PERFORMANCE\n")
         f.write("=" * 70 + "\n\n")
         for category, metrics in detailed_metrics.items():
-            if category == 'macro_avg':
+          # Skip macro_avg AND any non-dict entries (like overall_kappa)
+          if category in ['macro_avg', 'overall_kappa'] or not isinstance(
+              metrics, dict
+          ):
+            continue
+
+          for category, metrics in detailed_metrics.items():
+            # Skip macro_avg AND any non-dict entries (like overall_kappa)
+            if category in ['macro_avg', 'overall_kappa'] or not isinstance(
+                metrics, dict
+            ):
                 continue
-            
-            stats = results['category_accuracies'].get(category, {'total_seconds': 0, 'correct_seconds': 0, 'accuracy': 0})
+
+            stats = results['category_accuracies'].get(
+                category,
+                {'total_seconds': 0, 'correct_seconds': 0, 'accuracy': 0},
+            )
 
             f.write(f"{category.upper()}:\n")
             f.write(f"  Total seconds (GT): {stats['total_seconds']:,}\n")
             f.write(f"  Accuracy (second-level): {stats['accuracy']:.4f}\n")
-            f.write(f"  Precision: {metrics['precision']:.4f}\n")
-            f.write(f"  Recall: {metrics['recall']:.4f}\n")
-            f.write(f"  F1-Score: {metrics['f1_score']:.4f}\n")
-            f.write(f"  True Positives: {metrics['true_positives']:,}\n")
-            f.write(f"  False Positives: {metrics['false_positives']:,}\n")
-            f.write(f"  False Negatives: {metrics['false_negatives']:,}\n")
+            f.write(f"  Precision: {metrics.get('precision', 0.0):.4f}\n")
+            f.write(f"  Recall: {metrics.get('recall', 0.0):.4f}\n")
+            f.write(f"  F1-Score: {metrics.get('f1_score', 0.0):.4f}\n")
+            f.write(f"  True Positives: {metrics.get('true_positives', 0):,}\n")
+            f.write(f"  False Positives: {metrics.get('false_positives', 0):,}\n")
+            f.write(f"  False Negatives: {metrics.get('false_negatives', 0):,}\n")
             f.write("\n")
-
+          
 def extract_misclassification_segments(predictions_df, ground_truth_df, results_by_seconds):
     """
     Extracts and consolidates continuous misclassified seconds into segments.
@@ -701,17 +744,6 @@ def run_evaluation(predictions_path: Path, output_folder: Path, mode: str, video
     generate_confusion_matrix_plot(results, output_folder)
     performance_path = output_folder / (Analysis.PERFORMANCE_RESULTS_TXT.stem + Analysis.PERFORMANCE_RESULTS_TXT.suffix)
     save_performance_results(results, detailed_metrics, total_seconds, total_hours, filename=performance_path)
-    
-    # Console Output
-    print("\n--- F1-Scores for Evaluated Subset ---")
-    for category, metrics in detailed_metrics.items():
-        if category != 'macro_avg':
-            print(f"{category.capitalize()}: F1 = {metrics['f1_score']:.4f}")
-            
-    if 'macro_avg' in detailed_metrics:
-        print(f"\nMacro Average F1: {detailed_metrics['macro_avg']['f1_score']:.4f}")
-    
-    print(f"Cohen's Kappa (κ): {results['overall_kappa']:.4f}")
     
     return predictions_df, ground_truth_df, detailed_metrics
 
