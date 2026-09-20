@@ -3,48 +3,8 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from constants import Analysis
-from src.heuristics.utils import parse_rttm, merge_overlapping_intervals, get_child_fold_boundaries
-from utils import extract_child_id
-
-def load_ground_truth_segments(gt_path: Path = Analysis.GROUND_TRUTH_SEGMENTS_CSV, 
-                               meta_path: Path = Analysis.INTERACTION_SEGMENTS_CSV) -> pd.DataFrame:
-  """Loads and standardizes ground-truth segments to match pipeline schema.
-  
-  Parameters
-  -----------
-  
-  """
-  df_gt = pd.read_csv(gt_path, sep=";")
-  df_gt = df_gt.loc[:, ~df_gt.columns.str.contains("^Unnamed")].dropna(
-      subset=["video_name", "interaction_type", "start_time_min", "end_time_min"]
-  )
-  df_gt["interaction_type"] = (
-      df_gt["interaction_type"].astype(str).str.strip().str.title()
-  )
-  df_gt["start_time_sec"] = df_gt["start_time_min"].apply(time_to_seconds)
-  df_gt["end_time_sec"] = df_gt["end_time_min"].apply(time_to_seconds)
-  df_gt["duration_sec"] = df_gt["end_time_sec"] - df_gt["start_time_sec"]
-  df_gt = df_gt[df_gt["duration_sec"] > 0].copy()
-  df_gt["child_id"] = df_gt["video_name"].apply(
-      lambda x: extract_child_id(x) or "unknown"
-  )
-
-  if meta_path.exists():
-    meta_df = pd.read_csv(meta_path)
-    if (
-        "video_name" in meta_df.columns
-        and "age_at_recording" in meta_df.columns
-    ):
-      lookup = meta_df[["video_name", "age_at_recording"]].drop_duplicates(
-          subset=["video_name"]
-      )
-      df_gt = df_gt.merge(lookup, on="video_name", how="left")
-    else:
-      df_gt["age_at_recording"] = np.nan
-  else:
-    df_gt["age_at_recording"] = np.nan
-
-  return df_gt
+from src.heuristics.utils import parse_rttm, merge_overlapping_intervals, get_child_fold_boundaries, time_to_seconds
+from utils import load_ground_truth_segments
 
 def main(output_folder: Path = None,
          use_folds: bool = True,
@@ -62,8 +22,9 @@ def main(output_folder: Path = None,
         If true, match the audio detections on the ground truth segments only, by default False
     """
     fold_mode = "WITH per-fold metrics" if use_folds else "WITHOUT per-fold metrics (overall only)"
+    gt_addition = "for ground truth dataset" if use_ground_truth else "''"
     print("🗣️ RESEARCH QUESTION 2: CHILD LANGUAGE PRODUCTION ANALYSIS")
-    print(f"   Mode: {fold_mode}")
+    print(f"   Mode: {fold_mode} {gt_addition}")
     print("=" * 70)
     
     # 1. Load segments file
@@ -221,10 +182,11 @@ def main(output_folder: Path = None,
     child_level_summary['total_recording_minutes'] = child_level_summary['total_segment_duration'] / 60
 
     # Save child-level results
-    if output_folder:
-        output_path_gkcs = output_folder / Analysis.GLOBAL_KCS_SUMMARY_CSV.name
-    else:
-        output_path_gkcs = Analysis.GLOBAL_KCS_SUMMARY_CSV
+    suffix = "_gt" if use_ground_truth else ""
+    base_folder = (
+        output_folder if output_folder else Analysis.GLOBAL_KCS_SUMMARY_CSV.parent
+    )
+    output_path_gkcs = base_folder / f"{Analysis.GLOBAL_KCS_SUMMARY_CSV.stem}{suffix}.csv"
     child_level_summary.to_csv(output_path_gkcs, index=False)
     print(f"✅ Child-level summary saved to: {output_path_gkcs}")
     
