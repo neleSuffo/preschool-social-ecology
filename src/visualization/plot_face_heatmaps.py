@@ -13,25 +13,6 @@ from constants import Analysis, DataPaths, Visualization
 SAMPLED_FPS = DataConfig.FPS / AnalysisConfig.SAMPLE_RATE  # (30/10 = 3 fps)
 EXCLUSION_FRAMES = AnalysisConfig.EXCLUSION_SECONDS * DataConfig.FPS  # 900 frames
 
-
-def parse_time_str_to_seconds(val) -> float:
-    """Converts HH:MM:SS, MM:SS, or numeric values to total seconds."""
-    if pd.isna(val):
-        return np.nan
-    if isinstance(val, (int, float)):
-        return float(val)
-    val_str = str(val).strip()
-    parts = val_str.split(":")
-    try:
-        if len(parts) == 3:  # HH:MM:SS
-            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-        elif len(parts) == 2:  # MM:SS
-            return float(parts[0]) * 60 + float(parts[1])
-        return float(val_str)
-    except ValueError:
-        return np.nan
-
-
 def filter_initial_setup_frames(
     df: pd.DataFrame,
     exclusion_frames: int = EXCLUSION_FRAMES,
@@ -64,70 +45,36 @@ def filter_initial_setup_frames(
 
 
 def load_or_create_matched_full_data(
-    segments_csv_path: Path = None,
-    cache_path: Path = None,
-    #db_path: Path = Path("/home/nele_pauline_suffo/outputs/quantex_inference/inference_first_submission.db"),
-    db_path: Path = Path("/home/nele_pauline_suffo/outputs/quantex_inference/inference.db"),
+    segments_csv_path: Path,
+    cache_path: Path,
+    db_path: Path = DataPaths.INFERENCE_DB_PATH,
     sample_rate: int = AnalysisConfig.SAMPLE_RATE,
     force_recompute: bool = False,
 ) -> pd.DataFrame:
-    """Loads matched face detections from cache, or queries SQLite with book/illustration exclusions,
-    applies starter-video setup trimming, joins interaction segments, and caches results.
+    """Loads matched face detections from cache, or queries SQLite with exclusions,
+    joins interaction segments, and caches results.
     """
     if cache_path.exists() and not force_recompute:
-        print(f"Loading cached full matched detections from: {cache_path}")
+        print(f"Loading cached matched detections from: {cache_path}")
         return pd.read_pickle(cache_path)
 
-    print(f"Reading interaction segments CSV from: {segments_csv_path}")
-    try:
-        df_segments = pd.read_csv(segments_csv_path, sep=";")
-        if len(df_segments.columns) <= 1:
-            df_segments = pd.read_csv(segments_csv_path, sep=",")
-    except Exception:
-        df_segments = pd.read_csv(segments_csv_path)
+    print(f"Reading standardized interaction segments from: {segments_csv_path}")
+    df_segments = pd.read_csv(segments_csv_path)
 
-    # 1. Clean phantom delimiter columns ('Unnamed: ...')
-    df_segments = df_segments.loc[:, ~df_segments.columns.str.contains('^Unnamed', na=False)]
-    df_segments.columns = df_segments.columns.str.strip()
-
-    # 2. Standardize video column name
-    if "video_name" not in df_segments.columns and "video_id" in df_segments.columns:
-        if df_segments["video_id"].dtype == object:
-            df_segments = df_segments.rename(columns={"video_id": "video_name"})
-
+    # Standardize column naming and types directly from the uniform schema
     df_segments["video_name_clean"] = (
         df_segments["video_name"]
         .astype(str)
         .str.strip()
         .str.replace(r"\.[^.]+$", "", regex=True)
     )
-
-    # 3. Standardize segment_start and segment_end into integer frame numbers
-    if "segment_start" not in df_segments.columns or "segment_end" not in df_segments.columns:
-        if "start_time_min" in df_segments.columns and "end_time_min" in df_segments.columns:
-            start_s = df_segments["start_time_min"].apply(parse_time_str_to_seconds)
-            end_s = df_segments["end_time_min"].apply(parse_time_str_to_seconds)
-        elif "start_time_sec" in df_segments.columns and "end_time_sec" in df_segments.columns:
-            start_s = pd.to_numeric(df_segments["start_time_sec"], errors="coerce")
-            end_s = pd.to_numeric(df_segments["end_time_sec"], errors="coerce")
-        else:
-            raise ValueError(
-                f"Cannot determine segment boundaries in {segments_csv_path}. "
-                f"Columns found: {list(df_segments.columns)}"
-            )
-
-        df_segments["segment_start"] = (start_s * DataConfig.FPS).round().astype("Int64")
-        df_segments["segment_end"] = (end_s * DataConfig.FPS).round().astype("Int64")
-
-    # Drop any segments with invalid timestamps/frame indices
-    df_segments = df_segments.dropna(subset=["segment_start", "segment_end"]).copy()
     df_segments["segment_start"] = df_segments["segment_start"].astype(int)
     df_segments["segment_end"] = df_segments["segment_end"].astype(int)
+    df_segments["social_state"] = df_segments["interaction_type"].astype(str).str.capitalize()
 
     print(f"Connecting to database at: {db_path}")
     conn = sqlite3.connect(db_path)
 
-    # Robust exclusion query guarding against NULL values
     face_query = f"""
         SELECT 
             v.video_name,
@@ -151,10 +98,7 @@ def load_or_create_matched_full_data(
     try:
         df_faces = pd.read_sql_query(face_query, conn)
     except sqlite3.OperationalError:
-        face_query_fallback = face_query.replace(
-            "f.video_id = v.video_id", "f.video_id = v.id"
-        )
-        df_faces = pd.read_sql_query(face_query_fallback, conn)
+        df_faces = pd.read_sql_query(face_query.replace("f.video_id = v.video_id", "f.video_id = v.id"), conn)
     finally:
         conn.close()
 
@@ -171,7 +115,7 @@ def load_or_create_matched_full_data(
         .str.replace(r"\.[^.]+$", "", regex=True)
     )
 
-    # Exclude initial 30s setup frames on session-starter videos (_01)
+    # Filter initial setup frames
     df_faces = filter_initial_setup_frames(
         df_faces,
         exclusion_frames=EXCLUSION_FRAMES,
@@ -187,12 +131,8 @@ def load_or_create_matched_full_data(
     df_faces.to_sql("faces", mem_conn, index=False)
     df_segments.to_sql("segments", mem_conn, index=False)
 
-    mem_conn.execute(
-        "CREATE INDEX idx_faces ON faces(video_name_clean, frame_number)"
-    )
-    mem_conn.execute(
-        "CREATE INDEX idx_segments ON segments(video_name_clean, segment_start, segment_end)"
-    )
+    mem_conn.execute("CREATE INDEX idx_faces ON faces(video_name_clean, frame_number)")
+    mem_conn.execute("CREATE INDEX idx_segments ON segments(video_name_clean, segment_start, segment_end)")
 
     join_query = """
         SELECT 
@@ -207,7 +147,7 @@ def load_or_create_matched_full_data(
             f.y_center,
             f.proximity,
             f.confidence_score,
-            s.interaction_type AS social_state
+            s.social_state
         FROM faces f
         INNER JOIN segments s 
             ON f.video_name_clean = s.video_name_clean 
@@ -216,23 +156,6 @@ def load_or_create_matched_full_data(
     """
     df_matched = pd.read_sql_query(join_query, mem_conn)
     mem_conn.close()
-
-    state_map = {
-        1: "Interacting",
-        2: "Available",
-        3: "Alone",
-        "1": "Interacting",
-        "2": "Available",
-        "3": "Alone",
-        "interacting": "Interacting",
-        "available": "Available",
-        "alone": "Alone",
-    }
-    df_matched["social_state"] = (
-        df_matched["social_state"]
-        .map(state_map)
-        .fillna(df_matched["social_state"].astype(str).str.capitalize())
-    )
 
     print(f"\nTotal detections matched: {len(df_matched):,}")
     print(df_matched["social_state"].value_counts())
@@ -539,18 +462,8 @@ def compute_segment_and_detection_statistics(
     """Computes duration, sampled frame capacity, and presence statistics per social state,
     incorporating the initial 30-second exclusion for starter videos ending in '01'.
     """
-    print(f"Reading segments from: {segments_csv_path}")
-    try:
-        df_seg = pd.read_csv(segments_csv_path, sep=";")
-        if len(df_seg.columns) <= 1:
-            df_seg = pd.read_csv(segments_csv_path, sep=",")
-    except Exception:
-        df_seg = pd.read_csv(segments_csv_path)
-
-    # Standardize column naming
-    if "video_name" not in df_seg.columns and "video_id" in df_seg.columns:
-        if df_seg["video_id"].dtype == object:
-            df_seg = df_seg.rename(columns={"video_id": "video_name"})
+    print(f"Reading segments for summary statistics from: {segments_csv_path}")
+    df_seg = pd.read_csv(segments_csv_path)
 
     df_seg["video_name_clean"] = (
         df_seg["video_name"]
@@ -558,56 +471,15 @@ def compute_segment_and_detection_statistics(
         .str.strip()
         .str.replace(r"\.[^.]+$", "", regex=True)
     )
-
-    # Standardize social state column
-    state_col = "interaction_type" if "interaction_type" in df_seg.columns else "social_state"
-    state_map = {
-        1: "Interacting",
-        2: "Available",
-        3: "Alone",
-        "1": "Interacting",
-        "2": "Available",
-        "3": "Alone",
-        "interacting": "Interacting",
-        "available": "Available",
-        "alone": "Alone",
-    }
-    df_seg["social_state"] = (
-        df_seg[state_col]
-        .map(state_map)
-        .fillna(df_seg[state_col].astype(str).str.capitalize())
-    )
-
-    # Determine segment start & end times in seconds
-    if "start_time_min" in df_seg.columns and "end_time_min" in df_seg.columns:
-        df_seg["start_s"] = df_seg["start_time_min"].apply(parse_time_str_to_seconds)
-        df_seg["end_s"] = df_seg["end_time_min"].apply(parse_time_str_to_seconds)
-    elif "segment_start" in df_seg.columns and "segment_end" in df_seg.columns:
-        df_seg["start_s"] = df_seg["segment_start"] / fps_video
-        df_seg["end_s"] = df_seg["segment_end"] / fps_video
-    elif "start_time_sec" in df_seg.columns and "end_time_sec" in df_seg.columns:
-        df_seg["start_s"] = pd.to_numeric(df_seg["start_time_sec"], errors="coerce")
-        df_seg["end_s"] = pd.to_numeric(df_seg["end_time_sec"], errors="coerce")
-    elif "duration_sec" in df_seg.columns:
-        df_seg["start_s"] = 0.0
-        df_seg["end_s"] = pd.to_numeric(df_seg["duration_sec"], errors="coerce")
-    else:
-        raise ValueError(
-            f"Segments CSV missing recognizable time columns. Columns found: {list(df_seg.columns)}"
-        )
-
-    # Drop any rows where timestamp conversion failed
-    df_seg = df_seg.dropna(subset=["start_s", "end_s"])
+    df_seg["social_state"] = df_seg["interaction_type"].astype(str).str.capitalize()
 
     # Account for 30s exclusion on _01 starter videos in segment duration
     is_starter = df_seg["video_name_clean"].str.contains(r"(?:^|[_/-])01$", regex=True)
-
-    # Adjust start times for starter videos
-    adj_start = df_seg["start_s"].copy()
+    
+    adj_start = df_seg["start_time_sec"].copy()
     adj_start[is_starter] = adj_start[is_starter].clip(lower=exclusion_seconds)
-
-    # Calculate effective segment duration (discarding intervals that fell entirely in the first 30s)
-    df_seg["effective_duration_s"] = (df_seg["end_s"] - adj_start).clip(lower=0.0)
+    
+    df_seg["effective_duration_s"] = (df_seg["end_time_sec"] - adj_start).clip(lower=0.0)
 
     # Calculate statistics per state
     state_summary = []
