@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from constants import Analysis
-from src.heuristics.utils import parse_rttm, merge_overlapping_intervals, get_child_fold_boundaries, load_ground_truth_segments
+from src.heuristics.utils import parse_rttm, merge_overlapping_intervals, get_child_fold_boundaries
 
 def main(
     output_folder: Path = None,
@@ -27,20 +27,14 @@ def main(
     
     # 1. Load segments file
     if use_ground_truth:
-        gt_path = Analysis.GROUND_TRUTH_SEGMENTS_CSV
-        meta_path = (
-            output_folder / Analysis.INTERACTION_SEGMENTS_CSV.name
-            if output_folder
-            else Analysis.INTERACTION_SEGMENTS_CSV
-        )
-        segments_df = load_ground_truth_segments(gt_path, meta_path)
+        segments_path = Analysis.GROUND_TRUTH_SEGMENTS_CSV
     else:
         segments_path = (
             output_folder / Analysis.INTERACTION_SEGMENTS_CSV.name
             if output_folder
             else Analysis.INTERACTION_SEGMENTS_CSV
         )
-        segments_df = pd.read_csv(segments_path)
+    segments_df = pd.read_csv(segments_path)
         
     # 2. Extract both KCDS and OHS vocalizations from RTTM file
     all_vocalizations = parse_rttm(target_speech_types=['KCDS', 'OHS'])
@@ -49,12 +43,12 @@ def main(
         print("⚠️ Warning: No OHS or KCDS vocalizations found in RTTM file.")
         
     # 3. GLOBAL TIMELINE LOGIC
-    # Summarize duration per video to calculate offsets
-    video_stats = segments_df.groupby(['child_id', 'video_name'])['duration_sec'].sum().reset_index()
+    # Calculate video span using max timestamp to avoid overlap with sparse annotations
+    video_stats = (segments_df.groupby(['child_id', 'video_name'])['end_time_sec'].max().reset_index(name='video_span_sec'))
     video_stats = video_stats.sort_values(['child_id', 'video_name'])   
     
-    # Corrected Offset Logic: Reset cumulative sum for every child
-    video_stats['offset_raw'] = video_stats.groupby('child_id')['duration_sec'].shift(1).fillna(0)
+    # Reset cumulative sum for every child
+    video_stats['offset_raw'] = video_stats.groupby('child_id')['video_span_sec'].shift(1).fillna(0)
     video_stats['offset'] = video_stats.groupby('child_id')['offset_raw'].transform('cumsum')
     
     # Merge offsets back to segments
@@ -104,15 +98,28 @@ def main(
                         (all_vocalizations['end_time_seconds'] > local_overlap_start)
                     ].copy()
 
-                    if not group.empty:
-                        # --- STEP C: TRIPLE CLIP (Vocal | Segment | Fold) using local times ---
+                    if group.empty:
+                        # No vocalizations in this window: set all exposure categories to 0
+                        for exp_type in exposure_categories:
+                            final_rows.append({
+                                'child_id': seg['child_id'],
+                                'fold': fold_num,
+                                'video_name': seg['video_name'],
+                                'age_at_recording': seg['age_at_recording'],
+                                'interaction_type': seg['interaction_type'],
+                                'segment_start_time': seg['start_time_sec'],
+                                'segment_end_time': seg['end_time_sec'],
+                                'exposure_type': exp_type,
+                                'total_speech_seconds': 0.0,
+                                'total_segment_duration': current_duration,
+                                'segment_duration_minutes': current_duration / 60
+                            })
+                    else:
+                        # Clip timestamps once
                         group['clipped_start'] = np.maximum(group['start_time_seconds'], local_overlap_start)
                         group['clipped_end'] = np.minimum(group['end_time_seconds'], local_overlap_end)
-        
-                    for exp_type in exposure_categories:
-                        if group.empty:
-                            speech_seconds = 0.0
-                        else:
+            
+                        for exp_type in exposure_categories:
                             if exp_type == 'TOTAL':
                                 data = group
                             elif exp_type == 'KCDS_ONLY':
@@ -126,19 +133,19 @@ def main(
                                 intervals = list(zip(data['clipped_start'], data['clipped_end']))
                                 _, speech_seconds = merge_overlapping_intervals(intervals)
 
-                        final_rows.append({
-                            'child_id': seg['child_id'],
-                            'fold': fold_num,
-                            'video_name': seg['video_name'],
-                            'age_at_recording': seg['age_at_recording'],
-                            'interaction_type': seg['interaction_type'],
-                            'segment_start_time': seg['start_time_sec'],
-                            'segment_end_time': seg['end_time_sec'],
-                            'exposure_type': exp_type,
-                            'total_speech_seconds': speech_seconds,
-                            'total_segment_duration': current_duration,
-                            'segment_duration_minutes': current_duration / 60
-                        })
+                            final_rows.append({
+                                'child_id': seg['child_id'],
+                                'fold': fold_num,
+                                'video_name': seg['video_name'],
+                                'age_at_recording': seg['age_at_recording'],
+                                'interaction_type': seg['interaction_type'],
+                                'segment_start_time': seg['start_time_sec'],
+                                'segment_end_time': seg['end_time_sec'],
+                                'exposure_type': exp_type,
+                                'total_speech_seconds': speech_seconds,
+                                'total_segment_duration': current_duration,
+                                'segment_duration_minutes': current_duration / 60
+                            })
 
     final_df = pd.DataFrame(final_rows)
     final_df['exposure_percent'] = (final_df['total_speech_seconds'] / final_df['total_segment_duration']).fillna(0)

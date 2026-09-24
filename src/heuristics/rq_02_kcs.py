@@ -3,8 +3,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from constants import Analysis
-from src.heuristics.utils import parse_rttm, merge_overlapping_intervals, get_child_fold_boundaries, time_to_seconds
-from utils import load_ground_truth_segments
+from src.heuristics.utils import parse_rttm, merge_overlapping_intervals, get_child_fold_boundaries
 
 def main(output_folder: Path = None,
          use_folds: bool = True,
@@ -29,20 +28,14 @@ def main(output_folder: Path = None,
     
     # 1. Load segments file
     if use_ground_truth:
-        gt_path = Analysis.GROUND_TRUTH_SEGMENTS_CSV
-        meta_path = (
-            output_folder / Analysis.INTERACTION_SEGMENTS_CSV.name
-            if output_folder
-            else Analysis.INTERACTION_SEGMENTS_CSV
-        )
-        segments_df = load_ground_truth_segments(gt_path, meta_path)
+        segments_path = Analysis.GROUND_TRUTH_SEGMENTS_CSV
     else:
         segments_path = (
             output_folder / Analysis.INTERACTION_SEGMENTS_CSV.name
             if output_folder
             else Analysis.INTERACTION_SEGMENTS_CSV
         )
-        segments_df = pd.read_csv(segments_path)
+    segments_df = pd.read_csv(segments_path)
     
     # 2. Extract Key Child (KCHI) speech from RTTM file
     kchi_vocalizations = parse_rttm(target_speech_types=['KCHI'])
@@ -51,12 +44,16 @@ def main(output_folder: Path = None,
         print("⚠️ Warning: No KCHI vocalizations found in RTTM file.")
         
     # 3. Pre-calculate boundaries and create global timeline offsets
-    # Summarize duration per video
-    video_stats = segments_df.groupby(['child_id', 'video_name'])['duration_sec'].sum().reset_index()
+    # Use max end timestamp per video to avoid overlap when segments have gaps (especially in ground truth)
+    video_stats = (
+        segments_df.groupby(['child_id', 'video_name'])['end_time_sec']
+        .max()
+        .reset_index(name='video_span_sec')
+    )
     video_stats = video_stats.sort_values(['child_id', 'video_name'])   
     
-    # Corrected Offset Logic: Reset cumsum for every child
-    video_stats['offset_raw'] = video_stats.groupby('child_id')['duration_sec'].shift(1).fillna(0)
+    # Reset cumsum for every child
+    video_stats['offset_raw'] = video_stats.groupby('child_id')['video_span_sec'].shift(1).fillna(0)
     video_stats['offset'] = video_stats.groupby('child_id')['offset_raw'].transform('cumsum')
     
     # Merge back using both keys to be safe

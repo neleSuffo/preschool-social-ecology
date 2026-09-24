@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from constants import Analysis
 from config import DataConfig
-from src.heuristics.utils import get_child_fold_boundaries, extract_child_id, load_ground_truth_segments
+from src.heuristics.utils import get_child_fold_boundaries, extract_child_id
 
 def add_interaction_columns(frames_df: pd.DataFrame, 
                             segments_df: pd.DataFrame, 
@@ -121,37 +121,41 @@ def main(social_state_mode: str = 'tertiary',
     frames_df = pd.read_csv(frames_path)
 
     if use_ground_truth:
-        segments_df = load_ground_truth_segments(Analysis.GROUND_TRUTH_SEGMENTS_CSV, segments_path)
+        segments_path = Analysis.GROUND_TRUTH_SEGMENTS_CSV
+        segments_df = pd.read_csv(segments_path)
         # Filter frames to only keep videos present in the ground truth
         gt_videos = segments_df['video_name'].unique()
         frames_df = frames_df[frames_df['video_name'].isin(gt_videos)].copy()
     else:
         segments_df = pd.read_csv(segments_path)
     
-    # Add child_id to frames_df for easier merging later
+    # Standardize types
+    segments_df['start_time_sec'] = pd.to_numeric(segments_df['start_time_sec'], errors='coerce')
+    segments_df['end_time_sec'] = pd.to_numeric(segments_df['end_time_sec'], errors='coerce')
+    segments_df['duration_sec'] = pd.to_numeric(segments_df['duration_sec'], errors='coerce')
     segments_df['child_id'] = segments_df['child_id'].astype(str)
-    frames_df['child_id'] = frames_df['video_name'].apply(extract_child_id)
+    frames_df['child_id'] = frames_df['video_name'].apply(extract_child_id).astype(str)
     
     # Step 2: Global Timeline Logic for Frames
-    # Calculate cumulative duration offset per video to stitch files together
-    video_stats = segments_df.groupby(['child_id', 'video_name'])['duration_sec'].sum().reset_index()
+    video_stats = (
+        segments_df.groupby(['child_id', 'video_name'])['end_time_sec']
+        .max()
+        .reset_index(name='video_span_sec')
+    )
     video_stats = video_stats.sort_values(['child_id', 'video_name'])
-    video_stats['offset_raw'] = video_stats.groupby('child_id')['duration_sec'].shift(1).fillna(0)
+    video_stats['offset_raw'] = video_stats.groupby('child_id')['video_span_sec'].shift(1).fillna(0)
     video_stats['offset_sec'] = video_stats.groupby('child_id')['offset_raw'].transform('cumsum')
-
-    # Merge offsets back to frames
-    frames_df = frames_df.merge(video_stats[['child_id', 'video_name', 'offset_sec']], on=['child_id', 'video_name'])
-
-    # Calculate Global Timestamp for each frame
-    # We need to know the 'time' of each frame within its local video.
-    # Logic: (frame_number / max_frame_in_video) * duration_of_video
-    video_durations = segments_df.groupby('video_name')['duration_sec'].sum().reset_index()
-    video_max_frame = frames_df.groupby('video_name')['frame_number'].max().reset_index()
-    video_meta = video_durations.merge(video_max_frame, on='video_name')
-    video_meta['sec_per_frame'] = video_meta['duration_sec'] / video_meta['frame_number']
     
-    frames_df = frames_df.merge(video_meta[['video_name', 'sec_per_frame']], on='video_name')
-    frames_df['global_sec_pos'] = (frames_df['frame_number'] * frames_df['sec_per_frame']) + frames_df['offset_sec']    
+    # Merge offsets back to frames and segments
+    frames_df = frames_df.merge(video_stats[['child_id', 'video_name', 'offset_sec']], on=['child_id', 'video_name'])
+    segments_df = segments_df.merge(video_stats[['child_id', 'video_name', 'offset_sec']], on=['child_id', 'video_name'])
+    
+    # Segment global boundaries for folds
+    segments_df['global_start'] = segments_df['start_time_sec'] + segments_df['offset_sec']
+    segments_df['global_end'] = segments_df['end_time_sec'] + segments_df['offset_sec']
+
+    # Local frame time is simply frame_number / FPS
+    frames_df['global_sec_pos'] = (frames_df['frame_number'] / DataConfig.FPS) + frames_df['offset_sec']
     
     # Step 3: Assign Folds (conditional)
     if use_folds:

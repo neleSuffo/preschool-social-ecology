@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Tuple
 from constants import Analysis
 from config import AnalysisConfig
-from src.heuristics.utils import parse_rttm, get_child_fold_boundaries, load_ground_truth_segments
+from src.heuristics.utils import parse_rttm, get_child_fold_boundaries
 
 # Configure logging to show thresholds in the terminal
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -104,9 +104,13 @@ def count_directional_turns(vocalizations: pd.DataFrame,
         containing individual child turn durations and metadata for further analysis
     """
     # 1. GLOBAL TIMELINE OFFSETS
-    video_stats = segments_df.groupby(['child_id', 'video_name'])['duration_sec'].sum().reset_index()
+    video_stats = (
+        segments_df.groupby(['child_id', 'video_name'])['end_time_sec']
+        .max()
+        .reset_index(name='video_span_sec')
+    )
     video_stats = video_stats.sort_values(['child_id', 'video_name'])   
-    video_stats['offset_raw'] = video_stats.groupby('child_id')['duration_sec'].shift(1).fillna(0)
+    video_stats['offset_raw'] = video_stats.groupby('child_id')['video_span_sec'].shift(1).fillna(0)
     video_stats['offset'] = video_stats.groupby('child_id')['offset_raw'].transform('cumsum')
     
     segments_df = segments_df.merge(video_stats[['child_id', 'video_name', 'offset']], on=['child_id', 'video_name'])
@@ -253,20 +257,14 @@ def main(social_state_mode: str = 'tertiary',
     
     # 2. Load Segments and Vocalizations
     if use_ground_truth:
-        gt_path = Analysis.GROUND_TRUTH_SEGMENTS_CSV
-        meta_path = (
-            output_folder / Analysis.INTERACTION_SEGMENTS_CSV.name
-            if output_folder
-            else Analysis.INTERACTION_SEGMENTS_CSV
-        )
-        segments_df = load_ground_truth_segments(gt_path, meta_path)
+        segments_path = Analysis.GROUND_TRUTH_SEGMENTS_CSV
     else:
         segments_path = (
             output_folder / Analysis.INTERACTION_SEGMENTS_CSV.name
             if output_folder
             else Analysis.INTERACTION_SEGMENTS_CSV
         )
-        segments_df = pd.read_csv(segments_path)
+    segments_df = pd.read_csv(segments_path)
     all_vocalizations = parse_rttm(target_speech_types=['KCHI', 'KCDS'])
     
     # 3. Categorize Social Blocks
@@ -303,30 +301,58 @@ def main(social_state_mode: str = 'tertiary',
     print(f"✅ Full four-category analysis saved to {output_path_tt}")
 
     # ----- Part 2: Child-Level Aggregation (Relative to Total Recording) -----
-    # 1.G TRUE total recording duration for every child from source segments
-    # (This includes Alone, Available, and Interacting time)
+    # 1. True total recording duration for every child across ALL segments (Alone + Available + Interacting)    # (This includes Alone, Available, and Interacting time)
     child_total_durations = segments_df.groupby('child_id')['duration_sec'].sum().reset_index()
     child_total_durations.rename(columns={'duration_sec': 'total_recording_duration_sec'}, inplace=True)
-
+    
     # ----- Child-Level Aggregation (Fold-Aware or Overall) -----
     if use_folds:
-        # Group by child and fold to preserve the 5 data points per child
+        # Step A: Compute total recording duration per fold across ALL states
+        fold_durations = []
+        for child_id, folds in fold_map.items():
+            child_segs = segments_df[segments_df['child_id'] == child_id]
+            for fold_idx, (f_start, f_end) in enumerate(folds):
+                fold_num = fold_idx + 1
+                f_dur = 0.0
+                for _, seg in child_segs.iterrows():
+                    o_start = max(seg['global_start'], f_start)
+                    o_end = min(seg['global_end'], f_end)
+                    if o_start < o_end:
+                        f_dur += (o_end - o_start)
+                fold_durations.append({
+                    'child_id': child_id,
+                    'fold': fold_num,
+                    'total_recording_duration_sec': f_dur
+                })
+        df_fold_durations = pd.DataFrame(fold_durations)
+
+        # Step B: Sum turns within each fold
         child_level_turns = final_df.groupby(['child_id', 'fold']).agg({
             'total_turns': 'sum',
             'duration_sec': 'sum',
             'age_at_recording': 'min'
         }).reset_index()
+        child_level_turns.rename(columns={'duration_sec': 'total_interacting_sec'}, inplace=True)
+
+        # Step C: Merge total recording duration into the fold summary
+        child_level_turns = child_level_turns.merge(df_fold_durations, on=['child_id', 'fold'], how='left')
     else:
-        # Group by child only (single fold, so fold column will be 1)
+        # Group by child only
         child_level_turns = final_df.groupby('child_id').agg({
             'total_turns': 'sum',
             'duration_sec': 'sum',
             'age_at_recording': 'min'
         }).reset_index()
+        child_level_turns.rename(columns={'duration_sec': 'total_interacting_sec'}, inplace=True)
+        
+        # Merge true total recording duration across all states
+        child_level_turns = child_level_turns.merge(child_total_durations, on='child_id', how='left')
 
-    # 5. Calculate global density (turns per minute of OVERALL recording time)
-    child_level_turns['total_recording_minutes'] = child_level_turns['duration_sec'] / 60
-    child_level_turns['turns_per_minute'] = (child_level_turns['total_turns'] / child_level_turns['total_recording_minutes']).fillna(0)
+    # Calculate global density (turns per minute of OVERALL recording time)
+    child_level_turns['total_recording_minutes'] = child_level_turns['total_recording_duration_sec'] / 60
+    child_level_turns['turns_per_minute'] = (
+        child_level_turns['total_turns'] / child_level_turns['total_recording_minutes']
+    ).fillna(0)     
 
     # Save Child-Level Results
     output_path_gtt = (
